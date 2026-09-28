@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
-"""Compare two release trees for byte and metadata equality.
+"""Compare two release trees for byte and metadata equality; exit 0 same, 1 different.
 
-Exits 0 when the trees are identical, 1 when they differ. The deployment bundle
-uses the exit status to decide whether a staged release must replace the
-immutable one, so a false "identical" silently skips a reinstall.
-
-Symlinks are compared by target without being followed, so a link pointing
-somewhere new counts as a difference rather than being resolved away.
+A false "identical" silently skips a reinstall. Symlinks compare by target, unfollowed.
 """
 
 import os

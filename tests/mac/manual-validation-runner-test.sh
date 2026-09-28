@@ -86,11 +86,7 @@ cp "$mac_test_dir/manual-validation-handoff.rb" \
   "$fixture_mac/manual-validation-handoff.rb"
 cp "$mac_test_dir/pin-protected-input.rb" "$fixture_mac/pin-protected-input.rb"
 cp "$repo_dir/tests/integration_lock.sh" "$fixture_repo/tests/integration_lock.sh"
-# run.sh sources this for cleanup_sandbox_projects, which its failure
-# diagnostics iterate. It is the real file rather than a stub: the fixture's job
-# is to be a repository the runner can run in, and a stub roster here would let
-# the runner drift away from the one tests/mac/cleanup.sh reads without this
-# test noticing.
+# The real file, not a stub, so the runner cannot drift from cleanup.sh's roster.
 cp "$repo_dir/tests/sandbox_cleanup.sh" "$fixture_repo/tests/sandbox_cleanup.sh"
 cat > "$fixture_repo/services/manifest.yml" <<'YAML'
 ---
@@ -99,8 +95,6 @@ services:
 YAML
 cp "$repo_dir/inventory/group_vars/all/main.yml" \
   "$fixture_repo/inventory/group_vars/all/main.yml"
-# The Immich preference profiles the fixture generator reads live with the
-# rest of that service now, so the fixture repository needs that file too.
 cp "$repo_dir/inventory/group_vars/all/service_immich.yml" \
   "$fixture_repo/inventory/group_vars/all/service_immich.yml"
 chmod 0755 "$fixture_mac/run.sh" "$fixture_mac/report.rb" \
@@ -384,11 +378,8 @@ if grep -Eq 'idempotence|drift|recreate|persistence|cleanup' "$phase_log"; then
   fail 'manual run executed a phase after verify'
 fi
 
-# A fresh lane's ports must come from below this host's ephemeral range. One
-# the kernel handed out for a port-0 bind and got back on close is free for any
-# other process's port-0 bind or outgoing connection before preflight rebinds
-# it, which is how a sibling check in the gate took 45005 and this test's
-# preflight refused it (#833).
+# Fresh-lane ports must come from below the ephemeral range: a port-0 port returned
+# on close can be taken by any other process before preflight rebinds it (#833).
 if [ -r /proc/sys/net/ipv4/ip_local_port_range ]; then
   ephemeral_first=$(awk '{print $1}' /proc/sys/net/ipv4/ip_local_port_range)
 else

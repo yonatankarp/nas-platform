@@ -1,28 +1,19 @@
 #!/usr/bin/env ruby
-# The static half of the Komga service contract: the Compose definition, the
-# Mac override, the role's task order and its declared inputs, all decided from
-# the repository alone with nothing deployed.
+# Static half of the Komga service contract, decided from the repository alone.
 #
 # usage: komga-static.rb COMPOSE MAC_COMPOSE ROLE DEFAULTS ARGUMENT_SPECS ENV_TEMPLATE INVENTORY
 #
-# PLATFORM_CONTRACT_REPO_DIR names the tree being inspected, which is where
-# tests/policy_support.rb is required from -- not the checkout this file lives
-# in. Run it through tests/contracts/komga.sh rather than directly.
+# Run it through tests/contracts/komga.sh, which sets PLATFORM_CONTRACT_REPO_DIR.
 compose_path, mac_path, role_path, defaults_path, argument_specs_path,
   environment_path, inventory_path = ARGV
 compose = YAML.safe_load_file(compose_path, aliases: true)
 mac = YAML.safe_load_file(mac_path, aliases: true)
 
-# block/rescue/always nest their tasks one level deeper, so the task list is
-# flattened before anything looks a name up: an unflattened load would report a
-# required task as missing the moment it moved inside a block.
+# Flattened so a task moved inside a block is still found.
 require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
 include PolicySupport
 
-# Whole-file string harvest for the absence invariant at the end of this
-# contract. It has to stay unscoped, since a forbidden primitive introduced by
-# any task is a violation, but it no longer trips on a comment that merely
-# names the primitive.
+# Unscoped on purpose: a forbidden primitive in any task is a violation.
 def deep_strings(node)
   case node
   when Hash then node.flat_map { |key, value| [key.to_s] + deep_strings(value) }
@@ -49,21 +40,8 @@ abort "Komga contract failed: storage contract differs" unless service.fetch("vo
   "${KOMGA_LIBRARY_PATH:?}:/data:ro"
 ]
 
-# Where those two mount sources come from, which the volume list above cannot
-# say: it pins the container side of each mount and leaves the host side to a
-# variable. 02d60e2 (2026-08-17) deleted the fixture config path that two
-# wrapper guards named, along with the adoption lane that seeded it, and one of
-# those two -- a grep whose pattern was its own only subject -- went with it.
-# The property they were written for outlives the fixture, because the volume
-# list above is what makes it matter: config is mounted at /config and the
-# library at /data:ro, so a config path resolving under the media root can land
-# inside the library Komga indexes and put its database in a read-only tree.
-#
-# Deliberately source text, the same altitude tests/policy_test.rb reads these
-# templates at: there is no one structure to parse across a rendered env file,
-# and the render is what the container is given. Whitespace inside the Jinja
-# expression is tolerated so a reformatted template cannot fail for a reason
-# other than the one named.
+# Config mounts at /config and the library at /data:ro, so config resolving under
+# the media root could land inside the read-only library. Read as source text.
 environment = File.read(environment_path)
 env_value = lambda do |name|
   values = environment.scan(/^#{Regexp.escape(name)}=(.*)$/).flatten
@@ -71,9 +49,7 @@ env_value = lambda do |name|
   values.first.strip
 end
 rooted_at = lambda { |value, root| value.match?(%r{\A\{\{\s*#{root}\s*\}\}/}) }
-# Both halves are load-bearing and neither implies the other. Config outside
-# the media root protects nothing once the library leaves it, and a library
-# inside the media root is no safer if config follows it there.
+# Both halves are needed; neither implies the other.
 abort "Komga contract failed: config storage is not rooted outside the media tree" unless
   rooted_at.call(env_value.call("KOMGA_CONFIG_PATH"), "nas_docker_root")
 abort "Komga contract failed: the library is not rooted in the media tree" unless
@@ -113,14 +89,8 @@ abort "Komga contract failed: managed scan exclusions differ" unless
   defaults.fetch("komga_library_settings").fetch("scanDirectoryExclusions") == [".acquisition"]
 abort "Komga contract failed: the library root migration input is not one-convergence" unless
   defaults.fetch("komga_library_root_migration_allowed") == false
-# The role default is not the layer that decides the run. group_vars/all
-# declares the same flag and outranks role defaults, so a true left behind there
-# re-authorises an unreviewed root move on every converge while the check above
-# stays green -- a guard reading the losing layer, which is worse than no guard
-# (#343). Absence is safe, because the default asserted above then decides;
-# anything but false is not. The migration itself is taken with
-# `-e komga_library_root_migration_allowed=true`, which outranks both layers and
-# leaves nothing committed to forget.
+# group_vars/all outranks role defaults, so the inventory must not hold true
+# either (#343). The move is taken with -e komga_library_root_migration_allowed=true.
 abort "Komga contract failed: the library root migration input is enabled in the inventory" unless
   inventory.fetch("komga_library_root_migration_allowed", false) == false
 library_options = argument_specs.dig("argument_specs", "main", "options") || {}
@@ -193,9 +163,7 @@ preflight = preflight_names.map(&role_at)
 mutations = mutation_names.map(&role_at)
 abort "Komga contract failed: library preflight must precede every mutation" unless
   preflight.none?(&:nil?) && mutations.none?(&:nil?) && preflight.max < mutations.min
-# Komga refuses a root that is a parent or child of an existing library's root,
-# so a creation ordered before the repair that frees that root is a 400 against
-# the real service and converges only against a permissive fixture.
+# Komga refuses a root nested with an existing library's root.
 abort "Komga contract failed: library repairs must precede library creations" unless
   role_at.call("Repair the managed Komga library") <
     role_at.call("Create the managed Komga library")
@@ -206,9 +174,7 @@ abort "Komga contract failed: managed root matching is not trailing-slash normal
 abort "Komga contract failed: library updates must preserve the selected identifier" unless
   role_task.call("Repair the managed Komga library").dig("ansible.builtin.uri", "url").to_s
     .include?("item.id | urlencode")
-# Read as the guard's own conditions rather than as one joined string: the input
-# is named in three live places in this role, and a check that could see any of
-# them would keep passing after this guard lost its clause.
+# Read as the guard's own conditions: the input appears in three live places.
 abort "Komga contract failed: the library root move is not gated on the one-convergence input" unless
   Array(role_task.call("Refuse ambiguous Komga library candidates")
     .dig("ansible.builtin.assert", "that")).any? do |condition|

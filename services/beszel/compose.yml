@@ -1,8 +1,5 @@
-# Platform fragments. Compose resolves a YAML anchor only inside the file that
-# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
-# copies equal and records there why cross-file sharing was not taken. A
-# container needing different health-check timing overrides only the fields it
-# changes, so a deviation reads as a deviation.
+# Platform fragments: anchors are file-local, so each stack carries a copy that
+# tests/policy_test.rb pins equal. Overrides change only the fields that differ.
 x-logging: &default-logging
   driver: json-file
   options:
@@ -33,15 +30,12 @@ services:
       dev.dozzle.name: hub
     ports:
       - "8090:8090"
-    # alert-bridge reaches the Dozzle alert relay; default has to be named too, or
-    # the agents lose hub:8090.
+    # default must be named too, or the agents lose hub:8090.
     networks:
       - default
       - alert-bridge
     volumes:
-      # Holds the PocketBase database and id_ed25519. That keypair is authored in
-      # vault and written here before first start, so the agent's KEY is known in
-      # advance and nothing has to be read back from a running hub.
+      # Holds the vault-authored keypair, placed before first start.
       - ${NAS_DOCKER_ROOT:?}/beszel/hub:/beszel_data
     environment:
       APP_URL: ${BESZEL_APP_URL:?}
@@ -49,16 +43,10 @@ services:
     healthcheck:
       <<: *healthcheck-defaults
       test: [CMD, /beszel, health, --url, "http://localhost:8090"]
-      # Both agents gate their own start on this container reporting healthy, so
-      # the grace period is what the whole stack waits before it is told the hub
-      # is up. The hub is listening in about a second; the platform's 60s would
-      # only postpone that answer.
+      # Both agents wait on this; the hub listens in about a second.
       retries: 4
       start_period: 5s
-    # The hub writes every incoming metric into the PocketBase database in
-    # /beszel_data, which is recovery: critical and also holds the keypair
-    # placed there before first start. 30s lets the open transaction commit.
-    # The agents get no window: they hold a cache and reconnect.
+    # 30s lets the open PocketBase transaction commit (recovery: critical).
     stop_grace_period: 30s
 
   agent-portable:
@@ -74,8 +62,7 @@ services:
         condition: service_healthy
       socket-proxy:
         condition: service_healthy
-    # docker-api is the internal network only this agent shares with the proxy
-    # (#829); default still has to be named, or the agent loses hub:8090.
+    # docker-api is shared with the proxy alone (#829); default keeps hub:8090.
     networks:
       - default
       - docker-api
@@ -95,9 +82,7 @@ services:
     healthcheck:
       <<: *healthcheck-defaults
       test: [CMD, /agent, health]
-      # Deviation carried over unchanged from before the defaults existed; the
-      # repository records no reason for it, and a de-duplication is not where a
-      # readiness window gets renegotiated.
+      # Inherited deviation with no recorded reason; not renegotiated here.
       retries: 4
       start_period: 10s
 
@@ -109,35 +94,24 @@ services:
     labels:
       dev.dozzle.group: beszel
       dev.dozzle.name: agent-intel
-    # Host networking is a monitoring compatibility exception: the agent must
-    # observe the NAS network interfaces rather than only its own namespace. Its
-    # SSH server is disabled, it publishes no port, and it dials the hub outbound.
+    # Host networking so the agent sees the NAS interfaces; no SSH, no published port.
     network_mode: host
     cap_add:
       - CAP_PERFMON
       # S.M.A.R.T.: smartctl's SG_IO passthrough to the SATA disks needs RAWIO.
       - CAP_SYS_RAWIO
-      # NVMe admin passthrough needs SYS_ADMIN, and nothing else here does. It is a
-      # broad capability, accepted because the NVMe pair is md1, /volume1 -- every
-      # service's data, Vaultwarden's store included -- and a dying member would
-      # otherwise never be reported. Drop it with the NVMe slots, never alone.
+      # NVMe admin passthrough; broad, accepted to monitor /volume1's NVMe pair (#607).
+      # Drop it with the NVMe slots, never alone.
       - CAP_SYS_ADMIN
-    # Devices are host facts: inventory/group_vars/nas_hosts/main.yml lists them
-    # and roles/beszel asserts one slot per disk, so a disk added there without a
-    # slot here fails the run instead of going unmonitored, while a declared disk
-    # missing from the host renders /dev/null and warns. `:r` refuses a write-open
-    # and nothing more. It does not contain these disks: CAP_SYS_RAWIO lets SG_IO
-    # send any SCSI/ATA command, WRITE included, through a read-only handle, and
-    # CAP_SYS_ADMIN lets NVMe admin passthrough send Format and Sanitize.
+    # Slots come from inventory/group_vars/nas_hosts/main.yml, asserted by roles/beszel.
+    # `:r` only refuses a write-open: RAWIO SG_IO and NVMe admin can still write.
     devices:
       - ${NAS_RENDER_DEVICE:?}:${NAS_RENDER_DEVICE:?}
       # SATA bays: base devices, never partitions (beszel-docs guide/smart-data).
       - ${NAS_SMART_SATA_DEVICE_1:?}:${NAS_SMART_SATA_DEVICE_1:?}:r
       - ${NAS_SMART_SATA_DEVICE_2:?}:${NAS_SMART_SATA_DEVICE_2:?}:r
       - ${NAS_SMART_SATA_DEVICE_3:?}:${NAS_SMART_SATA_DEVICE_3:?}:r
-      # NVMe: the host namespace mapped onto the controller name, upstream's
-      # documented Docker form (henrygd/beszel#1637). The namespace is the path
-      # read off this host; the controller name is what the agent expects.
+      # NVMe: host namespace mapped onto the controller name (henrygd/beszel#1637).
       - ${NAS_SMART_NVME_NAMESPACE_1:?}:/dev/nvme0:r
       - ${NAS_SMART_NVME_NAMESPACE_2:?}:/dev/nvme1:r
     depends_on:
@@ -152,10 +126,8 @@ services:
     environment:
       DISABLE_SSH: "true"
       DOCKER_HOST: tcp://127.0.0.1:2375
-      # The agent finds md arrays by walking /sys/block (agent/mdraid_linux.go at
-      # v0.19.0), not through the devices above, so scoping those does not hide
-      # ADM's firmware-owned system arrays. md1 and md2 -- /volume1 and /volume2 --
-      # are left in on purpose: their sysfs health is how a degraded array pages.
+      # md arrays are found via /sys/block, not the devices above; md1/md2 stay in so a
+      # degraded array pages.
       EXCLUDE_SMART: /dev/md0,/dev/md126
       FILESYSTEM: /extra-filesystems/volume1
       HUB_URL: http://127.0.0.1:8090
@@ -167,37 +139,26 @@ services:
     healthcheck:
       <<: *healthcheck-defaults
       test: [CMD, /agent, health]
-      # Deviation carried over unchanged from before the defaults existed; the
-      # repository records no reason for it, and a de-duplication is not where a
-      # readiness window gets renegotiated.
+      # Inherited deviation with no recorded reason; not renegotiated here.
       retries: 4
       start_period: 10s
 
   socket-proxy:
     <<: *service-defaults
     container_name: beszel_socket_proxy
-    # The only Docker socket reader here. POST is refused, but CONTAINERS serves
-    # /containers/{id}/json, and with it every container's environment -- every
-    # rendered .env value on the platform (#829). So who can reach it is the
-    # control, and it is kept off default: the hub listens on the wildcard and
-    # has no route here.
+    # Serves every container's environment, i.e. every rendered .env (#829), so it is
+    # kept off default where the wildcard-bound hub could reach it.
     image: lscr.io/linuxserver/socket-proxy:3.4.5@sha256:ca6c0301a652232d02cb0ff9f1c5d20d9b339f391e1c1dffaae6ef3bfc59d009
     cpus: 0.5
     labels:
       dev.dozzle.group: beszel
       dev.dozzle.name: socket-proxy
-    # docker-api is internal and shared with agent-portable alone.
-    # docker-api-publish carries nothing but the loopback port below: Docker
-    # does not publish a port for a container attached only to internal networks,
-    # so the proxy needs one non-internal network, and it joins it alone.
+    # docker-api-publish exists only so Docker will publish the loopback port below.
     networks:
       - docker-api
       - docker-api-publish
-    # The NAS runs agent-intel, which has host networking (#607) and so cannot
-    # join a Compose network: this loopback port is its only route, because the
-    # image listens on TCP and nothing else. Its ceiling: any process on the NAS
-    # can still read every container's environment through it. Closing that
-    # needs a unix socket the proxy image does not offer (#829).
+    # agent-intel's only route (host networking). Any NAS process can read container
+    # environments through it; a unix socket would close that (#829).
     ports:
       - "127.0.0.1:2375:2375"
     volumes:
@@ -210,9 +171,7 @@ services:
     healthcheck:
       <<: *healthcheck-defaults
       test: [CMD-SHELL, "wget -q -O - http://127.0.0.1:2375/_ping | grep -qx OK"]
-      # Both agents gate their own start on this container reporting healthy. It
-      # answers /_ping over loopback the moment it is listening, so the check is
-      # short on both ends rather than spending the platform's grace period.
+      # Both agents wait on this; it answers /_ping as soon as it listens.
       timeout: 5s
       retries: 4
       start_period: 5s

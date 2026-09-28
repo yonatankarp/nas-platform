@@ -3,17 +3,13 @@
   ansible.builtin.set_fact:
     arr_reconciliation_fingerprint_filenames:
       configarr: .configarr-input.sha256
-      # This is verified API state, not a desired-input or secret digest. It
-      # shares the same atomic loader and private filesystem protections.
+      # Verified API state, not a desired-input or secret digest.
       configarr_owned_state: .configarr-owned-state.sha256
-      # This is irreducible Servarr API context continuity, not a desired-input
-      # or secret digest. It is recorded only after complete post-verification.
+      # Servarr API context continuity, recorded only after full post-verification.
       configarr_opaque_context: .configarr-opaque-context.sha256
       prowlarr_applications: .prowlarr-applications-input.sha256
       servarr_sabnzbd: .servarr-sabnzbd-input.sha256
-      # The Usenet provider connection SABnzbd itself holds, as opposed to the
-      # Arr download clients that point at SABnzbd. It lives here because the
-      # downloaders role drives it through this same subset loader.
+      # SABnzbd's own Usenet provider, driven by the downloaders role via this loader.
       downloaders_usenet_server: .downloaders-usenet-server-input.sha256
       prowlarr_indexers: .prowlarr-indexers-input.sha256
       bazarr_providers: .bazarr-providers-input.sha256
@@ -44,26 +40,8 @@
             'password': vault_downloaders_sabnzbd_admin_password
           } | to_json | hash('sha256')
         }}
-      # SABnzbd masks the provider password on read, so no comparison against
-      # the running service can notice a rotation. This digest is the only thing
-      # that does, which is why every vault-authored field is in it.
-      #
-      # It carries only vault material, and after #298 that is the account name
-      # and its password rather than all six provider values. Two reasons were
-      # given for excluding the non-credential fields and only one of them
-      # survives the move, so the surviving one is the reason: they are compared
-      # field by field against the running service. `reconcile_sabnzbd.yml`
-      # projects host, port, connections and ssl out of the API read-back and
-      # compares them directly, so a changed port is already a change it sees;
-      # the password is the only owned field SABnzbd masks on read-back
-      # (`get_dict(for_public_api=True)` returns ten asterisks) and therefore
-      # the only one that needs a digest to be noticed at all.
-      #
-      # The other reason -- that hashing them would make this digest depend on a
-      # variable out of scope where the Arr role computes it -- stopped applying:
-      # `media_usenet_provider` is inventory group_vars, so it is in scope
-      # everywhere. It is excluded because it does not need to be here, not
-      # because it cannot be.
+      # SABnzbd masks the provider password on read, so only this digest notices a rotation.
+      # Other provider fields are compared directly by reconcile_sabnzbd.yml (#298).
       downloaders_usenet_server: >-
         {{
           {
@@ -124,16 +102,8 @@
           } | to_json | hash('sha256')
         }}
   vars:
-    # The Configarr image belongs in this fingerprint so that a version bump
-    # forces a reconcile against the new binary. Restating the pin here made
-    # that trigger die silently: Renovate's enabledManagers never look at
-    # roles/**, so a Compose bump left the hashed literal frozen on a version
-    # that was no longer running. The image is therefore read from the Compose
-    # definition that deploys it. The canonical compose.yml is the only file
-    # that may carry it — deployment_bundle asserts compose.yml leads every
-    # service's file list, and tests/policy_test.rb forbids an `image:` key in a
-    # platform override. role_path is <checkout>/roles/arr, the same controller
-    # checkout the Configarr config and quality definitions above are read from.
+    # Read from the canonical compose.yml, not restated: Renovate never looks at roles/**,
+    # so a restated pin froze silently. A version bump forces a reconcile.
     arr_configarr_compose_definition: >-
       {{ lookup('ansible.builtin.file',
                 (role_path | dirname | dirname) ~ '/services/arr/' ~

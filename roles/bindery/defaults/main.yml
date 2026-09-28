@@ -2,114 +2,59 @@
 bindery_port: 8787
 bindery_api: "http://127.0.0.1:{{ bindery_port }}/api/v1"
 bindery_config_host_path: "{{ nas_docker_root }}/bindery/config"
-# The two host shares each library shares with its own staging directory, and
-# the reason they are mounted as parents rather than four leaves: Ebooks sits
-# beside .acquisition/usenet/ebooks under Books, and Audiobooks beside
-# .acquisition/usenet/audiobooks under Media, so one bind mount per share puts
-# each pair inside one mount. rename(2) refuses to cross a mount boundary even
-# when both sides are the same filesystem, so a mount per leaf turned every
-# import into a full byte copy plus unlink and made hardlinking impossible.
-# Staging still lands under the same container path SABnzbd reports a finished
-# download at, so an import needs no path remap. The four leaves are reached
-# through the container paths below rather than mounted by name.
-#
-# nas_storage declares the two staging directories, both libraries and the Books
-# share; the Media share itself is deliberately not declared, exactly as the
-# identical Media mount Radarr and Sonarr take is not, because a media parent
-# mount is legitimate and the declared leaves below it are where a mode and a
-# recovery class belong. The cost is that Bindery now sees the whole Media share
-# rather than Audiobooks alone, which is the same reach the arr stack has had
-# since Phase 1 and the price of putting each pair inside one mount.
+# Each share is mounted as one parent so a library and its staging directory sit
+# inside one mount: rename(2) refuses to cross a mount boundary, so a mount per
+# leaf turned every import into a full copy and ruled out hardlinks.
 bindery_books_host_path: "{{ nas_media_root }}/Books"
 bindery_media_host_path: "{{ nas_media_root }}/Media"
-# The container paths the two libraries are mounted at, which are what Bindery
-# stores as its destination root folders. Ebooks and audiobooks must stay
-# separate roots; a single root is the collapse the design forbids.
+# Ebooks and audiobooks must stay separate root folders.
 bindery_ebooks_root: /data/books/Ebooks
 bindery_audiobooks_root: /data/media/Audiobooks
 bindery_library_roots:
   - "{{ bindery_ebooks_root }}"
   - "{{ bindery_audiobooks_root }}"
 
-# Both integrations are addressed by their Compose service alias on the shared
-# media-control network, because Bindery resolves the host in each URL at write
-# time and rejects one it cannot look up.
+# Compose service aliases: Bindery resolves each URL's host at write time.
 bindery_prowlarr_name: Prowlarr
 bindery_prowlarr_internal_url: http://prowlarr:9696
 bindery_sabnzbd_client_name: SABnzbd
 bindery_sabnzbd_host: sabnzbd
 bindery_sabnzbd_port: 8080
-# The two categories SABnzbd already declares for this platform, which is what
-# keeps an ebook and an audiobook landing in different staging directories.
 bindery_sabnzbd_ebook_category: ebooks
 bindery_sabnzbd_audiobook_category: audiobooks
 
-# Audiobookshelf, which Bindery hands an audiobook to after every import by
-# triggering a library scan. Two addresses, deliberately: Ansible runs on the
-# host and reaches the application through its published port, while Bindery
-# reaches it from inside media-control, where the container listens on 80 and
-# the published port does not exist at all. Addressing 13378 from inside a
-# container is the misconfiguration this declaration replaces.
+# Ansible reaches Audiobookshelf on the published port; Bindery reaches it
+# inside media-control, where the container listens on 80.
 bindery_audiobookshelf_port: 13378
 bindery_audiobookshelf_api: "http://127.0.0.1:{{ bindery_audiobookshelf_port }}"
 bindery_audiobookshelf_url: http://audiobookshelf
-# Bindery substitutes "Audiobookshelf" for an empty label, so the declared value
-# is that literal rather than the empty string a comparison would never settle
-# on. The remap is empty because the two agree on paths already: Bindery reads
-# the audiobook at its own container path and Audiobookshelf reads the same host
-# directory at its own. It is declared rather than omitted because the write
-# keeps any field the request leaves out.
+# Bindery substitutes "Audiobookshelf" for an empty label. The remap is declared
+# empty because the write keeps any field the request leaves out.
 bindery_audiobookshelf_label: Audiobookshelf
 bindery_audiobookshelf_path_remap: ""
-# Must name the same library roles/audiobookshelf declares as
-# audiobookshelf_library_name. Nothing static holds the two equal; the
-# reconciliation resolves this name against Audiobookshelf's own library list
-# and refuses unless it selects exactly one book library, so a drift fails the
-# run rather than configuring a handoff against nothing.
+# Must name the library roles/audiobookshelf declares; the reconciliation
+# refuses unless it resolves to exactly one book library.
 bindery_audiobookshelf_library_name: Audiobooks
-# The name Audiobookshelf files the platform-minted API key under. It is how a
-# superseded key is recognised and retired, so it must not name a key an
-# operator created by hand.
+# Identifies the platform-minted key for retirement; never reuse an operator's
+# key name.
 bindery_audiobookshelf_api_key_name: bindery
 
-# Auto-grab is on: Bindery searches for every wanted book on its own schedule
-# and hands the matches to SABnzbd, which is the whole point of deploying an
-# acquisition manager rather than a library browser.
-#
-# The row is still written rather than left absent, and the reason is worth
-# keeping straight. `autoGrabEnabled` fails *open* -- a missing row, a read
-# error and an unattached repository all read as enabled -- so absence already
-# means on and this row does not guarantee enablement. What it does is revert a
-# manual disable in the web interface, which is the same control-plane
-# behaviour every other pinned setting has. Pinned `false` it was a guarantee;
-# pinned `true` it is a repair. Both are worth having, but they are not the
-# same claim, and a future reader should not mistake one for the other.
-#
-# Telemetry is on by default with a daily ping and is pinned off here as well as
-# in the environment, so a future environment edit cannot re-enable it silently.
+# autoGrabEnabled fails open (a missing row reads as enabled), so this row
+# reverts a manual disable rather than guaranteeing enablement. Telemetry is
+# pinned off here as well as in the environment.
 bindery_pinned_settings:
   autoGrab.enabled: "true"
   telemetry.enabled: "false"
 
-# The quality profile every author is given when it has none. Bindery ships
-# three -- `Any`, `E-Book` and `Audiobook` -- and creates them itself on first
-# start, so this is matched by name rather than by the database-assigned integer
-# the API actually stores. `Any` is the platform default because an author here
-# routinely has both an ebook and an audiobook edition, and the two narrower
-# profiles each refuse one of them.
+# Matched by name: Bindery creates Any/E-Book/Audiobook itself on first start.
+# `Any` because authors routinely have both an ebook and an audiobook edition.
 bindery_default_quality_profile_name: Any
 
-# Read, never written: the verification block asserts a synced indexer only
-# where Prowlarr has one declared to sync. Every sandbox runs with an empty list
-# on purpose, and Bindery holding no indexer there is correct rather than a
-# regression. Declared here as well as in the arr role because a role's defaults
-# are its argument list, exactly as `media_usenet_enabled` is.
+# Read only, by verification; declared here because a role's defaults are its
+# argument list.
 media_arr_indexers: []
 
-# Bindery deploys unconditionally — its web interface is the writer for both
-# libraries and is useful with no transport at all — but the Prowlarr and
-# SABnzbd rows can only be written while those two containers are running,
-# which is exactly what this flag gates.
+# Gates the Prowlarr and SABnzbd rows, which need those containers running.
 media_usenet_enabled: false
 
 bindery_compose_project_name: >-

@@ -9,13 +9,8 @@
     deployment_target_extra_paths:
       - "{{ bindery_config_host_path }}"
 
-# Redacted: the conditions name the API-key seed and both halves of the
-# administrator identity. The seed reaches the target as an environment
-# variable and the pair is submitted to the application as a JSON body, so
-# every one of the three is a value a module result would otherwise render.
-# The application refuses a password shorter than eight characters, and
-# refusing it here fails the run before anything is deployed rather than
-# inside a redacted request.
+# The application refuses a password under eight characters; refusing here fails
+# before deployment rather than inside a redacted request.
 - name: Require well-formed Bindery credentials
   ansible.builtin.assert:
     that:
@@ -29,8 +24,6 @@
       at least eight characters.
   no_log: true
 
-# Redacted: this file carries the API-key seed that closes Bindery's anonymous
-# first-run setup window.
 - name: Render the private Bindery environment
   ansible.builtin.template:
     src: env.j2
@@ -38,13 +31,8 @@
     mode: "0600"
   no_log: true
 
-# Before the backup, because a release that must not be started is not worth
-# backing up for, and before Compose, because recreating the container from the
-# older image is the act being refused. Bindery migrates its own SQLite store on
-# start and the migration is one-way: #511 pinned this host behind one for three
-# days. The five paths this reads are the ones the containment re-include at the
-# top of this file already declared through deployment_target_service, so it
-# needs no extra_paths of its own.
+# Before the backup and before Compose: Bindery's SQLite migration is one-way
+# (#511).
 - name: Refuse a Bindery image older than the store on disk
   ansible.builtin.include_role:
     name: image_downgrade_guard
@@ -57,14 +45,8 @@
 - name: Guard Bindery critical state before a pinned upgrade
   ansible.builtin.include_tasks: pre_upgrade_backup.yml
 
-# The block exists for one thing the rescue does with the failure and nothing
-# else: it hands the deployment's own message to roles/container_health, which
-# either explains it in terms of the container state Docker reports or re-raises
-# it unchanged. Compose's `--wait` fails this task with "container bindery is
-# unhealthy" against a crash-looping container -- measured -- and that message
-# says nothing about why. #509 also recorded the opposite outcome on the NAS,
-# the deploy reporting changed=0 and the play continuing past a container in
-# `Restarting`; the include below runs on both paths for that reason.
+# The rescue hands Compose's uninformative failure to roles/container_health,
+# which explains it from Docker's container state or re-raises it (#509).
 - name: Deploy Bindery, catching a container that runs but never serves
   block:
     - name: Deploy Bindery
@@ -78,24 +60,15 @@
         wait_timeout: "{{ platform_compose_wait_timeout }}"
       register: bindery_deploy
   rescue:
-    # First, and before anything else can rebind it: ansible_failed_result
-    # belongs to whichever rescue is running.
+    # First: ansible_failed_result belongs to whichever rescue is running.
     - name: Record the failed Bindery deployment
       ansible.builtin.set_fact:
         bindery_deploy_failure_message: >-
           {{ ansible_failed_result.msg
              | default('the Bindery deployment failed and reported no message') }}
 
-# Immediately after the deployment and before everything that follows it. A
-# container in `Restarting` still appears in `docker container ls --quiet`, so
-# the CPU verification below would sail straight past one and the readiness probe
-# further down would fail on a timeout that names nothing.
-#
-# This pass detects, prints the evidence and publishes
-# container_health_stuck_services WITHOUT refusing, because the recreate below
-# has to happen before the verdict. It still re-raises a deployment failure that
-# no stuck container explains: a Compose file that does not parse is not
-# something a recreate is allowed to absorb.
+# Detects without refusing, so the recreate below happens before the verdict; a
+# deployment failure no stuck container explains is still re-raised.
 - name: Detect a Bindery container that runs but never serves
   ansible.builtin.include_role:
     name: container_health
@@ -106,31 +79,10 @@
       {{ bindery_deploy_failure_message | default('') }}
     container_health_refuse: false
 
-# EXACTLY ONE, and only of the services Docker says are stuck. This is the
-# repair a human performed by hand on 2026-09-08 (`docker rm -f bindery`, then a
-# converge), and it is here because CLAUDE.md's standing rule is that a broken
-# host is repaired by merging to `main` rather than by a hand on the NAS -- a
-# converge that can only refuse is a converge that cannot heal it.
-#
-# FORCED, because `up -d` will not do it: measured against a throwaway project
-# on Docker 29.7.2, `up -d` against an unchanged specification keeps the same
-# container id and recreates nothing, `up -d --wait` waits and still recreates
-# nothing, and `recreate: always` -- which the module renders as
-# --force-recreate -- replaced the container. `dependencies: false` renders as
-# --no-deps, which matters the moment a stack has more than one service; Bindery
-# has one, and naming exactly the stuck services rather than the project keeps
-# that true if it ever gains another.
-#
-# CONDITIONAL, and that condition is the whole idempotence argument. An
-# unconditional force-recreate would churn this stack on every five-minute tick.
-# The list is empty on a converged host and empty under --check, so this task is
-# skipped on every run that has nothing to repair.
-#
-# BOUNDED AT ONE PER RUN by being a single task rather than a loop, and the
-# re-check below is what keeps that honest: a container that comes back stuck
-# fails the converge naming the retry it already spent, so a container looping
-# for a reason a recreate cannot fix never goes green and never becomes an
-# invisible retry loop.
+# Force-recreates only the services Docker reports stuck, at most once per run,
+# so a broken host heals by merge instead of by hand. `up -d` would not recreate
+# an unchanged container; the empty list on a converged host keeps this
+# idempotent.
 - name: Recreate a Bindery container that runs but never serves
   block:
     - name: Force-recreate the stuck Bindery services
@@ -148,19 +100,15 @@
       when: container_health_stuck_services | default([]) | length > 0
       register: bindery_wedged_recreate
   rescue:
-    # Carried rather than re-raised here. `--wait` fails a container that came
-    # back unhealthy, which the re-check below diagnoses far better than Compose
-    # can; a recreate that failed for any OTHER reason left no stuck container
-    # behind, and the second pass re-raises this message unchanged for exactly
-    # that case.
+    # Carried, not re-raised: the re-check below diagnoses an unhealthy
+    # container, and re-raises this message when no stuck container explains it.
     - name: Record the Bindery recreate that did not recover the service
       ansible.builtin.set_fact:
         bindery_recreate_failure_message: >-
           The force-recreate reported: {{ ansible_failed_result.msg
           | default('no message') }}
 
-# Whether a recreate was actually spent, recorded before the second pass
-# overwrites the list it was decided from.
+# Recorded before the second pass overwrites the list it was decided from.
 - name: Record whether a Bindery recreate was spent
   ansible.builtin.set_fact:
     bindery_recreate_spent: >-
@@ -177,9 +125,6 @@
       health, so check mode cannot reach that path and recreates nothing.
   when: ansible_check_mode
 
-# The verdict. Nothing stuck here means the recreate worked, or that there was
-# never anything to repair; either way the run continues. Anything still stuck
-# fails, and says the retry has already been spent.
 - name: Refuse a Bindery container that stayed wedged after its recreate
   ansible.builtin.include_role:
     name: container_health
@@ -196,11 +141,8 @@
     tasks_from: report
   vars:
     deployment_report_service: Bindery
-    # Both Compose results, because a force-recreate that repaired a wedged
-    # container changed the deployment as surely as the deploy above did, and a
-    # report gated on the deploy alone would say nothing on the one converge an
-    # operator most wants to hear about. It is registered even when skipped, and
-    # `default({})` covers the paths that never reach it at all.
+    # Both Compose results: a repairing force-recreate is a change worth
+    # reporting.
     deployment_report_changed: >-
       {{ (bindery_deploy is changed)
          or ((bindery_wedged_recreate | default({})) is changed) }}
@@ -212,9 +154,6 @@
     container_cpu_service_name: bindery
     container_cpu_project_name: "{{ bindery_compose_project_name }}"
 
-# /api/v1/health is the one route outside the authentication middleware that
-# says anything about readiness, and it is what the image's own distroless
-# `/bindery healthcheck` probe requests too.
 - name: Wait for Bindery application readiness
   ansible.builtin.uri:
     url: "{{ bindery_api }}/health"
@@ -230,11 +169,8 @@
   changed_when: false
   check_mode: false
 
-# Credential-free, and the only read that reports which authentication mode the
-# deployed database holds. `local-only` grants administrator to every peer on a
-# private network with no credential at all, and an administrator may read the
-# API key in clear, so that mode would hand the LAN the key that authorizes
-# every route which renames or deletes a book file.
+# `local-only` grants administrator to every private-network peer, and an
+# administrator may read the API key in clear.
 - name: Read the Bindery authentication posture
   ansible.builtin.uri:
     url: "{{ bindery_api }}/auth/status"
@@ -257,12 +193,8 @@
 - name: Resolve the Bindery API key
   ansible.builtin.include_tasks: resolve_api_key.yml
 
-# The first-run setup route is anonymous until any user exists and answers 409
-# forever afterwards, so the window between the container starting and the
-# platform declaring its administrator is a permanent land grab for whoever
-# reaches port {{ bindery_port }} first. It is closed inside this same
-# convergence: the seeded key above is what authorizes the declaration below.
-# Redacted: the request carries the application API key.
+# The anonymous first-run setup route stays open until a user exists, so the
+# seeded key above closes that window within this same convergence.
 - name: Read the declared Bindery users
   ansible.builtin.uri:
     url: "{{ bindery_api }}/auth/users"
@@ -276,9 +208,7 @@
   check_mode: false
   no_log: true
 
-# Nothing in Bindery is create-if-absent: a duplicate user is a 500, so the
-# write below only runs when the read above proved the identity is missing.
-# Redacted: the condition names the vault-authored administrator username.
+# Nothing in Bindery is create-if-absent: a duplicate user is a 500.
 - name: Resolve whether Bindery holds the vault administrator
   ansible.builtin.set_fact:
     bindery_administrator_present: >-
@@ -297,7 +227,6 @@
     - ansible_check_mode
     - not bindery_administrator_present | bool
 
-# Redacted: this request is where the administrator identity enters the target.
 - name: Declare the vault-authored Bindery administrator
   ansible.builtin.uri:
     url: "{{ bindery_api }}/auth/users"
@@ -316,7 +245,6 @@
   changed_when: true
   no_log: true
 
-# Redacted: the request carries the application API key.
 - name: Read the declared Bindery destination roots
   ansible.builtin.uri:
     url: "{{ bindery_api }}/rootfolder"
@@ -330,11 +258,8 @@
   check_mode: false
   no_log: true
 
-# A duplicate root folder is a 500 as well, and creating one os.Stats the path
-# inside the container first, which is why host_prep's directories and the bind
-# mounts have to exist before this point. Both roots are required: an audiobook
-# root that silently fell back to the ebook root is the single-library collapse
-# the design forbids, and it is invisible in every other reading.
+# A duplicate root folder is a 500, and creation stats the path inside the
+# container, so host_prep's directories and the bind mounts must already exist.
 - name: Resolve the missing Bindery destination roots
   ansible.builtin.set_fact:
     bindery_missing_roots: >-
@@ -350,7 +275,6 @@
     - ansible_check_mode
     - bindery_missing_roots | length > 0
 
-# Redacted: the request carries the application API key.
 - name: Declare the Bindery destination roots
   ansible.builtin.uri:
     url: "{{ bindery_api }}/rootfolder"
@@ -371,13 +295,6 @@
 - name: Reconcile the Bindery author destinations
   ansible.builtin.include_tasks: reconcile_authors.yml
 
-# Two settings are mandatory rather than optional. The auto-grab kill switch
-# fails open — a missing row, a read error and an unattached repository all read
-# as enabled — so unattended grabbing is only actually off once the row exists
-# and says so. Telemetry is on by default with a daily ping; the environment
-# switch in the Compose definition stops the first one, and this row is what
-# survives a future environment edit.
-# Redacted: the request carries the application API key.
 - name: Read the declared Bindery settings
   ansible.builtin.uri:
     url: "{{ bindery_api }}/setting"
@@ -408,7 +325,6 @@
     - ansible_check_mode
     - bindery_settings_to_write | length > 0
 
-# Redacted: the request carries the application API key.
 - name: Reconcile the declared Bindery settings
   ansible.builtin.uri:
     url: "{{ bindery_api }}/setting/{{ item.key }}"
@@ -439,10 +355,8 @@
       Prowlarr and SABnzbd are stopped.
   when: not media_usenet_enabled | bool
 
-# Unconditional, unlike the Usenet pair above: site.yml converges
-# Audiobookshelf before Bindery on every host, and the integration needs no
-# transport at all -- it is the handoff from Bindery's own audiobook library to
-# the reader that serves it.
+# Unconditional: site.yml converges Audiobookshelf first and the handoff needs
+# no transport.
 - name: Reconcile the Bindery Audiobookshelf integration
   ansible.builtin.include_tasks: reconcile_audiobookshelf.yml
 
@@ -468,10 +382,8 @@
   changed_when: false
   check_mode: false
 
-# The refusal probe is a credential-free read of a protected route, never a
-# deliberately wrong password: the login limiter records five failures per
-# fifteen minutes per IP and then answers 429 to the correct password too, so a
-# wrong-guess probe would make the next verification lie about the identity.
+# Never probe with a wrong password: the limiter answers 429 to the correct one
+# after five failures per fifteen minutes.
 - name: Verify Bindery refuses an unauthenticated caller
   tags: [platform_verify_bindery]
   ansible.builtin.uri:
@@ -484,9 +396,8 @@
   changed_when: false
   check_mode: false
 
-# Exactly one login per verification, and with the password the platform
-# authored, so it succeeds and resets the limiter rather than consuming it.
-# Redacted: the request is the vault-authored administrator identity.
+# One login with the authored password, which resets the limiter rather than
+# consuming it.
 - name: Verify Bindery accepts the vault administrator
   tags: [platform_verify_bindery]
   ansible.builtin.uri:
@@ -520,7 +431,6 @@
   check_mode: false
   no_log: true
 
-# Redacted: the request carries the application API key.
 - name: Verify the Bindery destination root ownership
   tags: [platform_verify_bindery]
   ansible.builtin.uri:
@@ -536,11 +446,8 @@
   check_mode: false
   no_log: true
 
-# The image cannot repair a wrongly owned directory: it is distroless, starts as
-# no one privileged and has no shell to chown with. This read is what turns that
-# into a named failure instead of a permission-denied import weeks later, and it
-# is a far better assertion than a bare 200.
-# Redacted: the request carries the application API key.
+# The distroless image cannot repair a wrongly owned directory, so this read
+# names the failure instead of a permission-denied import later.
 - name: Verify the Bindery configured storage
   tags: [platform_verify_bindery]
   ansible.builtin.uri:
@@ -556,13 +463,8 @@
   check_mode: false
   no_log: true
 
-# The three properties above prove Bindery is deployed and owns its storage.
-# None of them proves it can acquire anything, and #425 is what that gap cost:
-# both indexers had synced, every author held a null destination root, every
-# book sat wanted and unactionable, and this block passed green throughout. The
-# two reads below are the acquisition half.
-#
-# Redacted: the request carries the application API key.
+# The acquisition half: the checks above passed green while nothing could be
+# grabbed (#425).
 - name: Verify the Bindery synced indexers
   tags: [platform_verify_bindery]
   ansible.builtin.uri:
@@ -578,7 +480,6 @@
   check_mode: false
   no_log: true
 
-# Redacted: the request carries the application API key.
 - name: Verify the Bindery author destinations
   tags: [platform_verify_bindery]
   ansible.builtin.uri:
@@ -594,18 +495,8 @@
   check_mode: false
   no_log: true
 
-# The gate is the indexer declaration, not the transport flag, and the
-# difference is the whole property. `media_usenet_enabled` says a Prowlarr
-# instance and a download client can be declared; it says nothing about whether
-# an indexer exists to sync. Every sandbox and every CI lane runs with
-# `media_arr_indexers: []` on purpose -- the integration suites converge the
-# whole acquisition stack against no real indexer -- so Bindery holding none
-# there is the correct state and gating on the transport alone failed the
-# `bindery` lane on a host that was behaving exactly as declared.
-#
-# Where indexers *are* declared, an empty list is a genuine regression: they
-# arrive from Prowlarr's own sync rather than from this platform, so nothing
-# else in the role can see the sync return nothing.
+# Gated on declared indexers, not the transport flag: sandboxes run with none on
+# purpose, and where declared an empty sync is otherwise invisible.
 - name: Require the Bindery acquisition transport
   tags: [platform_verify_bindery]
   ansible.builtin.assert:
@@ -615,12 +506,8 @@
       - >-
         bindery_verify_indexers.json | default([], true)
         | selectattr('enabled') | list | length > 0
-    # The declared count is deliberately not interpolated here.
-    # `media_arr_indexers` is a credential -- each declaration carries the
-    # indexer's own API key -- so naming it in a rendered message obliges the
-    # task to set `no_log`, and a redacted assertion is one that can no longer
-    # say what went wrong. The `when` below may read it because control keys are
-    # not rendered.
+    # Never interpolate media_arr_indexers here: it carries API keys and would
+    # force no_log.
     fail_msg: >-
       Bindery holds no enabled indexer while indexers are declared for
       Prowlarr. They are synced from the declared Prowlarr instance rather than
@@ -631,8 +518,7 @@
     - media_usenet_enabled | bool
     - media_arr_indexers | length > 0
 
-# A null here is unactionable rather than absent: the book still reads
-# `status: wanted` and `monitored: true`, and nothing surfaces the difference.
+# A null root is unactionable yet the book still reads wanted and monitored.
 - name: Require the Bindery author destinations
   tags: [platform_verify_bindery]
   ansible.builtin.assert:
@@ -652,14 +538,8 @@
       Their books stay wanted and monitored and can never be grabbed, because
       there is nowhere to put a release and no rule for which one qualifies.
 
-# The post-import handoff to Audiobookshelf logs its own failures at WARN and
-# swallows them, so a wrong credential or a missing library id is invisible in
-# every other reading: the import still succeeds and the scan simply never
-# happens. These two reads are what make it visible. The probe sends no key of
-# its own, so upstream falls back to the stored one and a 200 proves the
-# credential Bindery is actually holding still authenticates against the running
-# Audiobookshelf.
-# Redacted: the request carries the application API key.
+# The Audiobookshelf handoff swallows its failures at WARN. The probe sends no
+# key, so a 200 proves the credential Bindery stores still authenticates.
 - name: Verify the Bindery Audiobookshelf integration
   tags: [platform_verify_bindery]
   ansible.builtin.uri:
@@ -675,7 +555,6 @@
   check_mode: false
   no_log: true
 
-# Redacted: the request carries the application API key.
 - name: Verify the Bindery Audiobookshelf credential
   tags: [platform_verify_bindery]
   ansible.builtin.uri:
@@ -693,9 +572,8 @@
   check_mode: false
   no_log: true
 
-# Every probe above accepts any status and defers to this assertion, so a
-# drifted credential is diagnosed here by name instead of failing inside a
-# redacted request that can say nothing about which outcome differed.
+# Probes above accept any status so drift is named here, not in a redacted
+# request.
 - name: Require the exact Bindery verification results
   tags: [platform_verify_bindery]
   ansible.builtin.assert:
@@ -714,12 +592,8 @@
       - >-
         (bindery_verify_storage.json.dirs | default([])
          | selectattr('exists') | selectattr('writable') | list | length) == 4
-      # Bindery links a probe file between each library and its staging root and
-      # reports the result. It is the only reading that separates one bind mount
-      # per host share from one per directory: the four paths, their device IDs
-      # and their permissions are identical either way, and an import across the
-      # boundary still succeeds -- by copying every byte. A false here is that
-      # cost, and this is where it surfaces (issue #264).
+      # The only reading that tells one bind mount per share from one per
+      # directory; false means imports copy every byte (#264).
       - bindery_verify_storage.json.hardlinkable | default(false) | bool
       - bindery_verify_abs_config.status | default(0) | int == 200
       - bindery_verify_abs_config.json.featureEnabled | default(false) | bool
@@ -729,9 +603,6 @@
       - bindery_verify_abs_config.json.pathRemap | default('') == bindery_audiobookshelf_path_remap
       - bindery_verify_abs_config.json.libraryIds | default([]) | length == 1
       - bindery_verify_abs_config.json.apiKeyConfigured | default(false) | bool
-      # A stored credential that no longer authenticates reads exactly like a
-      # working one on the row above, and the handoff it breaks says nothing.
-      # This is the only assertion that can tell them apart.
       - bindery_verify_abs_probe.status | default(0) | int == 200
     fail_msg: >-
       Bindery is unreachable, or it no longer enforces authentication, accepts

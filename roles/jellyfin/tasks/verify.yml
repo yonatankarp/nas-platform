@@ -1,27 +1,7 @@
 ---
-# Verification. The eighteen platform_verify_jellyfin tasks: they authenticate
-# independently of the reconciliation token, read the users, the server
-# configuration, the libraries, the scheduled task triggers and the
-# administrator image back, and assert the owned state is exactly what the role
-# declares.
-
-# The one task in this file withheld from the converge, and the only one that
-# needs to be. Every other verification here reads back state this role just
-# reconciled, so failing the play is the right answer; the QSV probe reads a
-# hardware capability nothing in this repository can converge, and jellyfin
-# precedes seerr, immich, paperless_ngx and nextcloud in site.yml, so a fatal
-# probe reached from the converge would strand four stacks on a fault that harms
-# none of them (#535).
-#
-# Both gates are load-bearing. `never` withholds the include from a bare
-# converge; it does not withhold it from `site.yml --tags jellyfin`, because a
-# `never` task runs as soon as any tag it carries is requested explicitly and
-# the role-level `jellyfin` tag is one of them. The ansible_run_tags condition
-# is what closes that, and with it what keeps a fatal probe out of the
-# --check --diff review the platform requires before applying.
-# roles/paperless_ngx/tasks/mail_state.yml pins the same pair for the same
-# reason. The poller runs verify.yml with platform_verify_jellyfin immediately
-# after site.yml, so the detection latency this costs is one play, not one tick.
+# The QSV probe reads hardware nothing here converges, so it is kept out of the
+# converge (#535). Both gates are needed: `never` still runs under
+# `--tags jellyfin`, and the ansible_run_tags condition closes that.
 - name: Prove Jellyfin QSV during exact verification
   tags: [never, platform_verify_jellyfin]
   ansible.builtin.include_tasks:
@@ -156,13 +136,7 @@
   check_mode: false
   no_log: true
 
-# Every condition reads the registered result directly rather than a vars-held
-# selection of it, so the task satisfies the verification convention on its own
-# terms: the declaration is compared against what the server reports, and a
-# declared key the server no longer offers fails here as well as in
-# scheduled_tasks.yml. Comparing the whole trigger list, not just the interval,
-# is what makes a trigger nobody declared -- a StartupTrigger added by hand in
-# the dashboard -- drift rather than an addition.
+# Comparing the whole trigger list makes a hand-added trigger drift, not an addition.
 - name: Verify the exact Jellyfin scheduled task triggers
   tags: [platform_verify_jellyfin]
   ansible.builtin.assert:

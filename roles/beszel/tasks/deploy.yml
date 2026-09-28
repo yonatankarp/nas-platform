@@ -1,22 +1,7 @@
 ---
-# Deployment. Revalidates the release paths this role touches, derives the
-# mounted state root, refuses a telemetry capability that is not the one this
-# platform selected, installs the vault keypair before the hub can generate its
-# own, renders the environment, removes the agent this host did not select,
-# brings the project up, reports it, checks the applied CPU policy, and waits
-# for the hub's own health endpoint.
-
-# Beszel appears to force a read-back: the hub generates a keypair on first start
-# and its documentation says to copy the public key out of the Add System dialog.
-# It does not. The keypair is /beszel_data/id_ed25519, the advertised public key is
-# exactly `ssh-keygen -y` of that file, and a keypair placed there before first
-# start is used rather than regenerated. Authoring it in vault therefore removes
-# the read-back, the second deploy pass it required, and the least idempotent step
-# in the design.
-#
-# Read-only lookups below carry check_mode: false. uri is skipped under --check,
-# which would leave their registers without a status or json key and break every
-# conditional that follows. They change nothing, so running them is safe.
+# A keypair placed at /beszel_data/id_ed25519 before first start is adopted
+# rather than regenerated, so vault authors it and no read-back is needed.
+# Read-only uri lookups carry check_mode: false, or --check leaves registers empty.
 - name: Revalidate deployment paths before Beszel runtime use
   ansible.builtin.include_role:
     name: deployment_bundle
@@ -75,11 +60,8 @@
          beszel_effective_required_telemetry_categories | sort == ['containers', 'core', 'disk'] and
          not (beszel_effective_require_gpu_telemetry | bool) and
          platform_beszel_agent_kind == 'portable')
-      # The renderD128 literal in the Intel branch below is deliberate. NAS
-      # hosts are pinned to that device by design, and this disjunct only
-      # applies on a NAS with a real Intel GPU, so it never constrains a Mac
-      # host where platform_render_device_path is /dev/dri/card0 and the agent
-      # kind is portable.
+      # The renderD128 literal is deliberate: NAS hosts are pinned to it, and this
+      # disjunct applies only on a NAS with a real Intel GPU.
       - >-
         platform_kind != 'nas' or
         ((beszel_integration_test_capability | bool) and
@@ -97,10 +79,8 @@
       Beszel telemetry capability does not match platform {{ platform_kind }}.
       Required categories: {{ beszel_effective_required_telemetry_categories | join(',') }}.
 
-# Compose cannot take a list from one variable, so the agent has a fixed number of
-# device slots and env.j2 fills the unused ones with /dev/null. This is what stops
-# a disk added to inventory without a slot -- or a slot left over after a disk was
-# removed -- from being dropped silently instead of monitored.
+# Compose cannot take a list, so the agent has fixed device slots (unused ones
+# get /dev/null); this stops a disk without a slot being dropped silently.
 - name: Require one Compose S.M.A.R.T. slot for every declared disk
   ansible.builtin.assert:
     that:
@@ -125,16 +105,9 @@
     mode: "0600"
   no_log: true
 
-# A declared disk can leave the host -- a bay emptied, a disk dead or renamed --
-# and a devices: entry naming an absent node stops the agent container starting.
-# Failing here would block every deploy and take the agent dark, so an absent
-# node gets /dev/null in its slot and a warning instead, and the run goes on.
-# The count assertion above is about the lists' shape and stays strict.
-#
-# The gap this leaves: a reboot that loses a node without a deploy leaves the
-# rendered .env naming it, and the agent will not start until the next converge
-# re-renders the slot. Beszel's Status alert pages on the agent going down, so
-# that window is reported rather than silent.
+# A devices: entry naming an absent node stops the agent starting, so an absent
+# node gets /dev/null and a warning instead of blocking every deploy. A reboot
+# losing a node leaves the agent down until the next converge; Status alert pages.
 - name: Look for each declared S.M.A.R.T. device node on this host
   ansible.builtin.stat:
     path: "{{ item.1 }}"

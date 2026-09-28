@@ -1,17 +1,8 @@
 #!/usr/bin/env python3
 """Behaviour of the Configarr comparison, invariant and repair filters.
 
-Seven of the eight Configarr filters were reachable only by spawning
-`ansible-playbook`: `tests/acquisition_configarr_field_coverage_test.rb` calls
-the owned projection, and the rest were exercised only as a side effect of a
-reconciliation fixture run. Between them they are the largest functions in the
-repository, and they are pure, so their contracts are stated here directly.
-
-The inputs are the platform's own declaration — `roles/arr/files/configarr/` as
-the plays pass it — and `tests/fixtures/acquisition/configarr_results.json`, a
-converged Radarr and Sonarr readback captured from the reconciliation fixture
-and reduced to the two keys these filters read. Converged is the useful starting
-point: every case below breaks one thing and names what must be noticed.
+Inputs are roles/arr/files/configarr/ and the converged readback in
+tests/fixtures/acquisition/configarr_results.json; each case breaks one thing.
 """
 
 from __future__ import annotations
@@ -173,9 +164,6 @@ def collect_failures():
             "a projection missing a service must be refused")
 
     # --- acquisition_configarr_missing_custom_format_bodies ---------------
-    # The filter takes the materialized desired projection the play already
-    # holds, so each case here materializes it from the same current projection
-    # the filter is then handed.
     check(failures,
           plugin.acquisition_configarr_missing_custom_format_bodies(
               desired, projection) == {},
@@ -339,12 +327,7 @@ def collect_failures():
 
 
 def _sorted_profile(projection, order):
-    """Return the projection with Radarr's items in one of Configarr's two sorts.
-
-    The API orders a profile worst-first, so Configarr's "top" — the declared
-    qualities preferred over everything else — is the disabled block first in
-    the array, and "bottom" is the reverse.
-    """
+    """Sort the fixture's Radarr profile top or bottom (the API orders worst-first)."""
     sorted_projection = copy.deepcopy(projection)
     items = sorted_projection["radarr"]["quality_profile"]["items"]
     enabled = [item for item in items if item["allowed"]]

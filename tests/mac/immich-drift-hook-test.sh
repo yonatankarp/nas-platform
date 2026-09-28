@@ -1,29 +1,7 @@
 #!/bin/sh
-# Regression proof for tests/mac/hooks/drift/70-immich.sh.
-#
-# The hook exists to prove that a verification-only run refuses installed Immich
-# drift. What it can get wrong -- and did, until #428 -- is *which* text it reads
-# back to decide that. Ansible prints "TASK [<name>]" whenever a task merely
-# runs, before anything is known about the outcome, so an anchor on the task name
-# is satisfied by the guard executing and passing while the run failed somewhere
-# else. That is exactly reachable here: tests/contracts/immich-runtime.rb's drift
-# mode installs a system-configuration drift alongside the managed-user
-# preference drift, and "Require the managed Immich settings" runs strictly after
-# "Verify exact Immich managed user preferences", which roles/immich/tasks/main.yml
-# reaches through its managed-user verify include and roles/managed_users (#647).
-# A preferences guard that stopped refusing would still fail the run at the
-# settings guard, one task later, with the task-name anchor none the wiser.
-#
-# The guard-passed case below is that plant, as a capture. It is the discriminator:
-# the hook must refuse it. The other two cases pin the properties the hook already
-# had, so a future rewrite of the anchor cannot trade them away.
-#
-# The captures are ansible-core 2.21.3's own output, reproduced rather than
-# invented: the role-qualified TASK banner, the "[ERROR]: Task failed: Action
-# failed: <fail_msg>" line, and -- for the preferences guard, which carries
-# no_log: true -- the censored item line that accompanies it. That last pair is
-# the reason this hook can anchor on a diagnostic at all, and is why it is
-# written out here rather than summarized.
+# Regression proof for drift/70-immich.sh: the hook must anchor on the guard's
+# fail_msg, not the task banner, which prints even when the guard passes (#428).
+# Captures reproduce ansible-core's own output, including the no_log censored line.
 set -eu
 set +x
 umask 077
@@ -59,10 +37,8 @@ chmod 0755 "$fixture_root/tests/mac/hooks/drift/70-immich.sh"
 : > "$fixture_root/verify.yml"
 : > "$fixture_root/inventory/mac.yml"
 
-# The contract runner is stubbed: this test is about what the hook reads back
-# from the verification run, not about what the Immich contract then does. Both
-# drift phases are logged so a hook that stopped installing the fixture, or
-# stopped confirming it landed, is still caught here.
+# The contract runner is stubbed; both drift phases are logged so a hook that stops
+# installing or confirming the fixture is still caught.
 cat > "$fixture_root/tests/mac/run-immich-contract.sh" <<'STUB'
 #!/bin/sh
 set -eu
@@ -96,9 +72,7 @@ case ${PLATFORM_HOOK_SCENARIO:?} in
     exit 0
     ;;
   guard-passed)
-    # The plant. The preferences guard ran and passed -- its banner is printed
-    # either way -- and the run failed one task later on the settings drift the
-    # same fixture installs.
+    # The plant: the preferences guard passed and the run failed one task later.
     printf '%s\n' 'TASK [managed_users : Verify exact Immich managed user preferences] *************'
     printf '%s\n' 'TASK [immich : Require the managed Immich settings] *****************************'
     printf '%s\n' '[ERROR]: Task failed: Action failed: The managed Immich settings are absent or drifted.'
@@ -150,16 +124,12 @@ grep -qx SECRET_SCAN "$refusal_root/events" ||
 find "$refusal_root/reports" -mindepth 1 -maxdepth 1 -print -quit | grep -q . &&
   fail 'Immich drift hook retained its raw verification output'
 
-# The discriminator (#428). The preferences guard ran and passed; the run failed
-# at the settings guard one task later. Every task name the hook could anchor on
-# is present, and the guard the hook exists to prove refused nothing.
+# The discriminator (#428).
 guard_status=0
 run_hook guard-passed >/dev/null 2>&1 || guard_status=$?
 [ "$guard_status" -ne 0 ] ||
   fail 'Immich drift hook accepted a run in which its guard ran and passed'
 
-# The property the hook already had: a verification run that accepts the drift
-# outright is a failure, not a pass.
 accepted_status=0
 run_hook accepted >/dev/null 2>&1 || accepted_status=$?
 [ "$accepted_status" -ne 0 ] ||

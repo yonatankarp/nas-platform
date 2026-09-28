@@ -1,12 +1,4 @@
-"""Report the vault Paperless administrator's identity as JSON on stdout.
-
-Run inside the Paperless webserver container by `manage.py shell -c`. The
-username arrives in MANAGED_USERNAME so no vault value reaches the command line.
-
-Emits the match count alongside the flags so the caller can tell "absent" from
-"present but wrong" from "duplicated" without a second query, and so a duplicate
-username fails the play rather than silently repairing whichever row came first.
-"""
+"""Report the vault Paperless administrator's identity and match count as JSON."""
 
 import json
 import os

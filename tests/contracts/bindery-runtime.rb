@@ -1,9 +1,6 @@
 #!/usr/bin/env ruby
-# The runtime half of the Bindery service contract: what can only be decided
-# against a deployed Bindery, its SQLite database and the encrypted vault.
-#
-# usage: bindery-runtime.rb
-#
+# Runtime half of the Bindery contract: deployed Bindery, its SQLite database
+# and the encrypted vault. usage: bindery-runtime.rb
 require "json"
 require "net/http"
 require "open3"
@@ -14,9 +11,7 @@ READY_TIMEOUT_SECONDS = 120
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_BINDERY_PORT'), 10)}")
 CONTAINER = ENV.fetch("PLATFORM_BINDERY_CONTAINER")
 USENET = ENV.fetch("PLATFORM_BINDERY_USENET") == "true"
-# Bindery's whole state is one SQLite database beneath the declared config root.
-# It is what has to survive a container recreation, and its absence is what a
-# wrongly owned or wrongly mounted config bind looks like.
+# The whole state; absent means a wrongly owned or mounted config bind.
 DATABASE = File.join(ENV.fetch("PLATFORM_DOCKER_ROOT"), "bindery", "config", "bindery.db")
 LIBRARY_ROOTS = ["/data/books/Ebooks", "/data/media/Audiobooks"].freeze
 
@@ -69,26 +64,20 @@ state, _error, status = Open3.capture3(
   "docker", "inspect", CONTAINER, "--format", "{{.State.Health.Status}}"
 )
 fail_contract("the Bindery container could not be inspected") unless status.success?
-# The image is distroless and has no shell, so this is also the proof that the
-# probe is the binary's own subcommand rather than a CMD-SHELL that can never run.
+# Distroless with no shell, so healthy also proves the probe is the binary's own.
 fail_contract("the Bindery container is not healthy") unless state.strip == "healthy"
 
-# The first-run setup route is anonymous until any user exists and answers 409
-# to everyone afterwards. A 200 here would mean the platform had left the
-# administrator account open to whoever reached the port first, permanently.
+# Setup is anonymous until a user exists, then 409; 200 means the admin was left open.
 setup = post("/api/v1/auth/setup",
              "username" => "contract-should-never-win", "password" => "contract-password")
 fail_contract("Bindery left its first-run setup open") unless setup.code == "409"
 
 auth_status = parsed(get("/api/v1/auth/status"), "auth status")
-# local-only grants administrator to every private-network peer with no
-# credential, and an administrator may read the API key in clear.
+# local-only grants admin to every private-network peer without a credential.
 fail_contract("Bindery does not enforce authentication") unless auth_status["mode"] == "enabled"
 fail_contract("Bindery still reports first-run setup as required") if auth_status["setupRequired"]
 
-# The refusal probe is a credential-free read of a protected route. It is never
-# a wrong password: the login limiter records five failures per fifteen minutes
-# per IP and then answers 429 to the correct password too.
+# Never a wrong password: the login limiter would then 429 the correct one too.
 fail_contract("Bindery served a protected route to an unauthenticated caller") unless
   get("/api/v1/rootfolder").code == "401"
 fail_contract("Bindery served its OPDS catalogue to an unauthenticated caller") unless
@@ -112,8 +101,7 @@ fail_contract("Bindery refused the vault-authored administrator") unless login.c
 cookie = login.get_fields("set-cookie").to_a.map { |value| value.split(";", 2).first }.join("; ")
 fail_contract("Bindery issued no session to the vault administrator") if cookie.empty?
 
-# The seed is honoured only while the stored key is absent, so a deployment that
-# converged is holding exactly the key the vault authored.
+# The seed applies only while no key is stored.
 config = parsed(get("/api/v1/auth/config", "Cookie" => cookie), "auth config")
 fail_contract("Bindery is not holding the vault-authored API key") unless
   config["apiKey"] == seeded_key
@@ -127,15 +115,11 @@ fail_contract("Bindery does not hold exactly one vault-authored administrator") 
 roots = get("/api/v1/rootfolder", key_headers)
 fail_contract("Bindery refused to list its destination roots") unless roots.code == "200"
 declared = parsed(roots, "root folders").map { |entry| entry.fetch("path") }
-# Two roots, not one: an audiobook root that fell back to the ebook root is the
-# single-library collapse the design forbids, and it looks identical everywhere
-# else.
+# Two roots: a fallback to one is the forbidden single-library collapse.
 fail_contract("Bindery does not own exactly the declared ebook and audiobook roots") unless
   declared.sort == LIBRARY_ROOTS.sort
 
-# The image is distroless, starts as no one privileged and has no shell, so it
-# cannot repair a wrongly owned directory. This is where that becomes a named
-# failure rather than a permission-denied import weeks later.
+# Distroless and unprivileged, it cannot repair ownership; fail here by name.
 storage = parsed(get("/api/v1/system/storage", key_headers), "storage")
 %w[download library audiobook audiobook-download].each do |name|
   entry = storage.fetch("dirs", []).find { |dir| dir["name"] == name }
@@ -143,11 +127,8 @@ storage = parsed(get("/api/v1/system/storage", key_headers), "storage")
   fail_contract("Bindery cannot write its #{name} directory at #{entry['path']}") unless
     entry["exists"] && entry["writable"]
 end
-# Bindery links a probe file from each staging root into the library it feeds and
-# reports whether it worked. rename(2) and link(2) refuse to cross a mount
-# boundary even when both sides are one filesystem, so mounting a library and its
-# staging directory separately makes every import a full byte copy while every
-# other reading above stays identical. The reason string is the diagnosis.
+# link(2) refuses to cross a mount boundary, so separate mounts turn every import
+# into a full copy; the reason string is the diagnosis.
 unless storage["hardlinkable"] == true
   reason = storage.fetch("hardlinkReason", "no reason reported")
   fail_contract("Bindery cannot hardlink from its staging roots into its libraries: #{reason}")
@@ -155,17 +136,14 @@ end
 
 settings = parsed(get("/api/v1/setting", key_headers), "settings")
    .to_h { |entry| [entry.fetch("key"), entry.fetch("value")] }
-# Auto-grab is on by policy. The row is asserted anyway because the platform
-# writes it to revert a manual disable, which is the only thing a `true` row can
-# do -- an absent row already reads as enabled.
+# Written to revert a manual disable; an absent row already reads as enabled.
 { "autoGrab.enabled" => "true", "telemetry.enabled" => "false" }.each do |key, value|
   fail_contract("Bindery does not pin #{key} to #{value}") unless settings[key] == value
 end
 
 instances = parsed(get("/api/v1/prowlarr", key_headers), "prowlarr instances")
 clients = parsed(get("/api/v1/downloadclient", key_headers), "download clients")
-# A repeated create answers 201 and adds a second row rather than failing, so
-# the count is the property that a converged reconciliation has to hold.
+# A repeated create adds a second row rather than failing.
 fail_contract("Bindery holds duplicate Prowlarr instances") if instances.length > 1
 fail_contract("Bindery holds duplicate download clients") if clients.length > 1
 
@@ -174,8 +152,7 @@ if USENET
   fail_contract("Bindery declared no Prowlarr instance") if instance.nil?
   fail_contract("Bindery does not reach Prowlarr by its control-network alias") unless
     instance["url"] == "http://prowlarr:9696"
-  # Credentials are write-only in every response, so a stored key can be proved
-  # present and never proved correct.
+  # Credentials are write-only: presence is provable, correctness is not.
   fail_contract("Bindery stored no Prowlarr credential") unless instance["apiKeyConfigured"]
   fail_contract("Bindery disabled its Prowlarr instance") unless instance["enabled"]
 
@@ -184,7 +161,6 @@ if USENET
   fail_contract("Bindery does not reach SABnzbd by its control-network alias") unless
     client["type"] == "sabnzbd" && client["host"] == "sabnzbd" && client["port"] == 8080
   fail_contract("Bindery stored no SABnzbd credential") unless client["apiKeyConfigured"]
-  # One client serves both libraries only because the two categories differ.
   fail_contract("Bindery collapsed its ebook and audiobook download categories") unless
     client["category"] == "ebooks" && client["categoryAudiobook"] == "audiobooks"
   fail_contract("Bindery disabled its download client") unless client["enabled"]

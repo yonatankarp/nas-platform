@@ -1,24 +1,9 @@
 """Prowlarr and Servarr relationship bodies and projections.
 
-Prowlarr owns two relationships this platform declares — the applications it
-syncs into and the indexers it syncs out of — and each Servarr instance owns one
-SABnzbd download client. All three follow the same shape: a `body` filter builds
-what is sent, a `masked_fields` filter names the secrets the API refuses to read
-back, and a `projection` filter reduces a readback to exactly the fields this
-platform owns so drift in them is comparable and drift outside them is ignored.
-
-The masking pass is why the three are separate filters rather than one. A
-Servarr API returns a stored secret as a run of asterisks, which is neither the
-value nor absent, so a projection that included it would report drift on every
-run. `acquisition_merge_owned_fields` is the write-side counterpart: it replaces
-the fields this platform declares and preserves every field it does not.
-
-The three projections themselves are one function, `_owned_projection`, driven
-by a `_Relationship` descriptor each: they differ in their attribute and field
-lists, in one label, and in whether their owned fields are a fixed list or
-whatever the declaration names. Held apart they were ninety lines of the same
-masking shape written three times, which is one place for a mask to stop being
-honoured without the other two showing it.
+Each relationship has a `body` filter (what is sent), a `masked_fields` filter
+(secrets the API returns as asterisks) and a `projection` filter (the owned
+fields only, so drift outside them is ignored). All projections share
+`_owned_projection`, driven by a `_Relationship` descriptor.
 """
 
 from __future__ import annotations
@@ -37,9 +22,6 @@ from ansible.errors import AnsibleFilterError
 _MODULE_UTILS = Path(__file__).resolve().parents[1] / "module_utils"
 _SCHEMA = SimpleNamespace(**runpy.run_path(str(_MODULE_UTILS / "acquisition_schema.py")))
 
-# The shared primitives, under the names the bodies below use. Only these are
-# shared: every rule about what a Prowlarr field, a Bazarr setting or a Configarr
-# profile may contain lives in the file that owns that domain.
 MASKED_VALUE = _SCHEMA.MASKED_VALUE
 _mapping = _SCHEMA.mapping
 _fields = _SCHEMA.fields
@@ -69,17 +51,8 @@ def _normalized_like(name: str, value: Any, desired: Any) -> Any:
 class _Relationship(NamedTuple):
     """What this platform owns in one Prowlarr or Servarr relationship.
 
-    `label` names the resource itself in a guard's message and `masked_label`
-    names its masked-field list, because the download client is a "Servarr
-    SABnzbd client" when the resource is malformed and a "Servarr client" when
-    the mask is. `masked` is the relationship's own masking filter, used when a
-    caller did not compute one. `attributes` and `readable_fields` are always
-    projected; `secret_fields` are projected only when the API did not mask
-    them, since a run of asterisks is neither the value nor an absence.
-
-    `declaration_label` is set only by the indexer, whose owned fields are
-    whatever this platform declared rather than a fixed list, so its projection
-    also needs the declaration and its masking filter takes two arguments.
+    `secret_fields` are projected only when unmasked. `declaration_label` is set
+    only by the indexer, whose owned fields are whatever the declaration names.
     """
 
     label: str
@@ -118,9 +91,7 @@ def _owned_projection(
 ) -> dict[str, Any]:
     """Reduce a readback to the fields this platform owns, minus the masked ones.
 
-    The order of the guards below is itself contract: it decides which complaint
-    a caller sees when two of its arguments are malformed at once, and
-    `tests/acquisition_servarr_filter_test.py` pins the wording of each.
+    Guard order is contract: tests/acquisition_servarr_filter_test.py pins it.
     """
     value = _mapping(value, spec.label)
     if spec.declaration_label is not None:
@@ -319,20 +290,11 @@ def acquisition_indexer_body(declaration: Any) -> dict[str, Any]:
         "name": _string(declaration.get("name")),
         "enable": _boolean(declaration.get("enable", True)),
         "priority": _integer(declaration.get("priority", 25)),
-        # Prowlarr validates `AppProfileId` above zero on both create and
-        # update, and answers a body without it with 400 "Invalid request
-        # Validation failed" rather than defaulting it. Omitting it made every
-        # first declaration of an indexer fail at the POST, which nothing
-        # noticed while `media_arr_indexers` was empty on every host. 1 is the
-        # "Standard" sync profile Prowlarr creates itself on first start; a
-        # deployment with more than one may name another.
+        # Prowlarr requires AppProfileId > 0 and does not default it (400);
+        # 1 is the "Standard" profile it creates on first start.
         "appProfileId": _integer(declaration.get("app_profile_id", 1)),
-        # The second property Prowlarr validates and does not default: it
-        # refuses a Usenet indexer with "Redirect must be enabled for Usenet
-        # indexers". This platform declares Usenet indexers only --
-        # media_torrent_enabled is false on every host -- so true is the
-        # default, and a declaration may say otherwise for the day that stops
-        # being true, since the rule is protocol-specific rather than universal.
+        # Prowlarr refuses a Usenet indexer without redirect and does not
+        # default it; only Usenet indexers are declared here.
         "redirect": _boolean(declaration.get("redirect", True)),
         "implementation": implementation,
         "implementationName": _string(

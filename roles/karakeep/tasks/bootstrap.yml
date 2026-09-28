@@ -1,39 +1,10 @@
 ---
-# THE FIRST ACCOUNT IS THE ADMINISTRATOR, AND THIS FILE MAKES SURE IT IS OURS.
-#
-# Measured against ghcr.io/karakeep-app/karakeep:0.33.2, and read in
-# packages/trpc/models/users.ts (role = userCount === 0 ? "admin" : "user"):
-#
-#   * with DISABLE_SIGNUPS=true and an EMPTY database, POST
-#     /api/trpc/users.create answers 403 "Signups are disabled in server
-#     config". There is no environment seeding of an administrator, so the stack
-#     cannot be started closed and bootstrapped afterwards.
-#   * with DISABLE_SIGNUPS=false the first signup returns role "admin", the next
-#     returns role "user", and a repeat of the first email answers 400 "Email is
-#     already taken".
-#   * DISABLE_SIGNUPS is read once at process start. Recreating the application
-#     with the other value took 4 seconds each way.
-#   * GET /api/trpc/config.clientConfig is unauthenticated and reports the
-#     effective auth.disableSignups, so the door can be read without a login.
-#   * nothing unauthenticated distinguishes "no users" from "wrong password": the
-#     credentials callback answers 401 CredentialsSignin to both. That ambiguity
-#     is resolved by counting the rows of Karakeep's `user` table, read-only,
-#     inside the running application container -- see the count below.
-#   * an administrator can create further users with signups closed
-#     (admin.createUser), so the door never has to reopen once this has run.
-#
-# So: the stack is always started closed (tasks/deploy.yml). If the vault
-# administrator cannot sign in AND Karakeep holds no account at all, the
-# application alone is recreated with signups open AND published on 127.0.0.1
-# only -- the play on the host can register, the LAN cannot -- the administrator
-# is registered, and the application is recreated closed on the wildcard again.
-# The close runs in `always`, so a failed signup still shuts the door before the
-# run fails. If the vault administrator cannot sign in and an account already
-# exists, the door is never opened and the run refuses: registering then would
-# only create a second, non-administrator account holding the vault password,
-# which is what an administrator email changed in the vault after deployment
-# used to do on every tick (#551, measured). Seerr's is the precedent for doing
-# this in the same play that starts the container rather than later.
+# The first account is the administrator, and this file makes sure it is ours.
+# Karakeep (0.33.2) grants admin to the first signup and refuses signups with
+# DISABLE_SIGNUPS=true, read at process start. So the stack runs closed; only
+# when the vault admin cannot sign in AND no account exists is the app recreated
+# with signups open on 127.0.0.1 only, the admin registered, and the door closed
+# again in `always`. Over existing accounts the run refuses instead (#551).
 
 - name: Read a Karakeep sign-in token for the bootstrap probe
   ansible.builtin.uri:
@@ -49,11 +20,8 @@
     - karakeep_deployment_enabled | bool
     - karakeep_runtime_env.stat.exists
 
-# Redacted: the request carries the administrator password. A NextAuth
-# credentials sign-in rather than apiKeys.exchange, because exchange writes an API
-# key row on every call -- measured, the second call with the same key name
-# answered 500 -- and this probe runs every five minutes. Sessions are JWTs here,
-# so a sign-in writes nothing.
+# Redacted: carries the password. A credentials sign-in rather than
+# apiKeys.exchange, which writes an API key row per call; JWT sessions write nothing.
 - name: Probe whether the vault Karakeep administrator can sign in
   ansible.builtin.uri:
     url: "{{ karakeep_url }}/api/auth/callback/credentials"
@@ -99,32 +67,11 @@
     - karakeep_runtime_env.stat.exists
     - not ansible_check_mode
 
-# HOW MANY ACCOUNTS KARAKEEP HOLDS, read inside the running application container
-# with the application's own better-sqlite3, opened read-only. Measured against
-# ghcr.io/karakeep-app/karakeep:0.33.2: the image ships no sqlite3 binary; the
-# database is DATA_DIR/db.db, which services/karakeep/compose.yml sets to /data;
-# the accounts are the `user` table of its drizzle schema; a read-only handle is
-# refused a write with SQLITE_READONLY, so it cannot contend with the
-# application's writes; and a read-only handle on a WAL database counted a row
-# that existed only in the -wal file, so a committed account is never missed. It
-# printed 0 on an empty store and 1 after one registration.
-#
-# THIS COUPLES TO KARAKEEP'S TABLE NAME. A release that renames `user` makes the
-# query raise `no such table` and exit non-zero. This task tolerates that
-# (`failed_when: false`) only so the assertion straight after it can refuse by rc
-# AND say which failure it was -- the module refusing before it ran, the
-# container gone, or the query failing -- where a failed_when could print only
-# that an expression was true. A count that did not exit 0 is never read as 0.
-# The assertion after that also refuses anything that is not a non-negative
-# integer, and refuses a count of 0 beside a vault administrator who signs in.
-# The karakeep lane is what proves the coupling still holds on the pin: its first
-# converge reads 0 and registers the administrator, and its second signs in and
-# must read 1.
-#
-# Only when the application answered the probe with 200 or 401, which is what
-# proves the container is up; under --check on a host that never ran Karakeep
-# there is no listener, no container and no exec. Read-only, so it also runs
-# under --check when there is a container to read.
+# Counts rows of Karakeep's `user` table with the app's own better-sqlite3,
+# opened read-only (no sqlite3 binary in the image; WAL rows are seen). This
+# couples to the table name: a rename exits non-zero, tolerated here only so the
+# next assertion can say which failure it was. A failed count is never read as 0;
+# the karakeep lane proves the coupling on the pin.
 - name: Count the accounts Karakeep holds, read-only
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/karakeep"
@@ -149,11 +96,8 @@
     - karakeep_runtime_env.stat.exists
     - (karakeep_bootstrap_probe.status | default(0) | int) in [200, 401]
 
-# The rc default is 1, not 0: a module that refuses before it runs anything sets
-# no rc, and that must refuse too. fail_msg is templated before the assertion is
-# decided (#536), so it renders on the passing path as well and is built only
-# from expressions that cannot fail: every field defaulted, no subscripts. It
-# names no vault value -- the administrator email is deliberately never rendered.
+# rc defaults to 1 so a module refusal fails too. fail_msg renders on the passing
+# path (#536), so it is built only from defaulted fields; it never names the email.
 - name: Require the Karakeep account count to have run to completion
   ansible.builtin.assert:
     that:
@@ -176,8 +120,8 @@
       complete is never treated as 0. It reported:
       {{ (karakeep_account_count_output | select('search', 'Error') | first)
       | default(karakeep_account_count_output | first | default(''), true) | truncate(200) }}
-  # Node prints an exception's source location before its `SqliteError: ...`
-  # line, so the first line naming an Error is preferred over the first line.
+  # Node prints the source location before `SqliteError: ...`, so prefer the
+  # first line naming an Error.
   vars:
     karakeep_account_count_output: >-
       {{ ((karakeep_account_count.stderr | default('', true) | string | trim)
@@ -211,11 +155,8 @@
     - karakeep_runtime_env.stat.exists
     - (karakeep_bootstrap_probe.status | default(0) | int) in [200, 401]
 
-# THE DOOR OPENS ONLY OVER AN EMPTY STORE. A vault administrator who cannot sign
-# in while an account exists is drift, not a first deployment: registering would
-# add a second, non-administrator account holding the vault password and every
-# later converge would fail at verification instead. Refused before anything is
-# rendered or recreated, under --check too, so the review shows it.
+# The door opens only over an empty store: registering beside an existing account
+# would add a non-admin account holding the vault password. Refused under --check too.
 - name: Refuse to open Karakeep signups over existing accounts
   ansible.builtin.assert:
     that:
@@ -273,10 +214,7 @@
         mode: "0600"
       no_log: true
 
-    # The application alone, recreated because its environment changed: chrome
-    # and Meilisearch are untouched and keep running. Not the whole-project
-    # deployment -- that is tasks/deploy.yml, and it is the one
-    # roles/container_health brackets.
+    # The application alone; chrome and Meilisearch keep running.
     - name: Recreate Karakeep with signups open on 127.0.0.1 only
       community.docker.docker_compose_v2:
         project_src: "{{ platform_current_dir }}/services/karakeep"
@@ -305,8 +243,8 @@
       delay: "{{ platform_readiness_delay }}"
       changed_when: false
 
-    # Redacted: the body carries the administrator password. Accepts every status
-    # so the assertion after the close is what fails, with the reason.
+    # Redacted: carries the password. Accepts every status so the assertion after
+    # the close fails with the reason.
     - name: Register the vault Karakeep administrator
       ansible.builtin.uri:
         url: "{{ karakeep_url }}/api/trpc/users.create"
@@ -321,9 +259,8 @@
         status_code: "{{ range(100, 600) | list }}"
         return_content: true
       register: karakeep_bootstrap_signup
-      # A refused connection is status -1, outside the accepted range, and would
-      # fail here with nothing but a redacted result. Tolerated so the assertion
-      # after the close is what fails, naming the status.
+      # A refused connection is status -1; tolerated so the post-close assertion
+      # names it.
       failed_when: false
       changed_when: karakeep_bootstrap_signup.status | default(0) | int == 200
       no_log: true
@@ -367,8 +304,7 @@
       delay: "{{ platform_readiness_delay }}"
       changed_when: false
 
-# After the close, so a refusal never leaves the door open. The signup's own
-# answer is what separates the two states the sign-in probe could not.
+# After the close, so a refusal never leaves the door open.
 - name: Require the bootstrap to have registered the vault Karakeep administrator
   ansible.builtin.assert:
     that:
@@ -453,9 +389,7 @@
     - not ansible_check_mode
     - karakeep_needs_bootstrap | bool
 
-# The window's own audit. The door was open for the seconds between the two
-# recreates, and the registration above only proves the administrator won; this
-# proves nobody else got in behind it.
+# Proves nobody else registered in the seconds the door was open.
 - name: Require the vault administrator to be the only Karakeep account
   ansible.builtin.assert:
     that:

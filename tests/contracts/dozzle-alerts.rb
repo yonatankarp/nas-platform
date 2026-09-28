@@ -1,21 +1,12 @@
 #!/usr/bin/env ruby
-# The alert-definition half of the Dozzle service contract: the four managed
-# rules, the managed dispatcher's URL, authorization header and template, and
-# -- under `static` only -- the proofs that the integration lane and the Mac
-# hooks still exercise them.
-#
-# Takes the mode as its last argument and gates the last third of the file on
-# it, so a live mode checks the definitions without demanding the harness text.
+# Alert-definition half of the Dozzle contract: the four rules and the managed
+# dispatcher; the last third (harness proofs) runs under `static` only.
 defaults = YAML.safe_load_file(ARGV.fetch(0))
 role_tasks = YAML.safe_load_file(ARGV.fetch(1), aliases: false)
 integration = File.read(ARGV.fetch(2))
 mac_drift = File.read(ARGV.fetch(3))
 mac_verify = File.read(ARGV.fetch(4))
-# The label assertions the verification hook makes have been a program beside it
-# since #315, so the hook is read for the inspection it performs and the program
-# for the labels it names. Reading only the hook would leave two positive
-# substring checks that can no longer match, which is the shape #291 removed from
-# this file when the runtime half moved out of it.
+# Since #315 the hook's label assertions are a program beside it; read both.
 mac_verify_labels = File.read(ARGV.fetch(5))
 expected = {
   "OOM" => ['name == "oom"', 300],
@@ -28,25 +19,15 @@ actual = alerts.to_h { |alert| [alert.fetch("name"), [alert.fetch("eventExpressi
 abort "Dozzle contract failed: exact alert definitions differ" unless actual == expected
 abort "Dozzle contract failed: alerts must be enabled event-only rules over all containers" unless
   alerts.all? { |alert| alert.fetch("enabled") == true && alert.fetch("containerExpression") == "true" && alert.fetch("logExpression") == "" }
-# The port is shared inventory (Beszel reaches the same relay), so it is read
-# from the service's group_vars file rather than from the role defaults.
+# Shared inventory (Beszel reaches the same relay), not the role defaults.
 relay_port = YAML.safe_load_file(ARGV.fetch(6)).fetch("dozzle_alert_relay_port", nil)
 abort "Dozzle contract failed: relay listener port is not a single declared TCP port" unless
   relay_port.is_a?(Integer) && relay_port.between?(1, 65535)
 dispatcher = defaults.fetch("dozzle_dispatcher")
-# The URL interpolates the declared port rather than repeating it, so the
-# dispatcher cannot drift away from the port the relay is told to listen on.
 abort "Dozzle contract failed: managed dispatcher must target only the private alert relay" unless
   dispatcher.fetch("url") == "http://alert-relay:{{ dozzle_alert_relay_port }}/alerts"
-# This is the whole of "the role wires the relay's own shared secret": the
-# equality below names the variable, in the header, on the dispatcher the relay
-# posts to. A second check for the same variable anywhere in the defaults file
-# could only ever pass when this one already had.
-#
-# The variable is deliberately the relay's own secret and no other credential.
-# Dozzle persists this header in its own /data volume and serves it back in
-# cleartext over its API, so naming a publish credential here would store a
-# second copy of it at rest in a place the relay never needed it (#172).
+# The relay's own secret and no other credential: Dozzle stores this header in
+# /data and serves it back in cleartext (#172).
 abort "Dozzle contract failed: managed dispatcher authorization differs" unless
   dispatcher.fetch("headers") == {"Authorization" => "Bearer {{ vault_dozzle_alert_relay_token }}"}
 expected_template_fields = {
@@ -61,10 +42,7 @@ expected_template_fields = {
   "timestamp" => '.Event.Timestamp.UTC.Format `2006-01-02T15:04:05.999999999Z07:00`'
 }
 template_source = dispatcher.fetch("template")
-# The relay owns presentation; the dispatcher hands it an event envelope and
-# nothing a notification service would render. These field names are the
-# presentation shape Dozzle was once pointed at directly, and a template that
-# grows one of them back is presenting past the relay.
+# The relay owns presentation; these fields would be presenting past it.
 abort "Dozzle contract failed: managed dispatcher retains a presentation envelope" if
   %w[topic title message priority tags markdown].any? { |field| template_source.include?("'#{field}'") }
 expected_template_fields.each do |field, expression|

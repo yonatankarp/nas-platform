@@ -12,15 +12,8 @@ require_relative "../policy_support"
 include TestScaffold
 
 SCRIPT = File.expand_path("classify_changes.rb", __dir__)
-# THE DEFAULT BRANCH IS NOT ASSUMABLE, and a fixture repository that inherits it
-# is a test that passes on the machine that wrote it. `git init` with no -b takes
-# the caller's own init.defaultBranch: `main` on a development Mac here, `master`
-# on the GitHub runner image. The merge-base case below checked out "main" by
-# name and reported `pathspec 'main' did not match any file(s) known to git` on
-# CI while every local run was green -- and `exception: true` on the first of an
-# `||` pair means the fallback never runs, so writing both names does not help.
-# Every fixture repository in this file therefore names its initial branch, and
-# tests/deployment_summary_test.rb already did this.
+# Every fixture repository names its initial branch: `git init` takes the caller's
+# init.defaultBranch, which is `main` locally and `master` on the runner.
 FIXTURE_BRANCH = "main"
 LANES = %w[
   static docs vault reconciliation foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
@@ -28,69 +21,32 @@ LANES = %w[
   vaultwarden karakeep upgrade idempotence_check
   idempotence_1 idempotence_2 idempotence_3 idempotence_4 idempotence_5 idempotence_6
 ].freeze
-# "Every lane" is two lists rather than one, and which one applies is the whole
-# difference between falling open and `--full`. The five shards decompose the
-# untagged idempotence lane, so a selection carries one form or the other and
-# never both: an unmapped path takes the shards, because a pull request is
-# waiting on them and their wall is the slowest one; `--full` -- the nightly and
-# workflow_dispatch -- keeps the single pass and with it the only proof that the
-# site is idempotent as a whole. Restated here rather than imported for the
-# reason every other list in this file is: importing the constant would make the
-# test agree with the classifier by construction.
+# A fall-open takes the shards, `--full` the single idempotence pass, never both. Lists here are
+# restated rather than imported, so the test cannot agree with the classifier by construction.
 IDEMPOTENCE_LANE = "idempotence_check"
 IDEMPOTENCE_SHARD_LANES = %w[
   idempotence_1 idempotence_2 idempotence_3 idempotence_4 idempotence_5 idempotence_6
 ].freeze
-# The upgrade lane is off in BOTH forms, and it is the only lane that is. It
-# takes a BASE revision as an input and neither `--full` nor a fall-open has one
-# to give it, so turning it on there dispatches a leg that refuses for want of
-# its inputs -- a red nightly saying nothing about the tree. Restated here rather
-# than imported for the same reason as everything else in this file.
+# The upgrade lane is off in both forms: neither has a BASE revision to give it.
 UPGRADE_LANE = "upgrade"
 FULL_LANES = (LANES - IDEMPOTENCE_SHARD_LANES - [UPGRADE_LANE]).freeze
 FALL_OPEN_LANES = (LANES - [IDEMPOTENCE_LANE] - [UPGRADE_LANE]).freeze
 ACQUISITION_LANES = %w[arr downloaders bindery kapowarr pinchflat trailarr seerr].freeze
-# The lanes the media acquisition reconciliation contract reads, and the four
-# files it owns. Both are stated here rather than imported so that widening the
-# classifier's own list is a failure here rather than a silent change of scope.
+# Stated rather than imported, so widening the classifier's scope fails here.
 RECONCILIATION_LANES = %w[arr downloaders].freeze
-# The lane a selected lane cannot prove its subject without. Stated here for the
-# same reason: the downloaders lane converges the Usenet provider undeclared and
-# the bindery lane converges it declared, each asserting one branch of
-# roles/downloaders/tasks/verify.yml, so anything selecting the first has to
-# select the second or a branch is routed to no runtime lane at all. The seerr
-# row is the other shape: the seerr lane is the only one converging arr and
-# Jellyfin together, and it consumes Jellyfin's *converged* state -- its
-# bootstrap POSTs the vault Jellyfin administrator to `/auth/jellyfin` inside
-# the anonymous-takeover window, and its verify reads `/settings/jellyfin` and
-# the managed-user roster -- so the jellyfin lane cannot see what a Jellyfin
-# change broke (#349). The audiobookshelf row is the same shape again: the
-# bindery lane is the only one converging Audiobookshelf and Bindery together,
-# and roles/bindery signs in to Audiobookshelf as the vault administrator, mints
-# itself an API key there and resolves the managed library by name, so the
-# audiobookshelf lane cannot see what an Audiobookshelf change broke. The beszel
-# row is the first shape: only the dozzle lane sends through the webhook
-# roles/beszel stores, hub to relay to recorder, and the beszel lane converges no
-# relay. Widening this in the classifier must fail here.
+# Stated for the same reason; COMPANION_LANES in classify_changes.rb gives each row's why (#349).
 COMPANION_LANES = {
   "beszel" => %w[dozzle],
   "downloaders" => %w[bindery],
   "audiobookshelf" => %w[bindery],
   "jellyfin" => %w[seerr]
 }.freeze
-# The tags every tagged lane carries to converge the shared inert foundation.
-# They are not lane dependencies: host_prep and deployment_bundle already fall
-# open to every lane, pinned above. The cross-lane derivation below skips them for
-# that reason rather than for convenience.
+# Shared-foundation tags every tagged lane carries; they already fall open to every lane, so the
+# cross-lane derivation below skips them.
 SHARED_TAGS = %w[host_prep deployment_bundle].freeze
-# The cross-lane dependencies visible in tests/ci/suites.conf that are
-# deliberately *not* routed, with the reason. #349 asked the question and this is
-# the answer: the arr lane converges and asserts arr's own state and the
-# reconciliation job re-asserts it against a fixture, and the four lanes that
-# read arr do so over its stable HTTP API rather than through a one-shot
-# handshake, so four more acquisition lanes on every arr change buys little. A
-# row here is a decision someone has to re-take, not a gap that can be inherited
-# silently; a row naming a pair the suite table no longer shows fails below.
+# Cross-lane dependencies in suites.conf deliberately not routed (#349): arr's own lane and the
+# reconciliation job assert its state, and its readers use a stable API. A row naming a pair the
+# suite table no longer shows fails below.
 DECLINED_COMPANIONS = [
   %w[arr downloaders],
   %w[arr bindery],
@@ -115,11 +71,7 @@ def selected_lanes(paths, full: false)
   ClassifyChanges.classify(paths, full: full).select { |_lane, selected| selected }.keys
 end
 
-# A selection is returned in LANES order, and a companion lane need not sit
-# beside the lane that pulled it in -- `seerr` precedes `jellyfin`, the lane
-# that pulls it in. Building an expectation by concatenation is how that
-# produces a wrong list rather than a wrong-looking one, so expectations assembled
-# from parts are ordered here instead.
+# Selections come back in LANES order (seerr precedes jellyfin), so assembled expectations are sorted.
 def canonical(lanes)
   lanes.uniq.sort_by { |lane| LANES.index(lane) }
 end
@@ -129,9 +81,7 @@ if defined?(ClassifyChanges)
     ["docs/getting-started.md"] => %w[static docs],
     ["docs/bazarr-providers.md"] => %w[static docs],
     ["docs/media-acquisition-phase1.md"] => %w[static docs],
-    # The regression #190 names: a document no registered check spells out is
-    # still read by the link gate's glob, so it has to reach the job that runs it
-    # instead of reaching no job at all.
+    # #190: a document no check names is still read by the link gate's glob.
     ["docs/superpowers/plans/2026-08-09-docs-only-ci-fast-path.md"] => %w[docs],
     ["docs/no-check-reads-this.md"] => %w[docs],
     ["docs/img/topology.png"] => %w[docs],
@@ -140,10 +90,8 @@ if defined?(ClassifyChanges)
     [".gitignore"] => %w[static],
     ["LICENSE"] => [],
     ["README.md"] => %w[static docs],
-    # The regression #346 names. tests/policy_test.rb reads CLAUDE.md in `static`
-    # and tests/docs_links_test.rb reads it in both jobs, so it routes exactly as
-    # README.md does; before the fix it matched no lane map and was classified
-    # inert, and a change to the lane roster it documents selected nothing at all.
+    # #346: policy_test reads CLAUDE.md in static and docs_links_test in both, so it
+    # routes like README.md.
     ["CLAUDE.md"] => %w[static docs],
     # The evidence #838 moved out of CLAUDE.md keeps the route that text had there.
     ["docs/incident-history.md"] => %w[static docs],
@@ -157,9 +105,7 @@ if defined?(ClassifyChanges)
     ["roles/vaultwarden/tasks/main.yml"] => %w[static vaultwarden idempotence_check],
     ["roles/karakeep/tasks/main.yml"] => %w[static karakeep idempotence_check],
     ["services/dozzle/compose.yml"] => %w[static dozzle idempotence_check],
-    # Plus seerr: the seerr lane is the only one that converges Jellyfin
-    # alongside arr and it signs in to Jellyfin as the vault administrator, so a
-    # Jellyfin change has to reach it.
+    # Plus seerr, which signs in to Jellyfin as the vault administrator.
     ["tests/contracts/jellyfin.sh"] => %w[static seerr jellyfin idempotence_check],
     ["roles/arr/tasks/main.yml"] => %w[static reconciliation arr idempotence_check],
     # Plus bindery: the downloaders lane converges the Usenet provider
@@ -178,22 +124,14 @@ if defined?(ClassifyChanges)
     ["tests/policy_test.rb"] => %w[static],
     ["tests/validate-policy.sh"] => %w[static],
     ["tests/ci/workflow_test.rb"] => %w[static],
-    # The expectation file declares the CPU ceilings the converge checks against
-    # Docker's applied quota, so it selects the lane that converges the stack and
-    # not the policy gate alone. The per-service loop below holds the same claim
-    # for every implemented service rather than for this one sample.
+    # The expectation file declares CPU ceilings the converge checks, so it selects the lane.
     # dozzle is beszel's companion: its beszel-notify mode sends through the hub.
     ["tests/expected/beszel.yml"] => %w[static beszel dozzle idempotence_check],
     ["renovate.json"] => %w[static],
     ["generate-secrets.yml"] => %w[static],
     ["templates/vault-plain.yml.j2"] => %w[static],
-    # tests/integration.sh installs the sandbox vault over this path, so no suite
-    # reads the committed one. Two jobs do: the policy gate asserts it is still
-    # encrypted, which needs no password, and the vault job decrypts it with the
-    # repository secret and runs validate-vault.yml against it -- the play the
-    # poller runs first, and the one #559 failed on every five-minute tick.
-    # Both, not either: a route that dropped `static` here would take the
-    # encryption check off the file it is about.
+    # No suite reads the committed vault; static checks it is encrypted, the vault job decrypts it.
+    # Both, not either: dropping `static` would take the encryption check off the file it is about.
     ["inventory/group_vars/all/vault.yml"] => %w[static vault],
     ["inventory/group_vars/all/vault_arr.yml"] => %w[static vault],
     ["install-production-auto-deploy.yml"] => %w[static],
@@ -202,9 +140,7 @@ if defined?(ClassifyChanges)
     ["scripts/production_auto_deploy.py"] => %w[static],
     ["tests/media_acquisition_foundation_test.rb"] =>
       ["static", "reconciliation", *ACQUISITION_LANES, "idempotence_check"],
-    # One leg of every job, not one leg of every suite (#395). The derivation at
-    # the end of this file is what keeps that claim true as the workflow grows;
-    # this row is what makes a quiet widening or narrowing of it visible.
+    # One leg of every job, not of every suite (#395).
     [".github/workflows/ci.yml"] =>
       %w[static docs vault reconciliation komga idempotence_check],
     # Only that one file is mapped. A second workflow, or anything else under
@@ -241,9 +177,7 @@ if defined?(ClassifyChanges)
           "#{path} must select every acquisition foundation lane")
   end
 
-  # The contract's own files are read by no play and by no integration suite, so
-  # they select the contract and the policy gate that carries them as fixtures --
-  # not the whole repository, which is what they used to fall open to.
+  # The contract's own files select the contract and the policy gate that carries them as fixtures.
   RECONCILIATION_OWNED_PATHS.each do |path|
     expected = %w[static reconciliation]
     check(failures, selected_lanes([path]) == expected,
@@ -311,14 +245,8 @@ if defined?(ClassifyChanges)
         "a Jellyfin change must select the seerr lane, the only one that converges arr and " \
         "Jellyfin together and the only one that signs in to Jellyfin as the vault administrator")
 
-  # The dependency COMPANION_LANES encodes is already written down in
-  # tests/ci/suites.conf: a lane whose tags name another lane converges that
-  # lane's role, so a change to that role can break this lane while the role's own
-  # lane converges nothing that would notice. Deriving the pairs from the suite
-  # table -- rather than pinning the single pair #349 named -- is what makes the
-  # next cross-lane dependency have to be *declared*: routed in COMPANION_LANES,
-  # or declined by name with a reason. A lane added to suites.conf whose tags name
-  # a role fails here on the day it lands.
+  # Derives cross-lane pairs from suites.conf: a lane whose tags name another lane's role must be
+  # routed in COMPANION_LANES or declined by name, from the day it lands.
   cross_lane_pairs = ClassifyChanges::TAGGED_LANES.flat_map do |consumer|
     ClassifyChanges::SERVICE_TAGS.fetch(consumer)
                                  .reject { |tag| SHARED_TAGS.include?(tag) || tag == consumer }
@@ -328,10 +256,8 @@ if defined?(ClassifyChanges)
   routed_pairs, undeclared_pairs = cross_lane_pairs.partition do |producer, consumer|
     COMPANION_LANES.fetch(producer, []).include?(consumer)
   end
-  # A floor rather than non-emptiness: a derivation that stops reading the tags
-  # column examines nothing and reports every dependency routed. The floor is two
-  # rather than today's six deliberately -- retiring a lane is allowed to lower
-  # the count, and DECLINED_COMPANIONS below reports that case by name.
+  # A floor, not non-emptiness: a derivation that stops reading tags reports everything routed.
+  # Two rather than today's count, so retiring a lane may lower it.
   check(failures, cross_lane_pairs.length >= 2,
         "the suite table named #{cross_lane_pairs.length} cross-lane dependencies, expected at " \
         "least two: the derivation has stopped reading the tags column")
@@ -353,10 +279,8 @@ if defined?(ClassifyChanges)
         "classify must return every lane in canonical order")
   check(failures, selected_lanes([], full: true) == FULL_LANES,
         "full events must select every lane in the unsharded idempotence form")
-  # smoke is a strict prefix of the idempotence lane -- the same workflow branch,
-  # the same arguments, `exit 0` where phase 2 begins -- so dispatching it beside
-  # either idempotence form proves nothing and, on a fall-open, set the run's wall
-  # (#832). Read with fetch so the check survives smoke leaving the lane list.
+  # smoke is a strict prefix of the idempotence lane, so dispatching it proves nothing (#832).
+  # Read with fetch so the check survives smoke leaving the lane list.
   smoke_samples = [
     ["full", ClassifyChanges.classify([], full: true)],
     ["fall-open", ClassifyChanges.classify(["unexpected/new-runtime-file"])],
@@ -372,17 +296,12 @@ if defined?(ClassifyChanges)
   end
   check(failures, selected_lanes(["AGENTS.md"]) == FALL_OPEN_LANES,
         "AGENTS.md must not be treated as inert Markdown")
-  # The rule that exemption used to be a single name for. A document at the
-  # repository root is where a check-read claim lands -- CLAUDE.md was one, and
-  # was called inert for it (#346) -- so root Markdown no lane map claims falls
-  # open to every lane rather than to none.
+  # Root Markdown no lane map claims falls open to every lane (#346).
   check(failures, selected_lanes(["NOTES.md"]) == FALL_OPEN_LANES,
         "unrouted repository-root Markdown must not be treated as inert")
   check(failures, selected_lanes(["tests/fixtures/operator-guide.md"]) == FALL_OPEN_LANES,
         "test fixture Markdown must not be treated as inert")
-  # The two forms are disjoint in exactly one lane each, and stating that here is
-  # what stops a future edit from quietly selecting both: six converges of the
-  # site to learn what three already said.
+  # The two idempotence forms are disjoint in exactly one lane each; never select both.
   check(failures, FULL_LANES.include?(IDEMPOTENCE_LANE) &&
                   (FULL_LANES & IDEMPOTENCE_SHARD_LANES).empty?,
         "a --full selection must carry the unsharded idempotence lane and no shard")
@@ -390,12 +309,8 @@ if defined?(ClassifyChanges)
                   (FALL_OPEN_LANES & IDEMPOTENCE_SHARD_LANES) == IDEMPOTENCE_SHARD_LANES,
         "a fall-open selection must carry every shard and not the unsharded lane")
 
-  # Routing a path under tests/ to the policy gate alone is only safe while no
-  # integration suite reads it, and the harness reaches well past its own file:
-  # tests/integration.sh runs the contracts, and those read document fixtures,
-  # Mac drift hooks and shared Ruby support. Walking that reference closure --
-  # rather than restating it -- is what makes a new harness file fail here on the
-  # day it is added instead of silently skipping every suite it belongs to.
+  # Walks the harness's reference closure, so a new file an integration suite reads must be listed
+  # in INTEGRATION_HARNESS_PATHS/PREFIXES or fail here.
   REPO_ROOT = File.expand_path("../..", __dir__)
   PATH_REFERENCE = %r{(?:/repo/)?(tests/[A-Za-z0-9_/.-]+)}
   REQUIRE_REFERENCE = /require_relative\s+"([^"]+)"/
@@ -434,17 +349,13 @@ if defined?(ClassifyChanges)
   {
     # beszel selects dozzle as its companion, whose tags are a superset.
     "roles/beszel/tasks/main.yml" => "host_prep,deployment_bundle,beszel,dozzle",
-    # The dozzle lane converges Beszel too, because its beszel-notify mode sends
-    # through the hub's stored webhook to the relay and on to the recorder.
+    # The dozzle lane converges Beszel too, for its beszel-notify mode.
     "roles/dozzle/tasks/main.yml" => "host_prep,deployment_bundle,beszel,dozzle",
-    # Same shape as the Jellyfin row below: the bindery lane comes first in
-    # suites.conf row order and its tags are a superset of Audiobookshelf's own,
-    # so the Audiobookshelf plan is Bindery's plan.
+    # The bindery row comes first and its tags are a superset, so this is Bindery's plan.
     "roles/audiobookshelf/tasks/main.yml" =>
       "host_prep,deployment_bundle,arr,downloaders,audiobookshelf,bindery",
     "roles/komga/tasks/main.yml" => "host_prep,deployment_bundle,komga",
-    # The seerr lane comes first in suites.conf row order and its tags are a
-    # superset of Jellyfin's own, so the Jellyfin plan is Seerr's plan.
+    # Likewise the seerr lane for Jellyfin.
     "roles/jellyfin/tasks/main.yml" => "host_prep,deployment_bundle,arr,jellyfin,seerr",
     "roles/immich/tasks/main.yml" => "host_prep,deployment_bundle,immich",
     "roles/paperless_ngx/tasks/main.yml" => "host_prep,deployment_bundle,paperless",
@@ -548,9 +459,7 @@ if defined?(ClassifyChanges)
   check(failures, full_output.string == expected_full_output,
         "--full output must leave selected_tags empty: #{full_output.string.inspect}")
 
-  # The same coverage by the other route. Written out rather than derived from
-  # the block above by flipping six lines, because a pin that transforms the
-  # other pin agrees with it by construction and would survive both being wrong.
+  # Written out rather than derived from the block above: a transformed pin agrees by construction.
   expected_fall_open_output = <<~OUTPUT
     static=true
     docs=true
@@ -646,12 +555,8 @@ if defined?(ClassifyChanges)
   OUTPUT
         "Paperless-only output must retain its exact tag plan: #{paperless_output.string.inspect}")
 
-  # Bindery, Kapowarr and Pinchflat are the implemented acquisition projects
-  # outside Phase 1. Each lane converges its own role rather than the shared
-  # inert foundation, and Bindery is the only one of the three that also
-  # converges Arr and the downloaders: it stores a Prowlarr instance and a
-  # SABnzbd download client, and it resolves the host in both URLs at write
-  # time, so neither row can be written unless both are running.
+  # Bindery also converges arr and downloaders: it stores a Prowlarr instance and a SABnzbd client
+  # and resolves both hosts at write time.
   bindery_output = StringIO.new
   ClassifyChanges.write_github_outputs(
     ClassifyChanges.classify(["roles/bindery/tasks/main.yml"]), bindery_output
@@ -781,10 +686,7 @@ if defined?(ClassifyChanges)
   OUTPUT
         "Pinchflat-only output must retain its exact tag plan: #{pinchflat_output.string.inspect}")
 
-  # Trailarr is Phase 3 and is the only lane that converges Arr without also
-  # converging the downloaders: it reads Radarr and Sonarr over their own APIs
-  # and validates every connection it declares with a live call at write time,
-  # but it acquires nothing itself and needs no download client.
+  # Trailarr converges arr but not downloaders: it validates connections live and acquires nothing.
   trailarr_output = StringIO.new
   ClassifyChanges.write_github_outputs(
     ClassifyChanges.classify(["roles/trailarr/tasks/main.yml"]), trailarr_output
@@ -828,10 +730,7 @@ if defined?(ClassifyChanges)
   OUTPUT
         "Trailarr-only output must retain its exact tag plan: #{trailarr_output.string.inspect}")
 
-  # Seerr is Phase 4 and the only lane that converges Arr and Jellyfin
-  # together: it declares Radarr's and Sonarr's connection rows and imports
-  # Jellyfin's users, and its bootstrap signs in to Jellyfin as the vault
-  # administrator.
+  # Seerr converges arr and Jellyfin together: arr connection rows, Jellyfin users and admin sign-in.
   seerr_output = StringIO.new
   ClassifyChanges.write_github_outputs(
     ClassifyChanges.classify(["roles/seerr/tasks/main.yml"]), seerr_output
@@ -901,12 +800,8 @@ if defined?(ClassifyChanges)
           %w[arr idempotence-check],
         "an Arr-only change must dispatch its foundation suite and idempotence-check")
 
-  # No lane emits the inert foundation tag plan any more: Phase 4 promoted the
-  # last planned acquisition project, and #639 deleted the seven
-  # tests/contracts/*-foundation.sh wrappers that routed to their own lanes. The
-  # shared foundation is now reached only through its own program, which is in
-  # ACQUISITION_SHARED_PATHS and so selects every acquisition lane rather than
-  # one -- the row below, which is what that route has to keep doing.
+  # The shared foundation program is in ACQUISITION_SHARED_PATHS, so it selects every
+  # acquisition lane (#639).
   acquisition_output = StringIO.new
   ClassifyChanges.write_github_outputs(
     ClassifyChanges.classify(["tests/media_acquisition_foundation_test.rb"]), acquisition_output
@@ -993,15 +888,8 @@ if defined?(ClassifyChanges)
           "deleting a Dozzle-owned path must retain Dozzle selection")
   end
 
-  # The upgrade lane's subject, against a real two-revision history rather than
-  # against a path list -- the resolution reads both revisions of the file with
-  # `git show`, so a --files case could not reach it at all.
-  #
-  # Three cases, and the second is the one worth having: a compose.yml can change
-  # without its pin moving -- a memory limit, a mount, a logging option -- and
-  # converging the same version twice costs a full lane to prove nothing. The
-  # third is the derivation: a service with no seed-and-verify program is not a
-  # subject, however its pin moves.
+  # The upgrade subject against a real two-revision history, since resolution uses `git show`. A
+  # compose change that keeps its pin selects nothing; a service with no seed program is no subject.
   Dir.mktmpdir("classify-changes-upgrade-") do |root|
     system("git", "init", "-q", "-b", FIXTURE_BRANCH, root, exception: true)
     system("git", "-C", root, "config", "user.email", "ci@example.invalid", exception: true)
@@ -1051,13 +939,8 @@ if defined?(ClassifyChanges)
           "a service with no seed-and-verify program must not be an upgrade subject, " \
           "got #{unseeded.inspect}")
 
-    # A FALL-OPEN THAT MOVED A SUBJECT PIN MUST STILL DISPATCH THE LANE, and
-    # this is the case that was wrong first: the unmapped-path return fires
-    # inside the loop, before the subject was resolved, so the lane was forced
-    # off however the pins had moved. The pull request that introduced the lane
-    # touches tests/integration.sh, which is unmapped, so the lane could not
-    # have run on its own change -- and neither could a Renovate bump that
-    # happened to touch anything else.
+    # A fall-open that moved a subject pin must still dispatch the lane: the unmapped-path return
+    # once fired before the subject was resolved.
     write_compose.call(compose, pin.call("v1.3.3", 5), "2g")
     File.write(File.join(root, "unexpected-new-runtime-file"), "unmapped\n")
     system("git", "-C", root, "add", "-A", exception: true)
@@ -1080,10 +963,7 @@ if defined?(ClassifyChanges)
                     IDEMPOTENCE_SHARD_LANES.all? { |lane| fall_open.fetch(lane) },
           "a fall-open must keep taking the idempotence shards")
 
-    # The other half, and the reason `--full` needs no special case: it reaches
-    # the resolution with no base revision, so there is no subject and the lane
-    # stays off rather than dispatching a leg that would refuse for want of its
-    # inputs.
+    # `--full` has no base revision, so there is no subject and the lane stays off.
     unmapped_only = Dir.chdir(root) do
       ClassifyChanges.classify(["unexpected-new-runtime-file"],
                                base: komga_head, head: fall_open_head)
@@ -1091,16 +971,8 @@ if defined?(ClassifyChanges)
     check(failures, !unmapped_only.fetch("upgrade"),
           "a fall-open that moved no subject pin must not dispatch the upgrade lane")
 
-    # And the lane's tags are its SUBJECT's, not the run's. This is the half the
-    # fall-open fix would otherwise have broken: a fall-open selects `foundation`,
-    # which empties selected_tags, so a lane reading that output would converge
-    # the whole site twice for a one-service proof -- the idempotence lane's cost,
-    # on the very selection a Renovate bump lands in whenever it touches anything
-    # unmapped.
-    # Re-classified rather than reusing `fall_open` above, because
-    # write_github_outputs reads the subject classify last resolved: the
-    # unmapped-only case between them resolved none, and pairing that with this
-    # selection is exactly what the refusal inside it now catches.
+    # The lane's tags are its subject's, since a fall-open empties selected_tags. Re-classified
+    # because write_github_outputs reads the subject classify last resolved.
     fall_open_output = StringIO.new
     Dir.chdir(root) do
       ClassifyChanges.write_github_outputs(
@@ -1120,15 +992,8 @@ if defined?(ClassifyChanges)
           "the upgrade lane must carry its subject's own tags through a fall-open, got " \
           "#{fall_open_output.string[/^upgrade_tags=.*$/].inspect}")
 
-    # THE PAIRING ITSELF, which nothing exercised until now. The subject is the
-    # one output that does not come from the selection write_github_outputs is
-    # handed: classify resolves it into an instance variable, so a caller that
-    # classifies twice and then writes emits the LAST classification's subject
-    # beside the FIRST one's lanes -- silent, and wrong in the direction that
-    # matters, since a lane dispatched with no subject tags converges the whole
-    # site. The guard that refuses it was itself unproved: deleting it left this
-    # file green, because the case above re-classifies immediately before
-    # writing and so can never reach it.
+    # The pairing guard: classifying twice then writing would pair the last subject with the first
+    # selection's lanes. The case above re-classifies right before writing, so it cannot reach it.
     stale = Dir.chdir(root) do
       selection = ClassifyChanges.classify(
         ["services/kapowarr/compose.yml", "unexpected-new-runtime-file"],
@@ -1146,14 +1011,8 @@ if defined?(ClassifyChanges)
           "writing a selection beside a later classification's subject must be refused, got " \
           "#{stale.inspect}")
 
-    # THE BASE IS THE MERGE BASE, not the base tip. changed_paths diffs
-    # `base...head`, so the paths handed in are the branch's own changes; reading
-    # the pin at the base TIP would take whatever that ref pins now. Constructed
-    # here: the branch forks, then the base ref moves its own pin, and the
-    # subject's base must still be what the branch forked from. Reading the tip
-    # instead reports a base the branch never had -- and on a base whose pin is
-    # NEWER, the lane converges that and then the head and reds at
-    # image_downgrade_guard on a pull request performing no downgrade.
+    # The base is the merge base, not the tip: here the base ref moves its pin after the fork, and
+    # the subject's base must still be what the branch forked from.
     system("git", "-C", root, "checkout", "-q", "-b", "fork", fall_open_head, exception: true)
     write_compose.call(compose, pin.call("v1.4.0", 7), "2g")
     system("git", "-C", root, "commit", "-qam", "branch bumps to v1.4.0", exception: true)
@@ -1194,13 +1053,8 @@ Dir.mktmpdir("classify-changes-cli-") do |root|
         "--full CLI mode must emit an untagged full-site selection: #{stdout.inspect}")
 end
 
-# How a push to main is classified is decided in shell, in the workflow's own
-# classify step, and it is the half of the routing that says whether a merge costs
-# the 202 runner-minutes a full sweep took or the handful its own diff is worth.
-# The step's `run:` block is lifted out of the workflow and executed against
-# synthetic histories rather than reimplemented here, so a rewrite that quietly
-# returns to sweeping -- or, worse, one that classifies nothing and lets every job
-# skip into a green run that tested nothing -- fails here rather than on main.
+# The push-to-main classify step's shell is lifted from the workflow and run against synthetic
+# histories, so a rewrite that sweeps everything or classifies nothing fails here.
 CI_WORKFLOW_PATH = File.expand_path("../../.github/workflows/ci.yml", __dir__)
 CLASSIFY_STEP = begin
   steps = YAML.safe_load_file(CI_WORKFLOW_PATH).dig("jobs", "changes", "steps")
@@ -1313,9 +1167,7 @@ unless CLASSIFY_STEP.to_s.empty?
           "#{lanes.inspect}")
   end
 
-  # The two pushes with no usable `before`: a ref reported as all zeros, and a
-  # force push naming a commit this clone never fetched. Both fall back to HEAD^,
-  # which still classifies rather than sweeping.
+  # No usable `before` (all zeros, or unfetched after a force push): both fall back to HEAD^.
   ["0" * 40, "1" * 40, ""].each do |unusable|
     Dir.mktmpdir("classify-push-fallback-") do |root|
       init_push_repository(root)
@@ -1330,9 +1182,7 @@ unless CLASSIFY_STEP.to_s.empty?
     end
   end
 
-  # Nothing to diff against at all. Routing fails open, so this must reach `--full`
-  # and select every lane -- never an empty selection, which would skip every job
-  # and conclude the run green having tested nothing.
+  # Nothing to diff against: must reach `--full`, never an empty selection that skips every job.
   Dir.mktmpdir("classify-push-rootless-") do |root|
     init_push_repository(root)
     push_commit(root, "roles/dozzle/tasks/main.yml")
@@ -1344,58 +1194,26 @@ unless CLASSIFY_STEP.to_s.empty?
   end
 end
 
-# Every document a registered check reads is a CI input, and until the docs job
-# existed inert_path? dropped all of docs/, so such a document reached no job at
-# all unless STATIC_ONLY_PATHS rescued it by name. That is how a documentation
-# commit broke the policy gate on main and still merged green: the gate was never
-# run against it.
-#
-# Rescuing by name only ever covered the documents a check spells out.
-# tests/docs_links_test.rb reads README.md and every *.md under docs/ through a
-# glob, so the earlier form of this guard -- collect the literals, require each to
-# select `static` -- reported the hole as closed while a broken link under
-# docs/superpowers/plans/ still merged green. Both halves are derived below: the
-# literals a check names, and whether it globs the directory.
-#
-# What is asserted is coverage, not a fixed job. A document must select at least
-# one job that runs each check reading it, which is what lets a plan document
-# select the cheap docs job while docs/getting-started.md still selects `static`,
-# because tests/policy_test.rb reads it and tests/policy_test.rb is the gate.
+# Every document a registered check reads must select at least one job that runs that check.
+# Both halves are derived: the literals a check names, and whether it globs docs/.
 POLICY_DOC_ROOT = File.expand_path("../..", __dir__)
 POLICY_MANIFEST = File.join(POLICY_DOC_ROOT, "tests", "validate-policy.sh")
 POLICY_WORKFLOW = File.join(POLICY_DOC_ROOT, ".github", "workflows", "ci.yml")
-# The routing and its own fixtures name documents in order to route them, not
-# because they read them. Counting them as readers would make this guard assert
-# whatever the routing already says -- and would make the regression fixture
-# above demand the very job it proves is no longer needed.
+# The routing and its fixtures name documents to route them, not read them; counting them would
+# make this guard assert whatever the routing already says.
 ROUTING_SOURCES = %w[
   tests/ci/classify_changes.rb
   tests/ci/classify_changes_test.rb
   tests/ci/workflow_test.rb
 ].freeze
-# How tests/docs_links_test.rb spells "all of docs/". A check that stops globbing
-# is not a failure; a derivation that stops seeing the glob is, which is what the
-# emptiness check below says.
+# How tests/docs_links_test.rb spells "all of docs/".
 DOCS_GLOB_PATTERN = %r{docs/\*\*|"docs"\)\s*\.glob\(}
-# Every document a registered check names by path. The root alternative is the
-# half #346 cost: the pattern knew `docs/...` and README, so CLAUDE.md could
-# never enter coupled_documents however many checks read it by name, and the
-# guard reported the routing whole while that document reached no job. The
-# lookbehind is what keeps `docs/plans/notes.md` from also being counted as a
-# root `notes.md`; a name that matches but does not exist is dropped below.
+# Every document a check names by path, root Markdown included (#346). The lookbehind keeps
+# `docs/plans/notes.md` from also counting as a root `notes.md`.
 DOCUMENT_REFERENCE_PATTERN = %r{(?<![\w./-])(?:docs/[A-Za-z0-9_./-]+|[A-Za-z0-9_-]+)\.md}
 
-# The checks each classifier lane runs. The mutation harness is gated on the same
-# `static` output as the gate, so a check it carries is a `static` input like any
-# other; so is `lint`, which #653 split out of `static` and gated on that same
-# output. The docs job is gated on `docs`.
-#
-# A job left out of this list is not a failure here -- it is this derivation
-# quietly getting smaller. The checks it runs fall out of `check_lanes`, the
-# documents their sources name stop being asserted to route anywhere, and the
-# floors below still pass because they count what remains. Adding a job that
-# runs a check means adding it here, and the `lint` job is the worked example:
-# it took tests/generate-ephemeral-vault.sh with it.
+# The checks each classifier lane runs; mutation and lint are gated on `static`. A job left out
+# silently shrinks this derivation rather than failing, so add every job that runs a check.
 def lane_check_text(workflow_path, manifest_path)
   workflow = File.file?(workflow_path) ? YAML.safe_load_file(workflow_path, aliases: false) : {}
   jobs = workflow.fetch("jobs", {})
@@ -1472,11 +1290,8 @@ check(failures, coupled_documents.length >= 6,
 check(failures, !globbing_checks.empty?,
       "no registered check was seen to glob docs/, but tests/docs_links_test.rb does; " \
       "the derivation is blind to the half of the coupling that is not a literal")
-# The third health assertion, and the one #346 was closed by. Counting documents
-# cannot say which kind was found: a derivation that has gone back to seeing only
-# docs/ and README still counts well past its floor while every repository-root
-# document is invisible again, which is the state that let CLAUDE.md route
-# nowhere for as long as it did.
+# A derivation seeing only docs/ and README still clears the count floor, so require a
+# root document (#346).
 root_documents = coupled_documents.keys.grep_v(%r{/})
 check(failures, root_documents.include?("CLAUDE.md"),
       "the registered checks name CLAUDE.md, but the derivation found the " \
@@ -1492,10 +1307,7 @@ if defined?(ClassifyChanges)
     end
   end
 
-  # The half a list of literals cannot see. These documents exist in no check's
-  # source, and one of them does not exist at all -- which is the point: the link
-  # gate reads whatever is under docs/ on the day it runs, so an unnamed document
-  # still has to reach the job that runs it.
+  # Unnamed documents, one nonexistent: the link gate globs docs/, so these must still reach it.
   %w[
     docs/superpowers/plans/2026-08-09-docs-only-ci-fast-path.md
     docs/superpowers/specs/2026-08-14-production-auto-deployment-design.md
@@ -1510,19 +1322,8 @@ if defined?(ClassifyChanges)
   end
 end
 
-# The workflow file is the one routed path that no check reads: it *defines* the
-# jobs everything else is routed to. Its route therefore has to buy job coverage
-# -- one leg of every job in the workflow -- rather than the reader coverage
-# every other entry buys, and #395 narrowed it to that from falling open to every
-# suite in the matrix.
-#
-# The coverage is derived from the workflow rather than restated, so a job added
-# tomorrow and gated on a classifier output this route does not turn on fails
-# here on the day it lands instead of merging without ever having run. Only the
-# `needs.changes.outputs.*` terms of a job's `if` are read: `toolchain` also
-# declines to publish from a fork and `suites` also requires the classifier job
-# to have succeeded, and neither is something a selection can turn on. What is
-# asserted is that the classifier does not skip the job.
+# ci.yml buys job coverage, not reader coverage (#395), derived from the workflow. Only each job's
+# `needs.changes.outputs.*` terms are read: nothing else in an `if` is something a selection turns on.
 GATING_OUTPUT_PATTERN = /needs\.changes\.outputs\.([A-Za-z0-9_]+)/
 if defined?(ClassifyChanges)
   workflow_document = File.file?(POLICY_WORKFLOW) ? YAML.safe_load_file(POLICY_WORKFLOW, aliases: false) : {}
@@ -1532,16 +1333,12 @@ if defined?(ClassifyChanges)
   gating_outputs = workflow_jobs.to_h do |job_name, job|
     [job_name, job.fetch("if", "").to_s.scan(GATING_OUTPUT_PATTERN).flatten.uniq]
   end
-  # Floors rather than emptiness, for the reason the cross-lane derivation states
-  # above: a derivation that stops reading the workflow examines no job, finds no
-  # gate, and reports every job covered.
+  # Floors rather than emptiness, as for the cross-lane derivation above.
   check(failures, workflow_jobs.length >= 6,
         "the workflow declares #{workflow_jobs.length} jobs, expected at least six: " \
         "the derivation has stopped reading it")
   distinct_gates = gating_outputs.values.flatten.uniq
-  # Two rather than today's four, for the reason the cross-lane floor above
-  # gives: retiring a job is allowed to lower the count, and a floor set at
-  # today's value would report that as the derivation breaking.
+  # Two rather than today's four, so retiring a job may lower it.
   check(failures, distinct_gates.length >= 2,
         "the workflow jobs are gated on #{distinct_gates.inspect}, expected at least two " \
         "distinct classifier outputs: the derivation has stopped reading the job gates")
@@ -1566,18 +1363,13 @@ if defined?(ClassifyChanges)
         "the suites job's steps still run on a runner")
   check(failures, routed_workflow_suites.length < ClassifyChanges::SUITES.length,
         "#{routed_workflow_path} still dispatches every suite, which is what #395 removed")
-  # A service lane, and one that drags no companion in with it. The matrix is
-  # uniform by construction -- tests/ci/workflow_test.rb executes the job's own
-  # `case "$SUITE"` for every suite and asserts the argv, in `static`,
-  # which any change here also selects -- so one leg proves what all of them do.
+  # A service lane with no companion; workflow_test proves the matrix uniform, so one leg suffices.
   check(failures, ClassifyChanges::SERVICE_LANES.include?(ClassifyChanges::CI_WORKFLOW_SUITE_LANE),
         "#{ClassifyChanges::CI_WORKFLOW_SUITE_LANE.inspect} is no longer a service lane")
   check(failures, ClassifyChanges::COMPANION_LANES.fetch(ClassifyChanges::CI_WORKFLOW_SUITE_LANE, []).empty?,
         "#{ClassifyChanges::CI_WORKFLOW_SUITE_LANE.inspect} now carries a companion lane; pick a " \
         "cheaper representative or accept the extra leg deliberately")
-  # Selecting `foundation` would empty selected_tags in write_github_outputs,
-  # which flips the idempotence_check leg onto the untagged path and converges the whole
-  # site -- the opposite of what this entry is for.
+  # `foundation` would empty selected_tags and converge the whole site on the idempotence leg.
   check(failures, !workflow_selection.fetch("foundation"),
         "#{routed_workflow_path} must not select the foundation lane: it empties selected_tags")
   workflow_outputs = StringIO.new

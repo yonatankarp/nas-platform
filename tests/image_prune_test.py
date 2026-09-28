@@ -17,8 +17,7 @@ import unittest
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
-# The reader of the record the prune writes about itself, run as the deployment
-# it has to be legible to runs it: as another process, against the real file.
+# The lock record's reader, run as a separate process against the real file.
 LOCK_PROBE = (
     Path(__file__).resolve().parents[1]
     / "roles"
@@ -50,8 +49,7 @@ def message_shape(message):
         labels.append(matched.group(1))
     return {"lead": blocks[0], "labels": labels, "closing": closing}
 
-# One pass reporting decimal units, one reporting none, so the parser is proved
-# against Docker's real report rather than a single hand-picked line.
+# Two real Docker report shapes: decimal units and none.
 UNUSED_OUTPUT = """Deleted Images:
 untagged: ghcr.io/example/service:1.2.3
 deleted: sha256:{a}
@@ -85,17 +83,10 @@ def tearDownModule():
 
 
 class PruneTestCase(unittest.TestCase):
-    # The stubs, written once per process and linked into each test's bin/
-    # (#891, after #888). On macOS the first exec of a newly written executable
-    # waits in a host-wide queue that the full local gate keeps long, and the
-    # prune sends each notification under NOTIFICATION_TIMEOUT_SECONDS, ten
-    # seconds. An executable that has run once -- through a symlink too --
-    # skips that queue, so each file is exec'd once here, untimed, and finds its
-    # test's files through the path it was invoked by.
+    # Written once per process and symlinked into each test's bin/ (#891): macOS
+    # queues a new executable's first exec, which would eat the notification timeout.
     STUBS = {
-        # Records each send's argv as one JSON line -- a message spans lines, so
-        # the shell stub's one-line record cannot hold it -- and answers as
-        # Pushover does when it takes a message, unless curl-answer says otherwise.
+        # Records each send's argv as one JSON line and answers like Pushover.
         "curl": (
             f"#!{sys.executable}\n"
             "import json, os, sys\n"
@@ -106,8 +97,7 @@ class PruneTestCase(unittest.TestCase):
             "sys.stdout.write(open(answer).read() if os.path.exists(answer)\n"
             "                 else '{\"status\":1,\"request\":\"r\"}\\n200')\n"
         ),
-        # A recording stand-in for any tool the prune shells out to: its name
-        # is the link's, and what it does is the body stub() wrote beside it.
+        # A recording stand-in for any tool; its body is what stub() wrote beside it.
         "tool": (
             "#!/bin/sh\n"
             'bin=$(dirname "$0")\n'
@@ -138,9 +128,6 @@ class PruneTestCase(unittest.TestCase):
             notifier.chmod(0o600)
         self.lock = self.root / ".local/share/nas-platform/state/deployment.lock"
         self.docker = self.stub("docker")
-        # Records each send's argv as one JSON line -- a message spans lines, so
-        # the shell stub's one-line record cannot hold it -- and answers as
-        # Pushover does when it takes a message, unless curl-answer says otherwise.
         self.curl_calls = self.root / "curl.jsonl"
         self.curl_answer = self.root / "curl-answer"
         self.curl = self.root / "bin" / "curl"
@@ -152,8 +139,7 @@ class PruneTestCase(unittest.TestCase):
         """Install a recording stand-in for one tool the prune shells out to."""
 
         path = self.root / "bin" / name
-        # The body is sourced by the shared stub rather than exec'd, so a
-        # test's own behaviour never becomes a newly written executable.
+        # Sourced rather than exec'd, so a test body never becomes a new executable.
         (self.root / "bin" / f".{name}.body").write_text(f"{body}\n", encoding="utf-8")
         if not path.is_symlink():
             path.symlink_to(self.stubs / "tool")
@@ -243,9 +229,8 @@ class ConfigTest(PruneTestCase):
                 image_prune.load_config(path)
 
     def test_a_pre_pushover_configuration_loads_and_cannot_publish(self):
-        # The install play copies this script before it renders its
-        # configuration, so a prune in that window reads the pre-Pushover file
-        # (#327). It must prune, not refuse: one stderr line, nothing published.
+        # A prune between the script copy and the config render reads the pre-Pushover
+        # file (#327): it must prune, not refuse.
         payload = self.config_payload(
             retired_curl_config=str(self.root / ".config/nas-platform/retired-prune.curl"),
             retired_topic_critical="nas-critical",
@@ -384,14 +369,8 @@ class LockTest(PruneTestCase):
         return json.loads(completed.stdout)
 
     def test_a_holding_prune_names_itself_to_the_converge_that_finds_the_lock(self):
-        # Crossed against the reader that actually consumes this record.
-        # roles/deployment_bundle probes this lock at the first task of every
-        # role and tolerates a holder it cannot identify, because a holder that
-        # records nothing is a poller too old to write one and refusing it
-        # deadlocks the upgrade that installs the newer poller. A prune that
-        # recorded nothing would be indistinguishable from that, so every Sunday
-        # a converge would run straight through a prune deleting image layers
-        # underneath it. Naming itself is what keeps "no record" transient.
+        # deployment_bundle tolerates a lock holder with no record (an old poller), so a
+        # prune must name itself or a converge would run straight through it.
         with image_prune.deployment_lock(self.config()) as acquired:
             self.assertTrue(acquired)
             reported = self.probe_lock()
@@ -401,8 +380,7 @@ class LockTest(PruneTestCase):
         self.assertIn("started", reported)
 
     def test_the_record_does_not_outlive_the_prune_that_wrote_it(self):
-        # Cleared while the lock is still held, so the next reader cannot find a
-        # finished prune's pid under somebody else's lock.
+        # Cleared while still held, so no reader sees a finished prune's pid.
         with image_prune.deployment_lock(self.config()) as acquired:
             self.assertTrue(acquired)
         self.assertEqual(self.lock.read_bytes(), b"")
@@ -430,8 +408,6 @@ class LockTest(PruneTestCase):
                 self.config(deployment_lock_wait_seconds=30)
             ) as acquired:
                 self.assertFalse(acquired)
-        # Polled at the declared interval and gave up exactly at the window,
-        # rather than spinning or waiting forever on a deployment that hung.
         self.assertEqual(
             [call.args[0] for call in sleeper.call_args_list],
             [image_prune.LOCK_POLL_SECONDS, image_prune.LOCK_POLL_SECONDS],
@@ -446,8 +422,7 @@ class LockTest(PruneTestCase):
             self.assertTrue(acquired)
 
     def test_the_prune_holds_the_lock_while_docker_runs(self):
-        # Proved from inside the prune: the stub asks for the same lock a
-        # deployment would ask for, and records the answer it got.
+        # The stub asks for the same lock a deployment would and records the answer.
         probe = self.root / "lock-was-free"
         self.docker = self.stub(
             "docker",
@@ -506,12 +481,9 @@ class PruneRunTest(PruneTestCase):
         self.assertEqual((send["priority"], send["ttl"], send["html"]), ("-1", "604800", "1"))
         self.assertIn("1.5 GB", send["title"])
         self.assertNotIn("--fail", send["argv"])
-        # --disable first, which is the only place curl honours it: the prune
-        # passes HOME, so without it ~/.curlrc's proxy and headers ride along.
+        # --disable first: the prune passes HOME, so ~/.curlrc would otherwise apply.
         self.assertEqual(send["argv"][0], "--disable")
-        # Read off the constant rather than restated as "10": the literal and
-        # the process deadline fifteen lines below it were two spellings of one
-        # budget, and only one of them would have followed a change (#658).
+        # Read off the constant so the literal and the deadline cannot diverge (#658).
         self.assertEqual(
             send["argv"][send["argv"].index("--max-time") + 1],
             str(image_prune.NOTIFICATION_TIMEOUT_SECONDS),
@@ -745,8 +717,7 @@ class NotificationTest(PruneTestCase):
             image_prune.render_notification(self.config(), "invented", self.summary())
 
     def test_the_published_document_carries_no_credential(self):
-        # The token lives in the curl config the installer renders with no_log,
-        # never in the body this script builds.
+        # The token lives in the no_log curl config, never in the body.
         _app, fields = image_prune.render_notification(
             self.config(), "reclaimed", self.summary()
         )
@@ -785,8 +756,7 @@ class CommandLineTest(PruneTestCase):
             self.assertEqual(image_prune.main(argv), 2, msg=argv)
 
     def test_a_broken_installation_reports_a_sentence_not_a_traceback(self):
-        # Cron keeps only the most recent output, so a private directory the
-        # installer never created has to read as a sentence a week later.
+        # Cron keeps only the latest output, so the message must stand alone a week later.
         missing = self.root / "absent"
         config_path = self.root / "broken-root.json"
         config_path.write_text(
@@ -810,15 +780,7 @@ if __name__ == "__main__":
 
 
 class PrivateWriteTest(PruneTestCase):
-    """The prune's copy of the write, held to the same properties as the poller's.
-
-    Both scripts ship one implementation of _write_private and
-    tests/policy_test.rb compares the two definitions, but that check reads
-    source text. These assertions read behaviour, so a copy that agreed
-    textually while the script shadowed it with something else still fails
-    here. The prune's own record is what --status reports and what a converge
-    refused by the deployment lock names, so losing it is not free (#354).
-    """
+    """The prune's _write_private, held to the poller's properties by behaviour (#354)."""
 
     def setUp(self):
         super().setUp()

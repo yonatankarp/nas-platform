@@ -1,28 +1,6 @@
 #!/usr/bin/env ruby
-# Behaviour and sequencing of tests/mac/read-integration-ports.rb.
-#
-# The reader is how tests/mac/run.sh learns which host ports an integration
-# sandbox was allocated. It is fed a file the harness wrote outside the
-# repository, and everything it accepts becomes a port the proof binds, so its
-# whole job is refusing anything it was not handed itself. Until #315 it was a
-# 30-line Ruby program inside a `<<'RUBY'` heredoc in tests/mac/run.sh: nothing
-# syntax-checked it, and the only thing that ran it was a full integration proof.
-#
-# Two layers, following tests/mac/pin-protected-input-test.rb:
-#
-#   Behaviour -- drive the real program over real inputs, one case per refusal it
-#   is supposed to make and one for the input it is supposed to accept. Every
-#   refusal is the single word `unsafe` by design, so a case asserts the exit
-#   status and that nothing was emitted: a reader that printed a partial roster
-#   before refusing would bind ports out of a file it had just rejected.
-#
-#   Sequencing -- the file is opened once and the stat held through that
-#   descriptor must agree with the lstat taken before it and the stat taken after
-#   the read. That is an ordering, not an output: a reader that re-stats the path
-#   by name instead answers about whatever the name points at now, and prints the
-#   same ports. Those orderings are pinned as source text, the same way
-#   tests/policy_mac_test.rb pins that reconciliation deploys before it verifies.
-#
+# Behaviour and sequencing of read-integration-ports.rb: every refusal emits nothing,
+# and the lstat/fstat/stat ordering is pinned as source text since no output shows it.
 # Run with --self-test to prove both layers detect a planted regression.
 
 require "fileutils"

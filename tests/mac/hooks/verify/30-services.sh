@@ -1,10 +1,6 @@
 #!/bin/sh
-# Runtime verification for the six services whose verify hook was nothing but a
-# dispatch to their contract's run phase, in the order 30-audiobookshelf.sh
-# through 80-paperless.sh ran in. Beszel and Dozzle keep their own hooks because
-# theirs assert more than the contract does: Beszel runs two phases, and Dozzle
-# inspects every proof container's display labels before its phases. Those two
-# sort ahead of this file and so still run first.
+# Runtime verification for the services whose verify hook is just their contract's
+# run phase. Beszel and Dozzle keep their own hooks, which sort ahead of this file.
 set -eu
 set +x
 umask 077
@@ -13,29 +9,6 @@ mac_hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 . "$mac_script_dir/lib.sh"
 
-# Jellyfin's run covers exact identity, acceleration, repositories, active
-# plugins, Open Subtitles validation, both owned libraries and unrelated
-# sentinels. Immich's covers every effective managed-user preference leaf and any
-# seeded supported unowned leaf, in addition to login, assets, settings and
-# containment. Pinchflat's covers container health, the three
-# basic-authentication outcomes, and its persisted database. Kapowarr's covers
-# the same three outcomes against its own login, the comics library root it
-# owns, and its persisted database. Bindery's covers its closed first-run setup,
-# the ebook and audiobook roots it owns separately, both configured directories
-# being writable by the identity the container was given, and its own database.
-# Trailarr's covers the same three access outcomes against its API key and its
-# published default administrator, and the one thing no other service has: that
-# the application's own /config/.env carries the platform's keys and none of the
-# ones only a hand edit writes.
-#
-# Nextcloud's run covers four healthy containers, an installed instance out of
-# maintenance mode with no unfinished database upgrade, and then the three
-# claims #500 exists to settle: that the database account is the vault's own
-# rather than the oc_admin the installer mints when NC_setup_create_db_user is
-# unset, that the reconciled trusted domains hold, and that the administrator
-# authenticates while a password the vault never authored is refused. It also
-# proves the cron sidecar is the thing running the background jobs, which is the
-# one claim no other service here has a shape for.
 mac_verified=
 for mac_verify_service in audiobookshelf komga jellyfin immich paperless pinchflat kapowarr \
     bindery trailarr seerr nextcloud; do

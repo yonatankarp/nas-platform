@@ -1,21 +1,7 @@
 ---
-# Seerr's setup wizard is bypassable, but not purely declaratively: exactly one
-# step has to be an API call carrying a vault-authored credential, and this is
-# it. Seeding the SQLite database directly was considered and rejected — it is
-# a TypeORM database with migrations and live WAL files, and its schema is not
-# a stable interface.
-#
-# The urgency is not convenience. POST /api/v1/auth/jellyfin is mounted without
-# the authentication check, by necessity, because it is how the first
-# administrator is created — and the hostname of the Jellyfin server is taken
-# from the anonymous request body. Between container start and the moment a
-# user row exists, any host that can reach port 5055 can point Seerr at a
-# Jellyfin server they control, be an administrator there, and become Seerr's
-# owner with full ADMIN. So the converge that starts the container must close
-# the window in the same play, before it yields. Nothing declarative can do it:
-# the guard tests whether the user table is empty, whatever settings.json says.
-#
-# Redacted: the request carries the API key.
+# SECURITY: POST /auth/jellyfin is unauthenticated until a user exists, so anyone
+# reaching 5055 could point Seerr at their own Jellyfin and become owner. The play
+# that starts the container must close that window. Redacted: carries the API key.
 - name: Probe whether Seerr has been bootstrapped
   ansible.builtin.uri:
     url: "{{ seerr_api }}/settings/main"
@@ -30,9 +16,7 @@
   check_mode: false
   no_log: true
 
-# 403 rather than 401, and the difference is the whole guard: the key
-# authenticates as user id 1, so a correct key against an empty user table
-# resolves to a user that is not there. 200 means the owner row exists.
+# 403 (not 401) = valid key, but user id 1 does not exist yet; 200 = bootstrapped.
 - name: Resolve the Seerr bootstrap state
   ansible.builtin.set_fact:
     seerr_needs_bootstrap: "{{ (seerr_bootstrap_probe.status | default(0) | int) != 200 }}"
@@ -60,18 +44,8 @@
     - ansible_check_mode
     - seerr_needs_bootstrap | bool
 
-# Redacted: the request carries the Jellyfin administrator password.
-#
-# serverType is required and its absence is the trap. routes/auth.js rejects a
-# first-run body whose serverType is neither JELLYFIN (2) nor EMBY (3) with
-# 500 NO_ADMIN_USER — measured against the pinned image with an account that
-# genuinely is a Jellyfin administrator. The message names the wrong thing.
-#
-# Repeating this is not harmful; it falls into an "update their info" branch.
-# It is guarded anyway because it is a write that mints a Jellyfin device
-# session and would make the play unconditionally changed. Once it has run, the
-# same request naming a different host answers
-# 500 {"error":"Jellyfin hostname already configured"} — the window is shut.
+# Redacted: carries the Jellyfin admin password. Without serverType the answer
+# is a misleading 500 NO_ADMIN_USER. Guarded because each call mints a device session.
 - name: Bootstrap the Seerr owner from the Jellyfin administrator
   ansible.builtin.uri:
     url: "{{ seerr_api }}/auth/jellyfin"
@@ -108,12 +82,8 @@
     - not ansible_check_mode
     - seerr_needs_bootstrap | bool
 
-# At bootstrap Seerr calls Jellyfin and creates a Jellyfin API token named
-# "Seerr" for itself, storing it in its own settings. Nothing is scraped back
-# into repository state and the value never leaves the container, but it is
-# worth knowing: Seerr's Jellyfin access survives independently of
-# vault_jellyfin_admin_password and rotating that password does not revoke it.
-# There is no environment variable to preseed it with.
+# Bootstrap mints a Jellyfin API token "Seerr" stored in Seerr's settings; rotating
+# vault_jellyfin_admin_password does NOT revoke it.
 - name: Resolve whether the Seerr reconciliation can proceed
   ansible.builtin.set_fact:
     seerr_configured: "{{ not (seerr_needs_bootstrap | bool) or not ansible_check_mode }}"

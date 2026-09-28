@@ -69,11 +69,8 @@ vault_keys = if vault_example.is_a?(Hash)
                []
              end
 
-# The size of the credential set, taken from the per-service files that pin it
-# rather than written out again. Its job here is that the key-by-key comparison
-# below cannot pass vacuously on a truncated example; policy_vault_test.rb owns
-# the set equality itself and reports which key differs. The pinned expectations'
-# own problems are that suite's to report, so they are not repeated here.
+# The credential set's size, from the pinned per-service files, so the key-by-key
+# comparison below cannot pass vacuously; policy_vault_test.rb owns set equality.
 expected_vault_keys = PolicySupport.pinned_vault_keys(
   PolicySupport.pinned_service_expectations(ROOT, PolicySupport.service_statuses(ROOT)).first
 )
@@ -225,17 +222,9 @@ add_secret_shell_blocks = shell_code_fences(add_secret_section)
 check(failures,
       add_secret_shell_blocks.any? { |block| shell_block?(block, "ansible-vault edit") },
       "## Add a new secret must include ansible-vault edit in a sh code fence")
-# THE HOLE THIS CLOSES. This asserted only that the section *mentions*
-# validate-vault.yml, and the command it was satisfied by could not validate
-# anything: `hosts: localhost` runs on the implicit localhost, which -- as
-# ansible-playbook's own warning says -- "does not match 'all'", so
-# inventory/group_vars/all/vault.yml never reaches the play and every one of the
-# 81 credentials reports as a missing required argument. The failure reads
-# exactly like a wiped vault, which is the expensive part: the operator has just
-# hand-edited the encrypted file, and the tool that is supposed to confirm the
-# edit instead accuses it. Two forms in this guide do load the vault -- `-i`,
-# and the `-e @"$PLATFORM_VAULT_FILE"` of "Validate without disclosure" -- and
-# this section edits the repository vault in place, so `-i` is its form.
+# `hosts: localhost` runs on the implicit localhost, which does not match 'all', so
+# the vault never loads and every credential reads as missing, like a wiped vault.
+# `-i` is the form that loads it here.
 check(failures,
       add_secret_shell_blocks.any? do |block|
         shell_block?(block, "ansible-playbook -i inventory/local.yml validate-vault.yml")
@@ -338,11 +327,8 @@ nas_guide_path = File.join(ROOT, "docs", "getting-started-nas.md")
 nas_guide = File.file?(nas_guide_path) ? File.read(nas_guide_path) : ""
 auto_deploy_section = markdown_section(nas_guide, "## Automatic deployment from the NAS")
 auto_deploy_shell_blocks = shell_code_fences(auto_deploy_section)
-# The poller's own tag list, not a transcription of it. Read from the role's
-# defaults, which production_auto_deploy_role_test.rb already holds to the
-# verification tags the service roles actually declare — so the documented manual
-# command and the automatic one are the same list by construction, and promoting a
-# service adds its tag in one place instead of two.
+# The poller's own tag list, read from the role's defaults, so the manual and
+# automatic commands are the same list by construction.
 auto_deploy_defaults = YAML.safe_load_file(
   File.join(ROOT, "roles", "production_auto_deploy", "defaults", "main.yml")
 )
@@ -352,16 +338,9 @@ check(failures, verify_tags.split(",").all? { |tag| tag.match?(/\Aplatform_verif
 check(failures,
       auto_deploy_section.include?("the installed\npoller cannot select a verification tag that exists only in the candidate until\nthat candidate has been activated"),
       "NAS automatic deployment guide must require manual verification for first foundation rollout")
-# This used to pin the literal sentence "ordinary SMB users cannot access
-# either Media/.acquisition or Books/.acquisition", which stated the denial as
-# settled fact. Per #121 the platform cannot establish that: both trees are
-# declared mode 0755 under a NAS-owned media root, so o+rx means no POSIX
-# permission refuses an ordinary local account and the denial rests on ADM
-# share configuration that Ansible does not own. The requirement was the
-# coverage, not that sentence, so it is re-expressed rather than dropped, and
-# it is now stricter: the guide must reserve the check for BOTH hidden trees by
-# giving the command for each, must say the platform cannot make it, and must
-# name the non-administrator account without which the check proves nothing.
+# The platform cannot establish the SMB denial (#121): both trees are 0755 and the
+# denial rests on ADM share configuration. So the guide must give the check for each
+# tree, say the platform cannot make it, and name a non-administrator account.
 check(failures,
       nas_guide.match?(/ADM share check that the platform\s+cannot make for you/im) &&
         nas_guide.match?(/non-administrator.*ls \/Volumes\/Media\/\.acquisition.*ls \/Volumes\/Books\/\.acquisition/im),
@@ -405,14 +384,12 @@ required_auto_deploy_commands.each do |description, snippets|
         "NAS automatic deployment guide must include #{description}")
 end
 
-# Install from the pin file rather than restating versions, so the guide cannot
-# drift away from controller-requirements.txt when Renovate bumps a pin.
+# Install from the pin file rather than restating versions.
 check(failures,
       auto_deploy_section.include?("pip install -r controller-requirements.txt"),
       "NAS automatic deployment guide must install controller pins from " \
       "controller-requirements.txt")
-# The versions are authored in controller-requirements.in (#827); the .txt beside
-# it is the hash lock compiled from it, whose hash and comment lines are not pins.
+# Versions are authored in controller-requirements.in (#827); the .txt is the hash lock.
 controller_source = File.join(ROOT, "controller-requirements.in")
 controller_pins = File.file?(controller_source) ? File.readlines(controller_source, chomp: true) : []
 check(failures, controller_pins.any? { |pin| pin.start_with?("ansible-core==") },
@@ -424,8 +401,7 @@ end
 
 required_auto_deploy_guidance = {
   /dedicated non-root/i => "require a dedicated non-root deployment account",
-  # The tools are no longer required at fixed /usr/bin paths: the installer
-  # discovers them, because NAS firmwares place them elsewhere.
+  # The installer discovers the tools: NAS firmwares place them elsewhere.
   /git.*?curl.*?docker.*?records where each tool actually lives/m =>
     "require Git, curl and docker and state that their locations are recorded",
   /Python 3\.12 or newer.*pip/m => "require Python 3.12 or newer with pip",
@@ -434,14 +410,8 @@ required_auto_deploy_guidance = {
   /every five minutes/i => "state the polling cadence",
   /exact.*main.*push.*CI.*success/im => "gate on exact successful main push CI",
   /no PAT/i => "state that no PAT is used",
-  # #351 split the retry rule in two, and the guide has to carry both halves.
-  # A failure that reached the NAS is still attempted once, which is what stops
-  # a broken deployment repeating every five minutes; a failure that never got
-  # there -- the checkout fetch, the tooling install or the collection install
-  # losing to somebody else's outage -- is retried automatically, under a
-  # bound. Stating only the first half would describe a poller that no longer
-  # exists, and stating only the second would leave the bound and the
-  # one-attempt rule undocumented.
+  # Both halves of the retry rule (#351): a failure that reached the NAS is attempted
+  # once; one that never got there is retried automatically, under a bound.
   /attempted once for any failure that reached the NAS/i =>
     "forbid automatic retries of a revision whose deployment reached the NAS",
   /three ticks at most/i =>
@@ -452,8 +422,7 @@ required_auto_deploy_guidance = {
   /optionally disable SSH/i => "describe optional SSH disablement after bootstrap",
   # Pushover since #558 stage 3, when the poller moved its notices there.
   /protected.*logs.*Pushover/im => "describe protected logs and Pushover outcomes",
-  # The design no longer keeps immutable release directories; the boundary is
-  # now services, application data, and the retained attempt logs.
+  # The boundary is services, application data and the retained attempt logs.
   /does not delete.*services.*data.*attempt logs/im =>
     "state the safe automation removal boundary"
 }
@@ -469,9 +438,8 @@ auto_deploy_secrets_section = markdown_section(
 check(failures,
       auto_deploy_secrets_section.include?("$HOME/.config/nas-platform/vault-password"),
       "secrets guide must name the protected NAS auto-deployment password provider")
-# The vault is committed and travels with the revision. A copy outside the
-# checkout would outrank group_vars, so the guide must say it is not placed
-# there rather than leaving an operator to infer it from silence.
+# A vault copy outside the checkout would outrank group_vars, so the guide must say
+# it is not placed there.
 check(failures,
       !auto_deploy_secrets_section.include?("$HOME/.config/nas-platform/vault.yml") &&
         auto_deploy_secrets_section.match?(/needs no copy|no copy there/),
@@ -642,19 +610,8 @@ check(failures,
 
 install_section = markdown_section(secrets_guide, "## Install reviewed vault for NAS")
 install_shell_blocks = shell_code_fences(install_section)
-# WHAT THESE THREE REPLACED, AND WHY THEY ARE THE INVERSE. Until #651 this
-# section installed the reviewed external vault at
-# inventory/group_vars/all/vault.yml with `install -m 600`, and these checks
-# pinned that: the destination guard, its symlink half, and the chmod that
-# followed. The per-service split (#611, #612) retired that path --
-# policy_vault_test.rb fails on a committed one, and an untracked one still
-# competes with the eighteen per-service files that are in the checkout either
-# way, which group_vars resolves by load order and reports to nobody. So the
-# guide's own next paragraph already said not to do what the block above it
-# instructed. The requirement was never "install one file"; it was that the
-# reviewed ciphertext reaches the repository by a stated route and that the
-# retired path is refused, so that is what is pinned now, in both directions:
-# the section must not instruct an install there, and it must name the
+# The inverse of the pre-#651 install into inventory/group_vars/all/vault.yml, which
+# the per-service split retired: the section must not install there and must name the
 # per-service destination.
 check(failures,
       install_shell_blocks.none? do |block|
@@ -771,52 +728,23 @@ check(failures,
       secrets_guide.match?(/brand_new_generation_ready=false.*?if ansible-playbook generate-secrets\.yml.*?then\s+brand_new_generation_ready=true/m),
       "brand-new workflow must stop after generator failure")
 
-# THE HOLE #641 RECORDS. Everything above pins the guide's procedure against
-# itself: the starter section moves `inventory/group_vars/all/vault-plain.yml`,
-# and this script required it to. Nothing compared that to what
-# generate-secrets.yml actually emits. So an eighteen-file generator was written,
-# verified key by key, and left the guide moving a file that is never produced --
-# and this script, tests/policy_vault_test.rb and tests/docs_links_test.rb all
-# passed on the combined tree. The guide and the play were each self-consistent
-# and disagreed with each other.
-#
-# The tie is one derived assertion: read vault_plain_path out of the play, and
-# require that exact relative path to be the one the guide consumes. Restating
-# the path here would reproduce the hole, because a restatement is a third
-# self-consistent copy. With it, any renaming of the generator's output -- and any
-# generator that emits more than one plaintext artifact, which is the shape this
-# issue weighed and the repository decided against -- fails here until the guide
-# follows.
+# The guide and generate-secrets.yml were each self-consistent and disagreed (#641).
+# Read vault_plain_path out of the play rather than restating it: a restatement is a
+# third self-consistent copy.
 generator_play = YAML.safe_load_file(File.join(ROOT, "generate-secrets.yml")).first
 generator_source = File.read(File.join(ROOT, "generate-secrets.yml"))
 generator_plain_expression = generator_play.dig("vars", "vault_plain_path").to_s
 generator_plain_relative = generator_plain_expression.sub(%r{\A\{\{\s*playbook_dir\s*\}\}/}, "")
-# The single-file vault #612 retired. Named here rather than derived because
-# nothing in the tree declares it any more -- that is what retired means -- and
-# it is what both this section's refusals and the play's own third stat target
-# are about.
+# The single-file vault #612 retired; stated because nothing declares it any more.
 retired_vault_relative = "inventory/group_vars/all/vault.yml"
 check(failures, !generator_plain_relative.empty? && !generator_plain_relative.include?("{{"),
       "generate-secrets.yml must declare vault_plain_path under {{ playbook_dir }}, because " \
       "docs/secrets.md consumes it as a repository-relative path " \
       "(found #{generator_plain_expression.inspect})")
 
-# Exactly one, not at least one. A floor of one is satisfied by an eighteen-file
-# generator, which is precisely what this pair of checks exists to refuse: one
-# plaintext artifact, and the guide moves that one.
-#
-# Every task the play can reach, not the top-level list. Reading only
-# generator_play["tasks"] was evaded on the first attempt by a second
-# ansible.builtin.copy wrapped in a `block:` -- this script, tests/policy_vault_test.rb
-# and `ansible-lint --strict` on the production profile all reported clean, so
-# the eighteen-file shape the comment above says this refuses walked straight
-# past it. A check that reads one nesting level is a check against the shape
-# nobody would have written anyway.
-#
-# The short forms are matched beside the FQCN ones for the same reason. lint's
-# fqcn[action-core] does reject `template:` today, which makes it a second gate
-# rather than this one's excuse: a rule that check depends on is a rule that can
-# be relaxed in a file this script never reads.
+# Exactly one plaintext artifact, over every task the play can reach: a second copy
+# nested in a `block:` once evaded a top-level read. Short forms beside FQCN ones so
+# this does not lean on lint's fqcn rule.
 GENERATOR_WRITE_MODULES = %w[
   ansible.builtin.template ansible.builtin.copy template copy
 ].freeze
@@ -853,22 +781,14 @@ check(failures, brand_new_starter.include?("mv -n #{generator_plain_relative}"),
       "generate-secrets.yml's vault_plain_path names. The guide consumes the generator's output; " \
       "a generator whose output this section does not move leaves the documented flow moving a " \
       "file that is never produced")
-# A floor rather than the measured number: the section guards this path in four
-# blocks and named it ten times when this was written, and a rename that reached
-# the `mv` above while leaving the guards behind would pass that check alone.
+# A floor, so a rename reaching the `mv` but not the guards fails.
 check(failures, brand_new_plain_mentions >= 8,
       "## Brand-new platform starter names #{generator_plain_relative} only " \
       "#{brand_new_plain_mentions} times (expected at least 8, measured 10 when this check " \
       "landed): its existence, symlink and nonempty guards all name the generator's output, and " \
       "a rename that reached only the `mv` would leave the rest guarding a path nothing writes")
-# What the floor alone cannot see, and it was measured going unseen: renaming two
-# of the ten -- the preflight guard at the top of generate_brand_new_secrets --
-# leaves eight, which clears the floor, while the wrapper now refuses on a path
-# nothing writes. A floor counts what is right and says nothing about what is
-# wrong beside it, so this asks the other question instead, in both directions:
-# the only paths this section may name under inventory/group_vars/all/ are the
-# generator's own output and the retired single file it refuses. Anything else is
-# a rename that reached some occurrences and not the rest.
+# The floor misses a partial rename, so this also refuses any other path this section
+# names under inventory/group_vars/all/ besides the generator's output and the retired file.
 brand_new_group_vars_paths =
   brand_new_starter.scan(%r{inventory/group_vars/all/[A-Za-z0-9._-]+}).uniq.sort
 permitted_group_vars_paths = [generator_plain_relative, retired_vault_relative].uniq.sort
@@ -879,11 +799,8 @@ check(failures, brand_new_group_vars_paths == permitted_group_vars_paths,
       "single file it refuses. A third name is a rename that reached some of this section's " \
       "guards and not the others, which the occurrence floor above cannot see")
 
-# The other end of the same tie. The play never writes the encrypted artifact --
-# the guide does, at $PLATFORM_VAULT_FILE -- but the play refuses to run when it
-# already exists, so the two have to agree on which artifact that is. #651 is why
-# it stays a single external file: the Mac lane's --vault-file and the redacted
-# validation's -e @"$PLATFORM_VAULT_FILE" both read it directly.
+# The play refuses to run when the encrypted artifact exists, so both must name the
+# same single external file (#651).
 generator_external_expression = generator_play.dig("vars", "vault_external_path").to_s
 check(failures, generator_external_expression.include?("PLATFORM_VAULT_FILE"),
       "generate-secrets.yml must resolve its encrypted-artifact refusal target from " \
@@ -894,12 +811,8 @@ check(failures,
       "docs/secrets.md must publish the encrypted vault at $PLATFORM_VAULT_FILE, the path " \
       "generate-secrets.yml refuses to overwrite")
 
-# The recipe the play used to give, in its own header comment and its closing
-# debug: mv the plaintext to inventory/group_vars/all/vault.yml and encrypt it
-# there. An operator who followed the play rather than the guide ended with the
-# single file #612 retired sitting beside the eighteen per-service ones, loaded
-# first because `.` sorts before `_` and encrypted under a different password, so
-# group_vars decryption failed outright.
+# The recipe the play used to give: moving the plaintext to the retired vault.yml,
+# which loads first and under a different password, breaking decryption.
 check(failures,
       !generator_source.match?(/mv\s+\S*vault-plain\.yml\s+\S*group_vars\/all\/vault\.yml/),
       "generate-secrets.yml still instructs moving its plaintext to #{retired_vault_relative}, " \

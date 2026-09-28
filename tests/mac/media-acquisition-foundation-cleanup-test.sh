@@ -17,11 +17,7 @@ fail() {
   exit 1
 }
 
-# The fake docker is a 79-line Ruby program that used to arrive here as a
-# `cat > ... <<'RUBY'` heredoc. It is
-# media-acquisition-foundation-cleanup-fake-docker.rb now, so sh -n, ruby -c and
-# a reader can all reach it. Resolve it from this script's own checkout, never
-# from a tree under inspection.
+# The fake docker, from this script's own checkout (#315).
 cp "$repo_dir/tests/mac/media-acquisition-foundation-cleanup-fake-docker.rb" \
   "$fixture/bin/docker" ||
   fail "media-acquisition-foundation-cleanup-fake-docker.rb is missing"

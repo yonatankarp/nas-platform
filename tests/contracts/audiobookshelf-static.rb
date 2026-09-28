@@ -1,22 +1,10 @@
 #!/usr/bin/env ruby
-# The static half of the Audiobookshelf service contract: every property it can
-# decide from the repository alone, with nothing deployed.
-#
+# Static half of the Audiobookshelf contract, decided from the repository alone.
 # usage: ruby -ryaml audiobookshelf-static.rb COMPOSE MAC_COMPOSE ROLE DEFAULTS \
 #          ARGUMENT_SPECS ENV_TEMPLATE INTEGRATION STORAGE_INVENTORY \
 #          RUNTIME_SOURCE MODE
-#
-# The -ryaml preload is load-bearing: the body calls YAML.safe_load_file without
-# requiring yaml itself, exactly as the heredoc it came from did, and raises
-# NameError run bare. RUNTIME_SOURCE is audiobookshelf-runtime.rb in the tree
-# being inspected -- the drift-commit branch below is read out of it -- and MODE
-# is the contract's mode, which selects one extra block of deployment-order
-# assertions.
-#
-# Silent and exit 0 when the repository holds; one `Audiobookshelf contract
-# failed: ...` line on stderr and exit 1 when it does not. Callers grep those
-# lines, so they are the interface -- tests/audiobookshelf_contract_test.rb
-# asserts each one by its exact text.
+# -ryaml is required (yaml is not required here). Each stderr line is asserted by
+# exact text in tests/audiobookshelf_contract_test.rb.
 compose_path, mac_path, role_path, defaults_path, argument_specs_path,
   environment_template_path, integration_path, storage_inventory_path,
   contract_source_path, mode = ARGV
@@ -27,10 +15,7 @@ argument_specs = YAML.safe_load_file(argument_specs_path)
 integration = File.read(integration_path)
 storage = YAML.safe_load_file(storage_inventory_path)
 
-# What the role does is its parsed task list, not the file's bytes. A task name
-# or a repaired field that survives only inside a comment is not something the
-# role executes. role_strings collects the strings one at a time rather than
-# joining them, so a pattern cannot match across two unrelated tasks.
+# Parsed strings, one at a time, so a pattern cannot span two tasks.
 def role_strings(node)
   case node
   when Hash then node.flat_map { |key, value| [key.to_s] + role_strings(value) }
@@ -39,20 +24,13 @@ def role_strings(node)
   else []
   end
 end
-# The role wraps its marker handling in a block, whose children are tasks too.
 require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
 include PolicySupport
-# The role is one stage per file, imported from main.yml. static_role_tasks
-# assembles them the way Ansible does -- imports spliced in where they stand --
-# so the ordering assertions below still compare positions across the whole role
-# and not within whichever stage happens to hold both tasks.
+# static_role_tasks splices the stage imports in, so positions compare role-wide.
 role_tasks = static_role_tasks(role_path)
 all_role_tasks = flatten_tasks(role_tasks)
 role_task_names = all_role_tasks.filter_map { |task| task["name"] }
-# The environment file has its own grammar, so it is read as the assignments it
-# declares rather than as a substring of the template. A commented-out sample of
-# the right assignment satisfies a substring check while the live line exports
-# something else, and a duplicated assignment silently wins on the last one.
+# Read as assignments: a commented-out sample would satisfy a substring search.
 environment_assignments = File.readlines(environment_template_path).filter_map do |line|
   name, _separator, value = line.strip.partition("=")
   [name, value] if line.strip.match?(/\A[A-Z][A-Z0-9_]*=/)
@@ -174,9 +152,7 @@ if mode == "static"
   required_tasks.each do |name|
     abort "Audiobookshelf contract failed: missing #{name}" unless role_task_names.include?(name)
   end
-  # The schema gate names the release it was validated against by reading the
-  # pin, never a literal: a literal fails every Renovate bump (#753, #765) while the
-  # per-key type assertions beside it are what guard the schema.
+  # The schema gate reads the pin, never a literal, which fails every bump (#753, #765).
   schema_conditions = Array(all_role_tasks.find { |task| task["name"] == "Validate current Audiobookshelf server settings schema" }
                                           &.dig("ansible.builtin.assert", "that")).map(&:to_s)
   pinned_compose_read = all_role_tasks.find { |task| task["name"] == "Read the Audiobookshelf image this release pins" }
@@ -221,8 +197,7 @@ if mode == "static"
   abort "Audiobookshelf contract failed: authoritative timezone is not checked on every settings read" unless
     timezone_assertions.length >= 3
   patch_body = settings_patch.fetch(0).fetch(1).fetch("body").to_s
-  # From 2.36.1 PATCH /api/settings answers 200 and drops any key outside its
-  # patchable set, backupPath among them, so the path has its own route.
+  # From 2.36.1 PATCH /api/settings drops backupPath, so it has its own route.
   backup_path_patch = all_role_tasks.find do |task|
     uri = task["ansible.builtin.uri"]
     uri.is_a?(Hash) && uri["url"] == "{{ audiobookshelf_api }}/api/backups/path"
@@ -238,9 +213,7 @@ if mode == "static"
                             .partition(%q{when "check-repair-unchanged"}).first
   abort "Audiobookshelf contract failed: drift commit consumes reconciliation evidence" if
     drift_commit_branch.include?("remove_drift_snapshot")
-  # Repair is a type change, never a reactivation. Read from the structure this
-  # holds however the role is formatted, where the old two-literal check only
-  # recognized the one layout the role happened to have when it was written.
+  # Repair is a type change, never a reactivation.
   repair_bodies = all_role_tasks.filter_map do |task|
     uri = task["ansible.builtin.uri"]
     uri["body"] if uri.is_a?(Hash) && uri["body"].is_a?(Hash)

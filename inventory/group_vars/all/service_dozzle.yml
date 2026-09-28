@@ -2,44 +2,20 @@
 # dozzle: non-secret settings and the storage this service owns.
 # Cross-cutting facts live in main.yml; secrets in vault_dozzle.yml.
 
-# vault_dozzle_alert_relay_token has no default here. It used to be derived from
-# another service's publish token; since #558 the operator authors it in
-# vault_dozzle.yml, and that encrypted file is its only source. vault_contract
-# requires it, so a vault without it is refused by name before any mutation.
+# vault_dozzle_alert_relay_token has no default: vault_dozzle.yml is its only source (#558).
 
-# The one home for the alert relay's listener port, and shared inventory rather
-# than a roles/dozzle default because Beszel converges before Dozzle and must
-# name the same relay: a role default is in scope only inside its own role. None
-# of its consumers may carry their own copy: the relay process and the Compose
-# healthcheck both read it as ALERT_RELAY_PORT out of the rendered environment
-# file, and the managed dispatcher URL interpolates it directly. It is also the
-# relay's loopback publication and the tailnet port roles/dozzle's Tailscale
-# Serve TCP forward listens on, because golem's Dozzle agent is handed that same
-# URL and reaches it at this host's tailnet address on this port.
+# Shared inventory rather than a role default because Beszel converges before
+# Dozzle and must name the same relay. Also the relay's loopback publication and
+# the tailnet port golem's Dozzle agent reaches it on (roles/dozzle Serve forward).
 dozzle_alert_relay_port: 8081
 
-# The one home for golem's Dozzle agent, as Dozzle's own `address|name` form.
-# golem-platform publishes the agent on golem's tailnet address only, because
-# Docker-published ports bypass golem's ufw; its copy of this address lives in
-# that repository's inventory. The hub and the agent authenticate each other
-# with vault_dozzle_agent_certificate / vault_dozzle_agent_private_key, a pair
-# this platform generates: the image's built-in pair is public and is no
-# authentication at all. What an unreachable agent costs is a warning in
-# Dozzle's log; the hub still starts and serves the NAS's own containers.
-#
-# Alerts follow the logs across by a route of their own, measured against
-# v11.1.2's source: the hub's notification manager watches only its local
-# clients, and it pushes its rules and dispatchers -- the relay's bearer header
-# included -- to every agent (again whenever one reconnects), which evaluates
-# them itself and POSTs from its own host with .Container.HostName set to its
-# DOZZLE_HOSTNAME. golem-platform sets that to `golem`, the label after the `|`
-# below, and maps alert-relay to this host's tailnet address, where the Serve
-# forward above reaches the relay. The relay sends those events on the Golem
-# Pushover application (GOLEM_DOZZLE_HOST in services/dozzle/alert_relay.py).
+# golem's Dozzle agent, as `address|name`. Published on golem's tailnet address
+# only (Docker ports bypass ufw). The hub pushes alert rules to the agent, which
+# POSTs to alert-relay through this host's Serve forward; the relay sends golem's
+# events on the Golem Pushover application (GOLEM_DOZZLE_HOST in alert_relay.py).
 dozzle_remote_agent: "100.104.25.70:7007|golem"
 
 nas_storage_dozzle:
-  # Dozzle authentication and notification configuration.
   - path: "{{ nas_docker_root }}/dozzle/data"
     owner: "{{ nas_uid }}"
     group: "{{ nas_gid }}"

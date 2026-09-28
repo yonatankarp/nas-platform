@@ -47,11 +47,7 @@ PYTHON = ENV.fetch("PATH").split(File::PATH_SEPARATOR).map do |directory|
   File.join(directory, "python3")
 end.find { |path| File.executable?(path) }.freeze
 
-# The role is one stage per file; static_role_tasks assembles it the way Ansible
-# does, imports spliced in where they stand. The mail block this fixture runs is
-# contiguous in that assembly and split across mail_state.yml, mail_probe.yml and
-# mail_reconcile.yml in the tree, so reading main.yml alone would find neither
-# endpoint and raise rather than pass.
+# The whole role via static_role_tasks: the mail block spans three stage files.
 def selected_mail_tasks
   tasks = PolicySupport.static_role_tasks(ROLE, aliases: true)
   first = tasks.index { |task| task["name"] == "List Paperless mail accounts for reconciliation" }
@@ -69,9 +65,7 @@ def missing_mail_item_output_guards(tasks)
   end
 end
 
-# The fixture answers a status and an already-serialised body; the shared
-# fixture server puts them on the wire. Paperless answers text/plain for the
-# errors it reports, which is what the role has to read.
+# Paperless answers text/plain for its errors.
 def response(status, body, content_type: "application/json")
   [status, body, content_type]
 end
@@ -248,9 +242,7 @@ def run_full_verify_tag_fixture(port, fingerprint: true)
       # verify.yml resolves this in pre_tasks; this play stands in for that.
       "platform_service_compose_files" => { "paperless-ngx" => ["compose.yml"] },
       "paperless_port" => port,
-      # The AI settings live only in inventory group_vars, which this synthetic play
-      # does not load, so the fixture supplies them the way it supplies every other
-      # argument the role declares required.
+      # Inventory-only settings, which this synthetic play does not load.
       "paperless_ai_enabled" => false,
       "paperless_ai_llm_endpoint" => "http://ollama.example.invalid:11434",
       "paperless_ai_llm_model" => "fixture-model",

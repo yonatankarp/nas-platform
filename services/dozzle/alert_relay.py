@@ -23,32 +23,14 @@ import urllib.parse
 import urllib.request
 
 
-# The signals a deliberate stop arrives as: `docker stop` sends SIGTERM and
-# SIGKILLs at the end of the grace period, and SIGINT is what a foreground run
-# ends on. See serve_until_stopped for why they are blocked rather than handled.
+# `docker stop` sends SIGTERM, a foreground run ends on SIGINT. See
+# serve_until_stopped for why they are blocked rather than handled.
 STOP_SIGNALS = frozenset({signal.SIGINT, signal.SIGTERM})
 MAX_BODY_BYTES = 16 * 1024
 MAX_STATE_BYTES = 64 * 1024
 MAX_STATE_ENTRIES = 128
-# The ceiling's own bound on state growth, and the reason it is separate from
-# MAX_STATE_ENTRIES rather than shared with it. A counter is not a health entry:
-# bounded_state may drop any counter, because the global counter beneath them is
-# what actually guarantees the quota, while a health entry may only be dropped
-# once it is healthy. Sharing one bound would let counters take bytes from
-# health entries that cannot be evicted.
-#
-# WHAT THAT BUYS IS A DEFERRAL, NOT A PREVENTION, and the difference is worth
-# stating because the opposite was claimed here first. A document of nothing but
-# unhealthy entries still reaches
-# `raise StateError("unhealthy state exceeds bounds")` -- byte-identical to the
-# line that has always been there, and not something the counters introduced.
-# Measured: a short ASCII host stores 128 entries and fails at 129, which is
-# MAX_STATE_ENTRIES binding rather than the byte bound; a 256-character
-# non-ASCII host stores 39 and fails at 40. Shedding counters first buys back
-# exactly the counters' own bytes and nothing more -- 39 entries reconcile
-# alongside 128 counters by shedding all 128 -- so the entry ceiling is the same
-# as it is with no counters at all. Thirty containers run on this NAS, so
-# neither number is in reach.
+# Separate from MAX_STATE_ENTRIES: counters may always be dropped, unhealthy
+# entries may not, so a shared bound would let counters starve them.
 MAX_BUDGET_ENTRIES = 128
 HEALTHY_RETENTION = timedelta(days=30)
 STATE_VERSION = 3
@@ -81,140 +63,51 @@ EXIT_CODE_PATTERN = re.compile(r"(?:0|[1-9][0-9]{0,2})\Z")
 PORT_PATTERN = re.compile(r"[1-9][0-9]{0,4}\Z")
 CEILING_PATTERN = re.compile(r"[1-9][0-9]{0,5}\Z")
 
-# Pushover's emergency priority, and the two parameters it refuses a message
-# without: the API rejects priority 2 outright unless both `retry` and `expire`
-# are present. They are what the acknowledge semantic this relay exists for is
-# made of -- the phone re-alerts every `retry` seconds until somebody
-# acknowledges it, until `expire` seconds have passed, or until Pushover's own
-# retry cap is reached, whichever comes first.
-#
-# THAT THIRD TERM IS EASY TO LEAVE OUT AND THIS COMMENT LEFT IT OUT. It read
-# "an hour of re-alerting once a minute is already sixty alerts", which is
-# arithmetic the API does not perform: Pushover caps a message at 50 retries
-# regardless of `expire`, and says so in its own worked example, where
-# retry=30 with expire=10800 escalates for 25 minutes rather than three hours.
-# So what this configuration actually does is re-alert every 60 seconds and
-# stop at the cap, about 50 minutes in, or the moment somebody acknowledges.
-#
-# WHY `expire` STAYS ABOVE WHAT THE CAP CAN REACH. 3600 leaves roughly ten
-# minutes the cap makes unreachable, and that slack is deliberate rather than
-# an oversight now that it is measured: the two are independent bounds, one on
-# elapsed time and one on count, and `expire` is the one that stays correct if
-# `retry` is ever changed. Lowering it to 50 * 60 would make the two coincide
-# today and silently become the binding term the moment `retry` moved. The
-# assertion below is what keeps this paragraph true: the cap must be the term
-# that fires first.
-#
-# Both values are interior to Pushover's documented bounds rather than at them
-# (retry floor 30 seconds, expire ceiling 10800), so a message is accepted
-# whatever the exact limits are today.
-#
-# NOT ROLE-CONFIGURABLE, unlike the ceilings below, and that is a decision. The
-# ceilings are numbers a household might reasonably want to tune and cannot set
-# to anything Pushover would reject. These two can: below 30 or above 10800 the
-# API refuses the message, so every out-of-memory alert would be lost to a 4xx
-# the relay reports only as a 502. A knob whose wrong setting silences the one
-# alert this transport was chosen for is worth more than the tuning it offers.
-#
-# Retries do not each cost a message against the monthly quota -- one emergency
-# message is one message however many times Pushover re-alerts it -- so the
-# ceiling below is a bound on the relay's event rate, not on this.
+# Emergency priority: Pushover requires both `retry` and `expire`, and caps a
+# message at 50 retries, so this re-alerts every 60s for ~50 minutes or until
+# acknowledged. `expire` stays above the cap so it stays correct if `retry` moves.
+# Not role-configurable: an out-of-range value makes Pushover refuse every OOM alert.
 EMERGENCY_PRIORITY = 2
 EMERGENCY_RETRY_SECONDS = 60
 EMERGENCY_EXPIRE_SECONDS = 3600
-# Pushover's own cap, named so the claim above is checkable rather than prose.
-# Nothing sends this value -- it is not a parameter -- but the paragraph above
-# depends on the cap being the binding term, and a later edit to `retry` could
-# make that false without touching a line of it.
-#
-# Checked by tests/dozzle_alert_relay_test.py rather than here. A module-level
-# assertion would have been the wrong place by some distance: these are literals
-# in this file, so only a developer can get them wrong, and refusing to start
-# would turn a too-short escalation window -- which still alerts -- into a relay
-# that reports nothing at all. The gate is where a developer's mistake belongs.
+# Pushover's own cap; tests/dozzle_alert_relay_test.py checks it binds first.
 EMERGENCY_MAX_RETRIES = 50
 
-# The deadline on one Pushover publish, and it is two claims rather than one.
-# It bounds the HTTP call, and -- because publish runs inside the exclusive
-# flock process_event holds, which is the ceiling interlock and must not be
-# moved -- it is also the bound on how long a hung Pushover serialises every
-# concurrent Dozzle POST behind it. That second claim is the reason the
-# interlock is accepted at all, and it was resting on a bare literal at the
-# call site: the argument was in a comment and the number was not named
-# anywhere (#658). Deliberately not spelled NOTIFICATION_TIMEOUT_SECONDS,
-# which is what the two scripts/*.py programs call the deadline on their own
-# curl: those are cron process budgets with nothing held across them, and
-# tests/policy_test.rb pins that name byte-identical wherever it appears, so
-# sharing it would assert the two must always be the same number. They need
-# not be -- lowering this one to shorten a lock hold is a change the relay can
-# make alone.
+# Bounds one publish and so how long a hung Pushover holds the flock in
+# process_event (#658). Not NOTIFICATION_TIMEOUT_SECONDS: policy_test pins that
+# name identical across the scripts, and this one may change alone.
 PUBLISH_TIMEOUT_SECONDS = 10
 
-# Pushover refuses a message longer than 1024 characters, and refuses it with a
-# 4xx -- so an over-long alert is not a truncated alert, it is a lost one. The
-# bound below is on the ESCAPED length rather than on the input, which is the
-# half a bound on the input cannot reach: `'` becomes `&#x27;`, so 128
-# characters of container name can render as 768 and two such fields overrun the
-# cap between them. Real Docker names cannot contain any of the five escaped
-# characters, so nothing on this platform reaches it; the envelope accepts any
-# non-control text in that field, so something could.
-#
-# 384 apiece keeps any one line well inside the cap. The whole message is not
-# bounded by construction any more: the container's name appears in the lead and
-# in a detail line beside a link of up to 512 characters, so compose_message
-# drops detail lines from the last until it fits.
+# Pushover refuses (4xx) messages over 1024 characters, so an over-long alert is
+# lost. Bounded on the escaped length: `'` becomes `&#x27;`. compose_message
+# drops detail lines from the last until the whole message fits.
 MAX_ESCAPED_FIELD_CHARACTERS = 384
 MAX_MESSAGE_CHARACTERS = 1024
-# The title has a cap of its own, 250, and it is reached by a shorter input than
-# the message cap is: the title is NOT escaped, so nothing expands, but it is
-# also not bounded by anything except the slice in each renderer. The envelope
-# admits a 256-character container name, and 256 plus a prefix is already over.
-# Named rather than left implicit in those slices because the slices are the
-# whole guard -- removing one produced a 268-character title and a lost alert
-# while every test stayed green.
+# Pushover's title cap. The title is not escaped; the renderers' slices are the
+# only guard, so keep them.
 MAX_TITLE_CHARACTERS = 250
 MAX_TITLE_CONTAINER_CHARACTERS = 128
 
-# The tap-through link to the container's page in Dozzle, and Pushover's caps on
-# it: `url` at most 512 characters, `url_title` at most 100. Over either is a
-# 4xx and a lost alert, the same as an over-long message, so the link is bounded
-# by construction rather than cut: the base is refused at start-up when it is
-# longer than MAX_LINK_BASE_CHARACTERS, which leaves room for the route and the
-# longest container id the envelope admits.
-#
-# The route is Dozzle's own, read from the pinned image's source (v11.0.1):
-# assets/pages/container/[id].vue is the file-based route /container/:id, and
-# the page looks the id up in a store keyed by container.id. That id is the
-# 12-character short id -- internal/docker/client.go builds every container
-# with c.ID[:12], and internal/notification/types.go hands that same field to
-# the dispatcher template as .Container.ID -- so the envelope's containerId is
-# exactly the key the page resolves.
+# Pushover caps `url` at 512 and `url_title` at 100; a long link base is refused
+# at start-up. The route /container/<12-char short id> is Dozzle's own (v11.0.1).
 MAX_URL_CHARACTERS = 512
 CONTAINER_ROUTE = "/container/"
 MAX_LINK_BASE_CHARACTERS = MAX_URL_CHARACTERS - len(CONTAINER_ROUTE) - 64
 URL_TITLE = "Open in Dozzle"
 MAX_URL_TITLE_CHARACTERS = 100
 
-# Beszel's host alerts, POSTed to /beszel by Beszel 0.20.0's shoutrrr generic
-# webhook with template=json: exactly {"title", "message"}, where message is
-# Beszel's body followed by a blank line and a link (internal/alerts/alerts.go:
-# SendShoutrrrAlert). Beszel sends a recovery through the same URL as the alert
-# it closes, so it cannot give the two different priorities; this relay can.
+# Beszel 0.20.0's shoutrrr generic webhook (template=json) posts exactly these
+# keys; the message ends with a blank line and a link.
 BESZEL_ENVELOPE_KEYS = {"title", "message"}
 # internal/alerts/alerts_status.go: sendStatusAlert. The body is the title with
 # the emoji trimmed, so it carries nothing the title does not.
 BESZEL_STATUS_TITLE = re.compile(
     r"Connection to (?P<system>.+) is (?P<state>down \U0001F534|up \u2705)\Z"
 )
-# internal/alerts/alerts_system.go: sendSystemAlert. The system name is the
-# user's own text and may contain spaces, so the title is read from its fixed
-# end: the direction, then a metric name from the list below, and whatever is
-# left is the system.
+# The system name may contain spaces, so the title is parsed from its fixed end.
 BESZEL_THRESHOLD_TITLE = re.compile(r"(?P<rest>.+) (?P<direction>above|below) threshold\Z")
-# Every metric name sendSystemAlert can put in a title, as it renders them:
-# Disk becomes "disk usage", LoadAvgN becomes "Nm load", the CPU state alerts
-# keep their labels, and everything but CPU and GPU is lowercased. Longest
-# first, so a system is never read as ending in part of a longer name.
+# Every metric name sendSystemAlert can put in a title. Longest first, so a
+# system is never read as ending in part of a longer name.
 BESZEL_METRICS = (
     "CPU Steal Time", "CPU I/O Wait", "temperature", "disk usage", "bandwidth",
     "15m load", "battery", "5m load", "1m load", "memory", "CPU", "GPU",
@@ -228,22 +121,12 @@ BESZEL_AVERAGE_BODY = re.compile(
     r"(?P<descriptor>.+) averaged (?P<value>-?[0-9]+\.[0-9]{2})(?P<unit>.*)"
     r" for the previous (?P<minutes>[0-9]+) minutes?\.\Z"
 )
-# The link hub.MakeLink builds: the app URL, then /system/<PocketBase record id>,
-# each part url.PathEscape'd. A record id is short and alphanumeric, so anything
-# else after the route is refused rather than escaped, and a link that does not
-# start with this relay's own configured base never reaches an href.
+# hub.MakeLink's route; anything but a short alphanumeric record id is refused.
 BESZEL_SYSTEM_ROUTE = "/system/"
 BESZEL_SYSTEM_ID_PATTERN = re.compile(r"[A-Za-z0-9]{1,64}\Z")
 BESZEL_URL_TITLE = "Open in Beszel"
-# golem, the second host (a Debian box on the tailnet whose Beszel agent another
-# repository deploys), has its own Pushover application, Golem, so its alerts
-# never mix with the NAS's. The name is the Beszel system name, which is a second
-# copy of beszel_remote_systems in roles/beszel/defaults/main.yml (and of
-# SYSTEM_NAME on golem itself); tests/dozzle_alert_relay_test.py holds the two
-# copies in step. Every alert Beszel 0.20.0 sends names the system in its title:
-# status and threshold titles as classify_beszel parses them, and the S.M.A.R.T.,
-# ZFS, systemd, container and network-monitor titles as "<system> containers are
-# healthy" or "... on <system>" followed by ":", a space or the end.
+# golem has its own Pushover application. Copy of beszel_remote_systems in
+# roles/beszel/defaults/main.yml; tests/dozzle_alert_relay_test.py keeps them in step.
 GOLEM_BESZEL_SYSTEM = "golem"
 GOLEM_IN_UNPARSED_TITLE = re.compile(
     rf"(?:\A| on ){re.escape(GOLEM_BESZEL_SYSTEM)}(?=[: ]|\Z)"
@@ -266,13 +149,9 @@ COLOR_GREY = "#9e9e9e"
 # parse_timestamp counts from 0001-01-01; Pushover's `timestamp` is Unix seconds.
 UNIX_EPOCH_SECONDS = (datetime(1970, 1, 1).toordinal() - 1) * 86_400
 
-# How much of an upstream diagnostic reaches the log. Bounded because the text
-# is the far end's rather than ours, because the stack caps this log at 10m x 3
-# and a large error body would spend that, and because the clause an operator
-# needs -- "user identifier is not a valid user" -- is at the front.
+# Upstream diagnostics are bounded: the log is capped at 10m x 3.
 MAX_DIAGNOSTIC_CHARACTERS = 256
-# How much of an error response is read at all. HTTPError is a file-like object
-# on a socket, so an unbounded read is an unbounded wait inside the state lock.
+# An unbounded read on the error socket is an unbounded wait inside the state lock.
 MAX_DIAGNOSTIC_BYTES = 4096
 
 
@@ -359,8 +238,7 @@ class Config:
 
     @classmethod
     def from_mapping(cls, values):
-        # The order is the order a misconfiguration is reported in: the first
-        # refusal wins, so reordering these calls changes what start-up says.
+        # Order matters: the first refusal is what start-up reports.
         resolved = cls._required_settings(values)
         relay_port = cls._relay_port(resolved["ALERT_RELAY_PORT"])
         api_url = cls._pushover_api_url(resolved["PUSHOVER_API_URL"])
@@ -390,11 +268,8 @@ class Config:
 
     @staticmethod
     def _required_settings(values):
-        # Deliberately no shape rule on either Pushover credential. Both are
-        # issued by pushover.net and this platform cannot vouch for their form;
-        # the same argument filter_plugins/vault_credential_schema.py records for
-        # the vault rules applies here, and a guessed pattern would refuse a real
-        # credential with the fix locked inside an encrypted file.
+        # No shape rule on Pushover credentials: a guessed pattern would refuse a real
+        # one with the fix locked inside the encrypted vault.
         names = (
             "ALERT_RELAY_TOKEN",
             "ALERT_RELAY_PORT",
@@ -416,23 +291,16 @@ class Config:
 
     @staticmethod
     def _relay_port(port):
-        # Deliberately without a fallback: the listener port has exactly one home,
-        # dozzle_alert_relay_port in inventory/group_vars/all/service_dozzle.yml, and it reaches
-        # this process through ALERT_RELAY_PORT in the rendered environment file.
-        # A default here would be a second copy that could silently disagree with
-        # the Compose healthcheck and the dispatcher URL built from the same home.
+        # No fallback: the port's only home is dozzle_alert_relay_port, and a default
+        # here could silently disagree with the healthcheck and dispatcher URL.
         if not PORT_PATTERN.fullmatch(port) or int(port) > 65535:
             raise ConfigurationError("ALERT_RELAY_PORT must be a TCP port number")
         return int(port)
 
     @staticmethod
     def _pushover_api_url(value):
-        # Unlike the publisher this replaced, the endpoint carries a path:
-        # Pushover's message API is /1/messages.json, and the whole URL is a
-        # variable rather than a host so a lane can redirect it at a recorder
-        # without reaching the household's real devices. A query or a fragment
-        # is refused because the credentials travel in the form body and a URL
-        # carrying its own parameters is a sign of a hand-edited endpoint.
+        # A whole URL so a lane can point it at a recorder. Query and fragment are
+        # refused: credentials travel in the form body.
         parsed = urllib.parse.urlsplit(value)
         if (
             parsed.scheme not in {"http", "https"}
@@ -452,20 +320,9 @@ class Config:
     @staticmethod
     def _dozzle_link(values):
         """(link_base, link_problem): exactly one of the two is None."""
-        # The tap-through link is the one setting here the relay does WITHOUT
-        # rather than refusing to start over. The relay script reaches the
-        # container through the `current` release symlink, which
-        # deployment_bundle repoints early in a converge, while this environment
-        # is re-rendered only when roles/dozzle runs, several roles later. A relay
-        # restarted inside that window runs the new script against the old
-        # environment; had a missing link base been fatal, it would crash-loop
-        # and lose every container alert until a later converge reached Dozzle --
-        # indefinitely, if the deployment failed before then. CLAUDE.md's rule
-        # is that anything new tolerates its absence for one deployment, and
-        # #605's that a relay which refuses to start alerts worse than one that
-        # alerts imperfectly. So an absent or invalid base costs the link only,
-        # said once on stderr at start-up; the gate still refuses a role default
-        # the validator would not accept (tests/dozzle_alert_relay_test.py).
+        # Optional on purpose: `current` is repointed several roles before roles/dozzle
+        # re-renders this environment, and a relay that crash-looped on a missing link
+        # base would lose every alert meanwhile (#605). Missing costs only the link.
         raw_link_base = values.get("ALERT_RELAY_LINK_BASE")
         if not isinstance(raw_link_base, str) or not raw_link_base:
             return None, "ALERT_RELAY_LINK_BASE is not set; alerts will carry no Dozzle link"
@@ -477,15 +334,9 @@ class Config:
     @staticmethod
     def _beszel_settings(values):
         """(alerts_token, beszel_link_base, beszel_link_problem), never refused."""
-        # Beszel's two settings are optional for the same reason, and for one
-        # more: until a converge reaches roles/dozzle the running environment is
-        # the one rendered before they existed. Without the Alerts token /beszel
-        # answers 503 and says so on stderr; /alerts, which never needed it,
-        # keeps working. Without a usable link base a Beszel alert carries no
-        # button. The Golem token is optional for the first reason, and its
-        # absence costs less still: golem's alerts go out on the Alerts
-        # application instead, and its container events on Containers, each
-        # saying so (process_beszel, process_event).
+        # Optional for the same reason. Without the Alerts token /beszel answers 503;
+        # without the Golem token golem's alerts go out on Alerts and its container
+        # events on Containers, each saying so.
         alerts_token = optional_setting(values, "PUSHOVER_ALERTS_TOKEN")
         raw_beszel_link_base = values.get("BESZEL_LINK_BASE")
         if not isinstance(raw_beszel_link_base, str) or not raw_beszel_link_base:
@@ -513,10 +364,7 @@ class Config:
                 raise ConfigurationError(f"{name} must be a positive alert count")
             ceilings.append(int(resolved[name]))
         container_ceiling, oom_container_ceiling, global_ceiling = ceilings
-        # An OOM allowance below the ordinary one would be the opposite of what
-        # the higher threshold is for, and a global backstop below a per-container
-        # allowance would make the per-container ceiling unreachable and so
-        # unprovable. Both are refused at start-up rather than silently inverted.
+        # Refused at start-up rather than silently inverted.
         if oom_container_ceiling < container_ceiling:
             raise ConfigurationError(
                 "ALERT_DAILY_OOM_CONTAINER_CEILING must not be below "
@@ -547,14 +395,8 @@ def optional_setting(values, name):
 def validated_link_base(value):
     """Dozzle's origin as the link base, or ConfigurationError saying why not.
 
-    The host is the tailnet/LAN name roles/dozzle renders from
-    platform_public_host, so the link opens only on a device that can reach the
-    NAS -- off the tailnet the alert still arrives with a link that does not
-    load, which is the honest limit rather than a defect. Refused rather than
-    repaired, the way PUSHOVER_API_URL is: no userinfo, no path (this deployment
-    sets no DOZZLE_BASE, so Dozzle serves from the root), no query or fragment,
-    and a length that keeps the finished url inside Pushover's cap whatever id is
-    appended. The message never carries the value, which could hold userinfo.
+    Refused rather than repaired: no userinfo, path, query or fragment, and short
+    enough that any id keeps the url inside Pushover's cap. Never echoes the value.
     """
     link = urllib.parse.urlsplit(value)
     try:
@@ -812,46 +654,19 @@ def golem_fallback_line(application):
 def render_notification(event, link_base, golem_fallback=False):
     """Render one event as Pushover form fields.
 
-    Priorities, and why each. OOM is 2: it is the acknowledge semantic this
-    relay was moved to Pushover for, and a container the kernel killed is the
-    one event here that should keep re-alerting until a human says they have
-    seen it. `Unexpected exit` and `Unhealthy` are 1, which bypasses the
-    recipient's quiet hours without an acknowledgement loop -- a service that
-    has gone unhealthy overnight is worth waking up a phone for, and 0 would let
-    quiet hours hold it until morning. `Recovery` is -1, a badge with no sound:
-    it is a record that closes an earlier alert, not something to wake up for.
-
-    The -1 replaces a second topic. Recovery used to be routed to
-    nas-containers purely so it could be muted separately from nas-critical;
-    Pushover expresses "do not make a noise about this" on the message itself,
-    so the second topic has no remaining job and the relay no longer has one.
-
-    Only `message` is parsed as HTML under `html=1`. `title` is plain text on
-    Pushover's side, so the container name goes into it raw and deliberately --
-    escaping it would show `&amp;` to a human reading a notification title.
-
-    `url` opens the container's page in Dozzle (see CONTAINER_ROUTE for the
-    route and why the id fits it), and is left off with its `url_title` when
-    the relay has no valid link base (see Config); and `timestamp` is when Docker reported the
-    event rather than when Pushover received it, so a delayed delivery still
-    reads at the right time. The containerId is validated hex and the base is
-    validated in Config, so neither needs quoting and the url cannot exceed
-    Pushover's cap. A timestamp before 1970 -- the envelope admits one, Docker
-    never sends one -- is left off rather than sent negative for Pushover to
-    refuse.
-
-    golem_fallback marks a golem event going out on the Containers application
-    because the Golem token is not set, the way render_beszel marks one on Alerts.
+    Priorities: OOM 2 (acknowledge loop), Unexpected exit and Unhealthy 1 (bypass
+    quiet hours), Recovery -1 (silent badge). Only `message` is HTML; the title is
+    plain text, so the name goes in raw. A pre-1970 timestamp is left off.
+    golem_fallback marks a golem event sent on Containers because the Golem token
+    is not set.
     """
     rule = event["rule"]
     container = html_escape(event["container"])
     title, state, closing = notification_wording(
         rule, event["container"][:MAX_TITLE_CONTAINER_CHARACTERS], event["exitCode"]
     )
-    # No closing promises a recovery: state is keyed on host and container id,
-    # so a container recreated under the same name -- every image bump -- never
-    # closes the entry its predecessor opened, and neither does one the ceiling
-    # suppressed or the store evicted. Pointing at Dozzle is true only with a link.
+    # No closing promises a recovery: a recreated container never closes its
+    # predecessor's entry.
     if link_base is None and rule == "Unhealthy":
         closing = ""
     priority = {
@@ -883,12 +698,7 @@ def render_notification(event, link_base, golem_fallback=False):
 def notification_wording(rule, name, exit_code):
     """(title, state, closing) for one rule; `name` is the raw, title-bounded name.
 
-    The title carries the whole meaning, because a lock screen shows the title
-    and no HTML; the lead line says it again with the state coloured. No OOM
-    line names an exit code: the envelope pins exitCode to "" for that rule
-    (RELATIONSHIPS), so there is none to show. The OOM closing is what
-    emergency_fields sends, and no rule claims a restart: that is each
-    container's own Compose policy, which this relay never sees.
+    The title carries the whole meaning: a lock screen shows no HTML.
     """
     return {
         "OOM": (
@@ -939,12 +749,7 @@ def notification_details(event, container, link_base):
     return details
 
 def validate_beszel_envelope(payload):
-    """Beszel's alert exactly as its generic webhook sends it, or SchemaError.
-
-    Exactly the two keys, both strings. The title may not carry a control
-    character; the message may carry newlines, because Beszel separates its body
-    from the link with a blank line, and nothing else.
-    """
+    """Beszel's alert exactly as its generic webhook sends it, or SchemaError."""
     if not isinstance(payload, dict) or set(payload) != BESZEL_ENVELOPE_KEYS:
         raise SchemaError("envelope keys differ")
     title = payload["title"]
@@ -961,10 +766,8 @@ def validate_beszel_envelope(payload):
 def classify_beszel(alert):
     """What a Beszel alert is: its kind, system, metric, direction and body.
 
-    kind is "status", "threshold", or None for any title this relay does not
-    recognise -- "Test Alert", and the S.M.A.R.T., ZFS, systemd and container
-    alerts 0.20.0 can also send, which is why the fallback is a path and not a
-    corner. problem is True for an alert and False for a recovery.
+    kind is "status", "threshold", or None for any unrecognised title; problem is
+    True for an alert and False for a recovery.
     """
     title = alert["title"]
     body, separator, trailing = alert["message"].rpartition("\n\n")
@@ -993,12 +796,7 @@ def classify_beszel(alert):
 
 
 def beszel_is_golem(alert):
-    """Whether a Beszel alert is about golem rather than about the NAS.
-
-    The parsed system when classify_beszel recognises the title, compared whole,
-    so a NAS system named "golem-2" stays the NAS's; otherwise the anchored title
-    match GOLEM_IN_UNPARSED_TITLE documents.
-    """
+    """Whether a Beszel alert is about golem; the parsed system is compared whole."""
     system = classify_beszel(alert)["system"]
     if system is not None:
         return system == GOLEM_BESZEL_SYSTEM
@@ -1018,20 +816,9 @@ def beszel_link(link, link_base):
 def render_beszel(alert, link_base, now, golem_fallback=False):
     """Render one Beszel alert as Pushover form fields.
 
-    An alert is 1 and its recovery -1, the split Beszel cannot make itself: a
-    host crossing a threshold overnight is worth waking a phone for, and the
-    notice that it came back is a record rather than a reason to. An
-    unrecognised title goes out as Beszel wrote it at 1, unless it ends in the
-    check mark Beszel puts on good news, which goes at -1.
-
-    The title is plain text and the message HTML, as in render_notification.
-    The When line is this relay's clock, because Beszel sends no time. The link
-    is the one Beszel appended, used only as the button and only when
-    beszel_link accepts it.
-
-    golem_fallback marks a golem alert that is going out on the Alerts
-    application because the Golem token is not set: a Reason line in amber, so
-    the misrouting is visible on the message it happened to.
+    Alert 1, recovery -1; an unrecognised title goes at 1 unless it ends in
+    Beszel's check mark. golem_fallback adds an amber Reason line when a golem
+    alert goes out on Alerts because the Golem token is unset.
     """
     parsed = classify_beszel(alert)
     fields = {"html": "1", "priority": 1 if parsed["problem"] else -1}
@@ -1096,20 +883,8 @@ def render_beszel(alert, link_base, now, golem_fallback=False):
 def render_ceiling_notice(event, scope, ceiling, day, oom_allowance=None):
     """Render the one message a tripped ceiling is allowed to send.
 
-    Silent suppression is how somebody stops noticing that their alerting died,
-    so the ceiling says out loud what it has stopped sending and when it will
-    start again. Priority 1 for the same reason the alerts it is replacing carry
-    it: this message means the platform has gone quiet, which is worse news than
-    any single alert it suppressed. Never 2 -- there is nothing to acknowledge.
-
-    It is rendered from the event that tripped the ceiling, so the `host` is the
-    one that reported it rather than a name this process would have to invent.
-
-    `oom_allowance` is what keeps the message honest in the one case where
-    "suppressed" would overstate it. A container that has spent its ordinary
-    allowance still publishes out-of-memory kills up to the higher OOM one, so a
-    notice that said nothing about that would be claiming a silence this relay
-    is not keeping. It is None for the global scope, where nothing gets through.
+    Priority 1: the platform going quiet is worse news than any suppressed alert.
+    `oom_allowance` says OOM kills still get through; None for the global scope.
     """
     host = html_escape(event["host"])
     paused = f'<font color="{COLOR_AMBER}">paused</font>'
@@ -1157,11 +932,7 @@ def open_directory_no_symlinks(path):
         raise StateError("state directory is not absolute")
     flags = os.O_RDONLY | os.O_DIRECTORY
     no_follow = getattr(os, "O_NOFOLLOW", 0)
-    # Bound before the try so the handler can ask whether this function owns a
-    # descriptor instead of asking the interpreter whether it made the name.
-    # `"directory_fd" in locals()` answered the same question correctly and was
-    # the one place in this file where resource ownership was decided by
-    # introspection; LockedState below already writes it this way (#658).
+    # Bound before the try so the handler knows whether it owns a descriptor (#658).
     directory_fd = None
     try:
         directory_fd = os.open(absolute, flags | no_follow)
@@ -1211,17 +982,7 @@ def validate_state_identity(identity):
 def utc_day(now):
     """The calendar day the ceiling counts against, as an explicit UTC date.
 
-    A calendar day rather than a rolling window, and that is the whole of the
-    clock-change answer. A rolling window stores an instant and resets on
-    `now - start >= one day`, which a backwards clock jump makes negative and
-    which then never resets: the relay would be wedged into suppression until
-    somebody noticed the silence. A day *key* has no arithmetic to go negative
-    -- a clock that moves in either direction simply lands on a different key,
-    and a key that is not today's resets the budget.
-
-    Derived from the fields explicitly rather than from date.today(), which
-    reads the process's local timezone; every other clock in this file is UTC
-    and datetime_nanoseconds raises if it is handed anything else.
+    A day key rather than a rolling window: a backwards clock jump cannot wedge it.
     """
     if now.tzinfo is None or now.utcoffset() != timedelta(0):
         raise StateError("budget clock is not UTC")
@@ -1310,11 +1071,8 @@ def parse_state_document(raw):
     if not isinstance(document, dict) or type(document.get("version")) is not int:
         raise StateError("state schema differs")
 
-    # Both older schemas migrate rather than being refused, because the file
-    # they describe is on the NAS right now and a relay that refused it would
-    # report nothing at all. A migrated document carries no budget, which
-    # process_event then rolls to today's -- so the first day after an upgrade
-    # starts with a full allowance rather than inheriting one it cannot read.
+    # Older schemas migrate rather than being refused; a migrated document starts
+    # with a full daily allowance.
     if document["version"] in LEGACY_STATE_VERSIONS:
         return parse_legacy_state_document(document), None, True
 
@@ -1410,26 +1168,9 @@ def parse_legacy_state_document(document):
 def bounded_state(entries, budget, now):
     """Bound the whole document, shedding counters before health entries.
 
-    The order matters and is the reason the budget is not stored as more
-    `entries`. A health entry may only be evicted once it is healthy, so a
-    document full of unhealthy entries has nothing left to shed and raises --
-    which stops the relay reporting anything at all. A counter may always be
-    evicted, because the global count beneath the per-container ones is what
-    actually guarantees the quota; losing a container's counter costs at most
-    one container's allowance being spent twice, and the global backstop still
-    holds. So the bytes are reclaimed from the droppable structure first.
-
-    THIS DEFERS THAT RAISE RATHER THAN PREVENTING IT. Shedding counters buys
-    back the counters' own bytes and nothing else, so once they are gone the
-    ceiling on all-unhealthy entries is exactly what it is with no counters at
-    all: 128 at a short ASCII host, where MAX_STATE_ENTRIES binds first, and 39
-    at a 256-character non-ASCII one. That raise predates the counters and is
-    unchanged by them; what the shed prevents is the counters making it arrive
-    sooner. MAX_BUDGET_ENTRIES carries the measurements.
-
-    Counters are evicted lowest-count first, never oldest-first: a container
-    already at its ceiling is the one whose counter is doing work, and dropping
-    it would hand that container a fresh allowance and a second notice.
+    Only healthy entries may be evicted, while any counter may, so bytes come from
+    counters first (lowest count first). This defers, not prevents, the
+    all-unhealthy raise; MAX_BUDGET_ENTRIES has the numbers.
     """
     proposed = {identity: dict(entry) for identity, entry in entries.items()}
     cutoff = datetime_nanoseconds(now - HEALTHY_RETENTION)
@@ -1627,21 +1368,10 @@ def unique_object(pairs):
 
 
 def log_safe(value, config, maximum=MAX_DIAGNOSTIC_CHARACTERS):
-    """One sanitiser, and every field that reaches the log goes through it.
+    """One sanitiser for every field that reaches the log.
 
-    REDACT BEFORE TRUNCATING. Truncating first can cut a credential in half and
-    leave that half in the log, and half a credential is still a leak. The
-    ordering is the whole reason this is one function rather than two steps at
-    the call site.
-
-    Control characters go because a log line is a line. A newline inside an
-    upstream response -- or inside a container name, which is text this platform
-    does not author -- forges a second entry in a log that Dozzle renders, which
-    is exactly the tool somebody is looking at when they read it.
-
-    Applied to the alert's own title as well as to the upstream's text, although
-    the envelope already rejects control characters in `container`. A sanitiser
-    with an exception is a sanitiser with a path that was missed.
+    Redact before truncating (half a credential is still a leak); strip control
+    characters so no line can forge a second log entry.
     """
     text = str(value)
     for secret in (
@@ -1657,27 +1387,10 @@ def log_safe(value, config, maximum=MAX_DIAGNOSTIC_CHARACTERS):
 
 
 def report_upstream_failure(config, notification, reason, detail):
-    """Say out loud that an alert was not delivered.
+    """Say on stderr that an alert was not delivered.
 
-    Without this the whole path is silent: there is no logging anywhere in this
-    module, /healthz reports only on the state store, and Dozzle is told 502 and
-    does not retry. A rejected alert simply vanished, and against Pushover a
-    rejection is reachable in a way it never was against a local server -- the 250
-    and 1024 caps, the priority-2 parameters, and credentials that were revoked
-    or mistyped.
-
-    stderr because that is `docker logs`, and therefore Dozzle, which is the
-    tool whose job is showing somebody this.
-
-    ONE write, assembled with its own newline. print() issues two -- the text,
-    then the terminator -- and this server is threaded, so two concurrent
-    failures can interleave into a merged line. A log that garbles under
-    concurrency is worse than no log, because it gets read as evidence of
-    something it did not say.
-
-    No credential can reach here: both travel in the request body, which is
-    never logged, and log_safe redacts them from the far end's text anyway
-    in case it echoes one back.
+    Dozzle is told 502 and does not retry, so this is the only trace. One
+    assembled write, because print() issues two and this server is threaded.
     """
     line = (
         f"alert-relay: {reason}: "
@@ -1689,27 +1402,10 @@ def report_upstream_failure(config, notification, reason, detail):
 
 
 def report_refused_envelope(config, route, error):
-    """Say out loud that an envelope was refused, which a 400 never did.
+    """Say on stderr that an envelope was refused, which a 400 never did (#699).
 
-    #699 is what that silence costs. Dozzle v11.1.0 began rendering event
-    timestamps in local time, the relay's TIMESTAMP_PATTERN accepts only the
-    `Z` spelling, and every health alert was refused here -- for three days of
-    CI, across six runs and three diagnostic changes, with nothing on either
-    side naming a reason. Dozzle said only "webhook returned status code 400";
-    this end said nothing at all, because none of the 400 paths wrote a line.
-    report_upstream_failure covers the far end rejecting US; this covers us
-    rejecting the near end, and the two together close the route.
-
-    The exception's own text is the diagnosis and it is safe to print: every
-    SchemaError message here names a FIELD and never its value
-    ("timestamp syntax differs", "invalid container"), which is the same
-    discipline the managed-user schema keeps for the same reason. log_safe runs
-    over it regardless, because a message is a poor place to discover an
-    exception to that rule.
-
-    ONE assembled write, for report_upstream_failure's reason: this server is
-    threaded and print() issues two writes, so concurrent refusals can
-    interleave into a line that reads as something neither of them said.
+    SchemaError messages name a field, never its value; log_safe runs regardless.
+    One assembled write, as in report_upstream_failure.
     """
     line = (
         f"alert-relay: refused an envelope on {route}: "
@@ -1720,14 +1416,7 @@ def report_refused_envelope(config, route, error):
 
 
 def read_upstream_detail(error):
-    """The far end's own explanation, bounded, and never at the cost of the failure.
-
-    Pushover answers a rejection with an `errors` array naming the bad
-    parameter, which is what separates "the user key is wrong" from "the message
-    is too long" from "priority 2 without retry" -- three failures a status code
-    alone leaves an operator guessing between. A read that fails must not mask
-    the rejection it was trying to describe, so it degrades to saying so.
-    """
+    """The far end's own explanation, bounded; a failed read never masks the failure."""
     try:
         return error.read(MAX_DIAGNOSTIC_BYTES).decode("utf-8", errors="replace")
     except Exception:  # noqa: BLE001 - a failed read must not replace the failure
@@ -1737,15 +1426,8 @@ def read_upstream_detail(error):
 def publish(config, notification, token):
     """POST one message to Pushover, as the application `token` names.
 
-    Container events go out on the Containers application and Beszel's host
-    alerts on the Alerts one, or golem's on the Golem one, so the caller
-    chooses; the user key is shared.
-
-    Pushover authenticates by form field rather than by header: the application
-    token and the user key are `token` and `user` in the body, and there is no
-    Authorization header at all. Both are therefore in the request body rather
-    than in a header, which is worth knowing wherever a request is captured --
-    a recorded body is a credential.
+    Credentials travel as `token` and `user` form fields, so a recorded request
+    body is a credential.
     """
     body = urllib.parse.urlencode(
         {
@@ -1760,22 +1442,12 @@ def publish(config, notification, token):
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
-    # The two failures below were one failure until #558's review: both raised
-    # `UpstreamError("upstream unavailable")`, byte for byte, so a permanent
-    # rejection and a transient outage were the same object to every caller and
-    # the same silence to every operator. They now differ in the exception and
-    # in the log, because the response to them differs -- an outage heals and a
-    # rejection never does.
-    #
-    # HTTPError first, and that ordering is load-bearing: it subclasses URLError
-    # which subclasses OSError, so the broad branch below would swallow every
-    # rejection if it came first.
+    # Rejection and outage are reported differently: an outage heals, a rejection
+    # never does. HTTPError first: it subclasses URLError, which subclasses OSError.
     try:
         with NO_REDIRECT_OPENER.open(request, timeout=PUBLISH_TIMEOUT_SECONDS) as response:
             if not 200 <= response.status < 300:
-                # Defensive rather than reached: urllib raises HTTPError for
-                # anything at or above 400, and the redirect handler refuses 3xx
-                # into an HTTPError too, so nothing known lands here.
+                # Defensive: urllib raises HTTPError for >= 400 and redirects are refused.
                 report_upstream_failure(
                     config, notification,
                     f"pushover rejected the alert (HTTP {response.status})",
@@ -1801,17 +1473,9 @@ def publish(config, notification, token):
 
 
 def rolled_budget(budget, now):
-    """Today's budget, resetting whenever the stored day is not today's.
+    """Today's budget, reset whenever the stored day is not today's (either direction).
 
-    Not "reset when a day has elapsed": the comparison is equality against a
-    date key, so a clock that moved backwards resets exactly as a clock that
-    moved forwards does. There is no window whose start can end up in the
-    future and no difference that can go negative, which is the one way a
-    ceiling wedges itself permanently shut.
-
-    A missing budget -- a state file written by an older schema, or none at all
-    -- is today's empty one, so an upgrade starts with a full allowance rather
-    than inheriting a count it cannot read.
+    A missing budget is today's empty one, so an upgrade starts with a full allowance.
     """
     day = utc_day(now)
     if budget is None or budget["day"] != day:
@@ -1829,55 +1493,11 @@ def rolled_budget(budget, now):
 class BudgetFloor:
     """What this process has already authorised today, held outside the store.
 
-    THE DEFECT THIS EXISTS FOR. The ceiling lived entirely in the state file,
-    so a state write that failed took the increment with it: the next event
-    re-read an unchanged document, saw the same count, and published again.
-    Measured at 10/25/200 with the write always failing, 500 events produced
-    500 alerts and no notice, against 10 alerts and one notice with the write
-    working. The notice latch was worse, because nothing backed it at all --
-    ten over-ceiling events produced ten notices instead of one.
-
-    That is not a theoretical failure. `/state` filling or remounting read-only
-    is the same class of event this relay exists to report, so the quota bomb
-    the ceiling was added to prevent was reachable through the ceiling's own
-    storage, and reachable silently: the relay answers Dozzle 500 and keeps on
-    publishing.
-
-    FAILING CLOSED WOULD BE WORSE. Refusing to publish when the write fails
-    silences alerting on a host whose disk has just filled, which is the one
-    moment somebody needs to hear from it. So the bound degrades instead: with
-    the store working it is durable across restarts, and with the store failing
-    it holds for the lifetime of this process.
-
-    WHAT "THE LIFETIME OF THIS PROCESS" IS WORTH, stated because the phrase
-    flatters itself. A relay whose store is unwritable is in exactly the
-    situation where it may also be restarting, and each restart starts from the
-    last count that LANDED -- so the real bound with the store broken is
-    `ceiling x restarts`, not `ceiling`. Measured with the write always failing
-    and nothing ever persisting: five restarts of a hundred events each
-    delivered 50 alerts and 5 notices, where one process would have delivered
-    10 and 1. That is a bounded degradation of a device that previously had no
-    bound at all in this state -- the same run before BudgetFloor published
-    every one of the 500 -- and it is the honest description rather than a
-    reason to reach for something durable-but-unwritable.
-
-    A store that is UNREADABLE rather than unwritable does not leak at all:
-    read_state_at raises at the top of process_event, before anything is
-    rendered or published, so the request ends in a 500 with nothing sent.
-
-    THIS LOCK IS NOT THE CEILING'S INTERLOCK. `self._lock` covers exactly two
-    things -- reading the dict in raise_floor and assigning it in record -- and
-    the ceiling's decision is a check-then-act spanning both, plus a publish in
-    between. Three separate acquisitions guard nothing across the whole
-    sequence. What makes it atomic is the exclusive flock process_event holds
-    for all of it; see the ordering comment there, which also records what that
-    costs and why it is still right.
-
-    OWNED BY THE SERVER, not by the module. A module-level cache would survive
-    a create_server in the same interpreter, which is how the restart case in
-    tests/dozzle_alert_relay_test.py stands in for a container recreation -- so
-    it would have made that case stop proving the state-backed half it exists
-    to prove. One server is one process here.
+    Without it a failing state write lost each increment, and 500 events published
+    500 alerts. Failing closed would silence alerting when the disk fills, so the
+    bound degrades to per-process (ceiling x restarts with a broken store).
+    Its lock is NOT the ceiling's interlock: process_event's flock is. Owned by
+    the server, not the module, so the restart test still proves the store half.
     """
 
     def __init__(self):
@@ -1885,12 +1505,7 @@ class BudgetFloor:
         self._budget = None
 
     def raise_floor(self, budget):
-        """`budget`, never lower than what this process has already authorised.
-
-        Elementwise: the larger count and the latched notice win, on the global
-        scope and on each container. A stored document that lost an increment
-        is corrected; one that is ahead of this process is left alone.
-        """
+        """`budget`, never lower than what this process has already authorised (elementwise)."""
         with self._lock:
             floor = self._budget
         if floor is None or floor["day"] != budget["day"]:
@@ -1913,18 +1528,9 @@ class BudgetFloor:
         }
 
     def record(self, budget):
-        """Adopt a charged budget as the new floor.
+        """Adopt a charged budget as the new floor, only after its publish went out.
 
-        Called only after the publish it authorised has actually gone out, so a
-        refusing upstream still consumes nothing -- the property the
-        publish-before-persist order already had, and which this must not cost.
-        Both halves now have to hold at once.
-
-        The budget recorded is the one bounded_state returned, so the floor
-        inherits that bound and cannot grow with container churn. A counter the
-        bound shed is one this floor forgets too, which is the same degradation
-        the shed already accepts: the global count beneath them is what
-        guarantees the quota.
+        It is bounded_state's result, so the floor cannot grow with container churn.
         """
         with self._lock:
             self._budget = {
@@ -1942,23 +1548,9 @@ def charge_budget(budget, identity, rule, config):
     """Decide what today's remaining allowance lets this alert be.
 
     Returns ("publish", budget), ("notice", budget, scope, ceiling, oom) or
-    ("silent", budget). The budget returned is a new mapping; the caller writes
-    it only once the publish it authorised has actually gone out, so an upstream
-    that is refusing does not quietly eat the day's allowance.
-
-    Two ceilings, one counter. The global count is the backstop that makes the
-    monthly quota a guarantee rather than a hope, and it is checked first so a
-    platform that has already gone quiet does not then emit one notice per
-    container on top. Beneath it each container has its own allowance, so one
-    noisy container cannot drown out a real alert somewhere else.
-
-    OOM is compared against a higher per-container allowance rather than being
-    exempt, and the crash loop is why. A container the kernel kills, that
-    `restart: unless-stopped` starts again, that the kernel kills again, emits
-    an unbounded `oom` stream; a fully exempt rule would relay all of it and
-    the quota would be gone. It still counts against the global backstop for
-    the same reason. What the higher allowance buys is that a container whose
-    ordinary alerts have been suppressed can still report that it was killed.
+    ("silent", budget); the caller records the budget only after publishing.
+    Global backstop first, then a per-container allowance; OOM gets a higher
+    allowance rather than an exemption, because a crash loop is unbounded.
     """
     ceiling = (
         config.oom_container_ceiling if rule == "OOM" else config.container_ceiling
@@ -1979,9 +1571,7 @@ def charge_budget(budget, identity, rule, config):
         # out-of-memory kills included.
         return ("notice", proposed, "global", config.global_ceiling, None)
 
-    # No identity is a Beszel host alert. It has no container to charge, and a
-    # state identity requires a container id, so it counts against the global
-    # ceiling alone -- the bound that makes the monthly quota a guarantee.
+    # A Beszel host alert has no container, so it counts against the global ceiling only.
     if identity is None:
         proposed["count"] += 1
         return ("publish", proposed)
@@ -2011,9 +1601,7 @@ def charge_budget(budget, identity, rule, config):
 def process_event(config, event, floor):
     """Reconcile one event, publish what the ceiling allows, and persist.
 
-    `floor` is required rather than defaulted, because a default would be a way
-    to call this with the safety device switched off -- which is exactly the
-    shape of the defect it was added to close.
+    `floor` has no default: a default would switch the safety device off.
     """
     identity = f"{event['host']}\0{event['containerId']}"
     now = utc_now()
@@ -2021,9 +1609,8 @@ def process_event(config, event, floor):
     golem_fallback = golem and config.pushover_golem_token is None
     with LockedState(config.alert_state_path) as state_file:
         entries, stored_budget, migration_required = state_file.read()
-        # The store is read first and then corrected upwards, never trusted
-        # downwards: a document whose last increment never landed would
-        # otherwise hand this process the same allowance a second time.
+        # Read, then corrected upwards, never downwards: a lost increment must not
+        # grant the same allowance twice.
         budget = floor.raise_floor(rolled_budget(stored_budget, now))
         proposed = {key: dict(entry) for key, entry in entries.items()}
         publication_required = event["rule"] in {"OOM", "Unexpected exit"}
@@ -2033,9 +1620,7 @@ def process_event(config, event, floor):
             if publication_required is None:
                 return
 
-        # The ceiling is charged only once the transition logic above has said
-        # this event is worth publishing at all, so a suppressed duplicate does
-        # not spend the day's allowance on a message nobody was going to get.
+        # Charged only once the transition says publish, so suppressed duplicates are free.
         notification = None
         charged = budget
         if publication_required:
@@ -2047,44 +1632,11 @@ def process_event(config, event, floor):
         replacement_required = (
             migration_required or proposed != entries or charged != stored_budget
         )
-        # Publish, then raise the floor, then persist -- and all three of those
-        # positions are load-bearing in a different direction.
-        #
-        # ALL OF IT INSIDE THE FLOCK, WHICH IS THE INTERLOCK. The ceiling is a
-        # check-then-act: raise_floor reads, charge_budget decides, record and
-        # replace write, and the publish those authorise sits between them.
-        # BudgetFloor's own lock covers only its dict and spans none of that, so
-        # it is NOT what keeps two concurrent events from each seeing the same
-        # remaining allowance -- the exclusive flock LockedState holds across
-        # this whole block is. Measured with the window widened to 50ms: with
-        # the flock, a ceiling of 10 delivered 10 and never had two publishes in
-        # flight; with the flock removed and BudgetFloor left in place, the same
-        # ceiling delivered 40 with 40 concurrent publishes. The floor still
-        # looked like protection the whole time.
-        #
-        # SO `publish` IS DELIBERATELY INSIDE THE LOCK, and the cost is real and
-        # is not an oversight: it holds the HTTP timeout named by
-        # PUBLISH_TIMEOUT_SECONDS, so a hung Pushover serialises every
-        # concurrent Dozzle POST behind it for that long. That is
-        # accepted here because the timeout bounds it and this relay's event
-        # volume is a handful of container transitions, not a stream. Moving the
-        # publish out is the obvious throughput fix and it BREACHES THE CEILING
-        # SILENTLY -- the measurement above is what that costs. Do not take it.
-        #
-        # PUBLISH BEFORE EITHER RECORD: an UpstreamError here leaves the
-        # increment nowhere, so an upstream that is refusing cannot silently
-        # consume the whole daily allowance while delivering nothing.
-        #
-        # FLOOR BEFORE PERSIST: recording in memory cannot fail, so the bound
-        # survives a state write that does. Before this the ceiling lived only
-        # in the file, and a failing write meant no bound at all -- 500 events
-        # published 500 alerts and no notice. BudgetFloor records the
-        # measurement.
-        #
-        # PERSIST LAST, and its failure still reaches the caller as a 500. The
-        # event was delivered, so that status is about the store rather than
-        # about the alert; what it must no longer mean is that the ceiling
-        # forgot the alert happened.
+        # Publish, raise the floor, then persist, ALL INSIDE THE FLOCK: the flock (not
+        # BudgetFloor's lock) is the ceiling interlock. Moving publish out breaches the
+        # ceiling silently (measured: 40 delivered against a ceiling of 10). Do not.
+        # Publish first so a refusing upstream spends nothing; floor before persist so
+        # the bound survives a failed write; a failed persist still returns 500.
         if notification is not None:
             # golem's events go out on the Golem application; a ceiling notice
             # stays on Containers, as process_beszel keeps its own on Alerts.
@@ -2107,10 +1659,7 @@ def process_event(config, event, floor):
 def health_transition(event, identity, entries, proposed):
     """Whether an Unhealthy or Recovery event publishes; None drops it unrecorded.
 
-    `proposed` is the working copy of `entries` and receives the entry this
-    event leaves behind. None means the event is older than what is stored, or a
-    duplicate of an entry that is already healthy: process_event then returns
-    without charging, publishing or persisting anything.
+    `proposed` receives the entry this event leaves behind.
     """
     incoming_state = (
         "unhealthy" if event["rule"] == "Unhealthy" else "healthy"
@@ -2158,15 +1707,8 @@ def decision_notification(config, event, decision, golem_fallback=False):
 def process_beszel(config, alert, floor):
     """Charge one Beszel alert against the global ceiling, publish it, persist.
 
-    The order and the lock are process_event's, for the reasons recorded there:
-    everything from raise_floor to replace inside the flock, publish before the
-    floor records, the floor before the persist. There is no health state to
-    reconcile, so every Beszel alert is a publication the ceiling decides on.
-
-    An alert about golem publishes on the Golem application, or on Alerts with
-    a Reason line and a stderr line when the Golem token is not set. The
-    ceiling notice stays on Alerts whichever host tripped it: the ceiling is
-    shared, so the pause it announces is the NAS's too.
+    Same order and lock as process_event. Golem alerts use the Golem application,
+    or Alerts with a Reason line when its token is unset; ceiling notices use Alerts.
     """
     now = utc_now()
     golem = beszel_is_golem(alert)
@@ -2220,9 +1762,7 @@ class RelayRequestHandler(BaseHTTPRequestHandler):
         self.send_text(200, "ok\n")
 
     def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler API
-        # /alerts is Dozzle's and /beszel is Beszel's. Both take the same bearer
-        # token, the same content type and the same size bound; they differ only
-        # in the envelope and in which Pushover application publishes.
+        # Same token, content type and size bound; they differ in envelope and application.
         if self.path not in {"/alerts", "/beszel"}:
             self.send_text(404, "not found\n")
             return
@@ -2316,11 +1856,8 @@ class RelayRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    # Access logging is deliberately off, and this override is what turns it
-    # off. It is NOT where a failure gets reported: publish() writes to stderr
-    # when an alert is not delivered, which is the line an operator wants, and
-    # resurrecting a request log here would bury it under one entry per Dozzle
-    # POST -- most of which are the events that were delivered fine.
+    # Access logging off deliberately: publish() reports undelivered alerts on
+    # stderr, and a request log would bury them.
     def log_message(self, _format, *_args):
         pass
 
@@ -2341,10 +1878,7 @@ def create_server(address, config):
 def stop_on_signal(server):
     """Shut `server` down when a stop signal arrives. Runs off the main thread.
 
-    server.shutdown() blocks until the accept loop has stopped, so it can only
-    be called from a thread that is not running it. That is the whole reason
-    this waits here rather than in a signal handler, where the caller would be
-    the accept loop itself and would wait for a loop waiting for it.
+    server.shutdown() blocks until the accept loop stops, so it cannot run on it.
     """
     signal.sigwait(STOP_SIGNALS)
     server.shutdown()
@@ -2353,46 +1887,11 @@ def stop_on_signal(server):
 def serve_until_stopped(server):
     """Serve until a stop signal arrives, then close the listener and return.
 
-    WHY A STOP IS WAITED FOR RATHER THAN HANDLED. Compose starts this script in
-    exec form, so in its container the Python process is the container's init.
-    PID 1 is the one process the kernel applies no default signal disposition
-    to: a signal nothing installed a handler for is discarded rather than
-    terminating it. A relay that handled nothing but SIGINT -- which is all this
-    did until #516, as the KeyboardInterrupt out of serve_forever -- therefore
-    ignored `docker stop` outright, and Docker SIGKILLed it at the end of the
-    ten second grace period for exit 137. Since #493 the `die` rule no longer
-    excludes 137 and it matches every container, so every recreation of this
-    container paged, through this container, which is the only path the
-    platform's alerts have.
-
-    A handler that raises does not fix that, and the measurement is worth
-    keeping: socketserver reports any exception raised while it is dispatching a
-    request through handle_error and carries on serving, so a stop signal
-    landing between accept and the worker thread starting is swallowed and the
-    process hangs until the SIGKILL it was meant to avoid. That was observed
-    once in eight attempts, on SIGINT, with a client connecting at start-up. The
-    same window has always made the KeyboardInterrupt path unreliable.
-
-    So the signals are blocked before any thread exists and one thread waits for
-    them with sigwait. Nothing is ever delivered asynchronously, so there is no
-    window to land in and no handler re-entering a lock the interrupted code
-    already holds; blocking is inherited, so no request thread can take a stop
-    signal either. SIGKILL cannot be blocked, which is the point: an
-    out-of-memory kill still ends this process at 137 and still pages.
-
-    What this does not cover is the interpreter's own start-up, before main()
-    blocks anything: a stop arriving there still meets PID 1 with no
-    disposition and is discarded, and the container is SIGKILLed for 137.
-    `init: true` would close it, and was not taken: this platform's rule for that
-    key is that an init shim is for a PID 1 that never reaps what it forks or
-    cannot act on a stop signal at all, and this relay forks nothing and takes
-    its stop signals itself.
-    The window is interpreter start-up wide and a recreation stops a container
-    that has been running for hours, so nothing this platform does can land in
-    it; a stop aimed at a relay that is itself restarting could.
-
-    The waiter is a daemon, so a caller that stops the server itself -- which is
-    how the entry point is exercised in tests -- still returns from here.
+    As PID 1 this process gets no default signal dispositions, and a raising
+    handler can be swallowed by socketserver (#516), so stop signals are blocked
+    before any thread exists and one daemon thread sigwaits for them. SIGKILL
+    still ends it at 137. `init: true` was not taken: this relay forks nothing and
+    takes its own stop signals; only interpreter start-up is left uncovered.
     """
     waiter = threading.Thread(
         target=stop_on_signal, args=(server,), name="alert-relay-stop", daemon=True
@@ -2405,10 +1904,8 @@ def serve_until_stopped(server):
 
 
 def main():
-    # Blocked before the configuration is read and before any thread exists, so
-    # the only window in which a stop signal meets a default disposition is the
-    # interpreter's own start-up. serve_until_stopped records what that leaves
-    # open and why it was left.
+    # Blocked before config and before any thread, so only interpreter start-up
+    # meets a default disposition; see serve_until_stopped.
     signal.pthread_sigmask(signal.SIG_BLOCK, STOP_SIGNALS)
     try:
         config = Config.from_mapping(os.environ)
@@ -2422,14 +1919,9 @@ def main():
     if config.beszel_link_problem is not None:
         sys.stderr.write(f"alert-relay: {config.beszel_link_problem}\n")
         sys.stderr.flush()
-    # All interfaces, but only inside this container's network namespace. The
-    # host publication is 127.0.0.1 only (services/dozzle/compose.yml, which
-    # tests/contracts/dozzle-stack.rb pins), for the Tailscale Serve TCP forward
-    # golem's Dozzle agent arrives through (roles/dozzle/tasks/serve.yml). So the
-    # addresses in reach are the Compose-network address Dozzle and Beszel dial by
-    # service name, and the docker-proxy on the host's loopback. Narrowing this
-    # bind to loopback would break both, and the container address is assigned at
-    # start time rather than known here.
+    # All interfaces inside the container namespace only: the host publication is
+    # 127.0.0.1 (for golem's Tailscale Serve forward), and the Compose-network
+    # address Dozzle and Beszel dial is not known in advance.
     server = create_server(("0.0.0.0", config.alert_relay_port), config)
     serve_until_stopped(server)
 

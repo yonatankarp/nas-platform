@@ -56,19 +56,9 @@
   loop: "{{ downloaders_sabnzbd_categories | dict2items }}"
   loop_control:
     label: sabnzbd-category
-  # All three owned fields are compared, not just the directory. `pp` was written
-  # as a literal here and in the bootstrap template, so the only thing that ever
-  # decided whether this request ran was the destination -- and a host whose
-  # directories already matched would keep whatever post-processing level it was
-  # first created with, for ever. SABnzbd answers `get_config` with `pp` as a
-  # JSON string, so both sides are stringified rather than trusting the type.
-  #
-  # `script` is the third for exactly that reason and not by symmetry. It was a
-  # literal `None` in the same request, so a host whose directories and `pp`
-  # already matched would never have been sent the gate at all: the category
-  # would keep running no script, the download would import unscanned, and every
-  # converge would report `ok`. The default('') on the read is what makes a
-  # category SABnzbd has not yet stored differ from the declared name.
+  # All three owned fields are compared, not just the directory; otherwise a
+  # matching host would never be sent `pp` or the gate script. get_config returns
+  # `pp` as a string, hence both sides stringified.
   when: >-
     (downloaders_sabnzbd_config_before.json.config.categories |
      selectattr('name', 'equalto', item.key) | map(attribute='dir') |
@@ -84,19 +74,12 @@
   changed_when: true
   no_log: true
 
-# Everything below reconciles the one Usenet server the platform owns, and it is
-# reachable only when a provider is declared. An undeclared provider has no host,
-# port, account or connection count to push, so there is nothing here to
-# reconcile towards -- `verify.yml` asserts the complementary state instead, that
-# no server carries the owned name. The whole section is one block so the gate is
-# a single condition rather than four that could drift apart.
+# Reachable only when a provider is declared; verify.yml asserts the
+# undeclared state. One block so the gate is a single condition.
 - name: Reconcile the declared Usenet server
   when: downloaders_usenet_provider_declared | bool
   block:
-    # SABnzbd creates the `servers` section only when a server exists, so a NAS
-    # that has never had a provider answers `get_config` with no `servers` key at
-    # all. That is the bootstrap case this reconciliation exists for, so the
-    # lookup defaults rather than indexing.
+    # `servers` exists only once a server does, so the lookup defaults.
     - name: Find the operator-owned SABnzbd Usenet server
       ansible.builtin.set_fact:
         downloaders_sabnzbd_server_matches: >-
@@ -115,10 +98,8 @@
       changed_when: false
       no_log: true
 
-    # `get_dict(for_public_api=True)` replaces the password with ten asterisks
-    # and leaves every other field plain, so the password is the one owned field
-    # that cannot be compared. It is projected out of both sides and the
-    # vault-side fingerprint below is what notices a rotation.
+    # The API masks the password, so it is projected out and the vault-side
+    # fingerprint below notices a rotation.
     - name: Build the owned SABnzbd Usenet server projections
       ansible.builtin.set_fact:
         downloaders_sabnzbd_server_current_projection: >-
@@ -147,20 +128,8 @@
       changed_when: false
       no_log: true
 
-    # `mode=set_config&section=servers` is an upsert keyed by `keyword`: SABnzbd
-    # merges the parameters it recognises into an existing server of that name
-    # and creates one otherwise, then calls `Downloader.update_server`, so a
-    # single request is the whole operation and no restart or second mode is
-    # needed. Only the fields named here are touched.
-    #
-    # This is the one call in the role that carries a third-party credential, and
-    # it is the one that does not put its parameters in the URL. SABnzbd's own
-    # request log prints the whole parameter dict either way once debug logging
-    # is on, so the form body is not what keeps the password out of
-    # `sabnzbd.log`; it keeps it out of anything that records a URL, which is
-    # every access log, proxy and history this platform does not control today
-    # and might tomorrow. CherryPy merges a form-urlencoded body into the
-    # handler's keyword arguments, so the request SABnzbd sees is identical.
+    # set_config on `servers` is an upsert keyed by `keyword`. The credential goes
+    # in the form body so it stays out of anything that records a URL.
     - name: Reconcile the operator-owned SABnzbd Usenet server
       ansible.builtin.uri:
         url: "{{ downloaders_sabnzbd_api }}"
@@ -175,11 +144,8 @@
           username: "{{ vault_downloaders_sabnzbd_server_username }}"
           password: "{{ vault_downloaders_sabnzbd_server_password }}"
           connections: "{{ media_usenet_provider.connections }}"
-          # `| int` is load-bearing. `set_config` parses a server flag with
-          # `bool_conv(int_conv())`, so the boolean rendered as `True` would be
-          # stored as 0 -- a TLS connection silently disabled on a server that
-          # still reads as configured for it. The declaration is a boolean
-          # because that is the only spelling this cannot go wrong from.
+          # `| int` is load-bearing: set_config parses the flag with bool_conv(int_conv()),
+          # so `True` would be stored as 0 and silently disable TLS.
           ssl: "{{ media_usenet_provider.ssl | int }}"
           enable: "{{ downloaders_sabnzbd_owned_server.enable }}"
           priority: "{{ downloaders_sabnzbd_owned_server.priority }}"

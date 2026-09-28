@@ -1,14 +1,7 @@
 ---
-# The reconciliation identity. Validates the recovery marker an interrupted
-# rename leaves behind, authenticates the primary administrator under whichever
-# name that marker says it currently carries, falls back to the pre-hop name,
-# refuses anything that is not the vault administrator, and resolves the bearer
-# token every later stage sends.
-#
-# verify.yml carries its own copy of the authenticate/require/resolve sequence,
-# tagged platform_verify_jellyfin. Sharing one parameterised file between the
-# two would need apply: tags: at one call site, which changes tag selection --
-# the one thing this split is proving it does not do. Deliberately deferred.
+# The reconciliation identity: honours an interrupted rename's recovery marker
+# and resolves the bearer token later stages send. verify.yml keeps its own copy
+# deliberately; sharing a file would need apply: tags:, changing tag selection.
 
 - name: Inspect Jellyfin primary administrator recovery marker
   ansible.builtin.stat:

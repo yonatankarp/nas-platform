@@ -26,124 +26,59 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
-# The names run_log writes, which is a stamp and the revision it attempted.
-# Spelled LOG_PATTERN rather than ATTEMPT_LOG_PATTERN so rotate_logs below is
-# byte-identical to the other script's copy of it and can be held that way; the
-# two values differ, and nothing requires them to agree (#658).
+# Named LOG_PATTERN so rotate_logs stays byte-identical to image_prune.py's (#658).
 LOG_PATTERN = re.compile(r"(\d{8}T\d{6}Z)-[0-9a-f]{40}")
 TIMESTAMP_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
-# Bounds the attempted record. The count is the hard cap; the window keeps it
-# from carrying revisions nobody remembers.
 ATTEMPTED_RETENTION_COUNT = 50
 ATTEMPTED_RETENTION_DAYS = 90
 MAX_RESPONSE_BYTES = 1024 * 1024
-# One page of recent runs. It bounds how far back a poll can see, so it has to
-# hold more than one revision's worth: a revision owns several runs over its
-# life, and every re-run adds another. Since #916 the page is fetched without a
-# status filter, so queued and running pushes take slots the completed ones used
-# to have; 30 keeps the former 20 with ten in flight. Measured 2026-09-28, 20
-# runs were 263 KB and 50 were 655 KB, so 30 is about 40% of MAX_RESPONSE_BYTES.
+# One page of recent runs; it bounds how far back a poll can see. Unfiltered by
+# status since #916, so in-flight runs take slots too.
 CI_RUN_PAGE_SIZE = 30
 READ_SIZE = 64 * 1024
 NETWORK_TIMEOUT_SECONDS = 10
 GIT_TIMEOUT_SECONDS = 10
-# The fetch in update_checkout gets neither of the two budgets around it. Not
-# ls-remote's ten seconds above, because a fetch legitimately transfers; not
-# COMMAND_TIMEOUT_SECONDS below, because it runs while this process holds the
-# deployment lock, and #351 is what an hour of that costs -- a blackholed
-# connection parked the lock for an hour, during which deployment_bundle refuses
-# every hand-run converge and the polls in the window return None. The packed
-# repository is nine megabytes and this fetch is incremental against a checkout
-# that already exists, so three minutes is headroom over a slow link rather than
-# a budget anything legitimate can reach.
+# Not the hour-long COMMAND_TIMEOUT_SECONDS: the fetch runs under the deployment
+# lock, and a blackholed connection parked that lock for an hour (#351).
 GIT_FETCH_TIMEOUT_SECONDS = 3 * 60
-# merge-base and checkout reach no network at all. What they can still wait on
-# is a stuck filesystem, and an hour of that is an hour of the lock just the
-# same, so they are bounded too -- generously, because a checkout writes files.
+# No network, but a stuck filesystem still holds the lock, so bounded too.
 GIT_LOCAL_TIMEOUT_SECONDS = 60
 NOTIFICATION_TIMEOUT_SECONDS = 10
-# The tests raise the notification budget on a loaded machine, where spawning the
-# stub curl alone can outlast ten seconds (#319's shape). Unset or unusable, it is
-# NOTIFICATION_TIMEOUT_SECONDS; it never exceeds five minutes of a held lock.
+# Tests raise the notification budget on loaded machines (#319); capped at five minutes.
 NOTIFICATION_TIMEOUT_ENVIRONMENT = "PLATFORM_AUTO_DEPLOY_NOTIFICATION_TIMEOUT_SECONDS"
 NOTIFICATION_TIMEOUT_CEILING_SECONDS = 5 * 60
-# curl's own total budget for one healthchecks.io ping (#606). The ping runs
-# after the deployment lock is released, so this bounds a tick's wall time and
-# never the lock; the process deadline is a backstop for a curl that ignores it.
+# curl's total budget for one healthchecks.io ping (#606); runs after the lock is released.
 HEALTHCHECKS_TIMEOUT_SECONDS = 10
-# https, and nothing a curl config line would read as more than one URL: no
-# whitespace, which ends the value or starts a directive, and no quote or
-# backslash, which end or escape it. Byte for byte the vault contract's HTTPS_URL
-# in filter_plugins/vault_credential_schema.py, which tests/policy_vault_test.rb
-# holds: drift would let the contract accept a URL this poller ignores, and the
-# check would then alert on silence from a healthy poller.
+# Byte for byte the vault contract's HTTPS_URL in filter_plugins/vault_credential_schema.py
+# (held by tests/policy_vault_test.rb): no whitespace, quote or backslash a curl config would misread.
 HEALTHCHECKS_URL_PATTERN = re.compile(r'^https://[^\s"\\]+\Z')
-# Consecutive polls that fail before eligibility is even decided. At the
-# five-minute cron cadence this is a quarter hour of being unable to see
-# main, which no transient network blip should reach.
+# Consecutive polls failing before eligibility is decided: a quarter hour at the cron cadence.
 BLIND_POLL_THRESHOLD = 3
-# Pushover's own caps, spelled exactly as services/dozzle/alert_relay.py and
-# scripts/image_prune.py spell them; tests/policy_test.rb holds the copies
-# identical. Over any of them is a 4xx and a lost message rather than a cut one.
-# The escaped-field bound is on html_escape's result, because escaping expands.
+# Pushover's caps, held identical across the copy sites by tests/policy_test.rb.
+# Over any of them is a lost message. The escaped-field bound applies after escaping.
 MAX_ESCAPED_FIELD_CHARACTERS = 384
 MAX_MESSAGE_CHARACTERS = 1024
 MAX_TITLE_CHARACTERS = 250
-# The tap-through link: https only, and omitted rather than cut when too long.
 MAX_URL_CHARACTERS = 512
 MAX_URL_TITLE_CHARACTERS = 100
 COMMAND_TIMEOUT_SECONDS = 60 * 60
-# --verify holds the deployment lock for as long as verify.yml runs, and #351 is
-# what an hour of a held lock costs. Half the hourly cadence, so a stuck run is a
-# failure before the next one is due rather than a lock the next poll waits out.
+# Half the hourly cadence, so a stuck verify fails before the next is due (#351).
 VERIFY_TIMEOUT_SECONDS = 30 * 60
-# Each hourly-only tag runs after the services, in the same lock hold, under its
-# own budget, so a service run that timed out still leaves it one. The hold is at
-# most 30 + 10 per hourly-only tag: 50 minutes with two, under the hourly cadence.
+# Per hourly-only tag, after the services in the same lock hold.
 HOURLY_ONLY_VERIFY_TIMEOUT_SECONDS = 10 * 60
-# How long --verify waits for a deployment to release the lock before skipping
-# the hour. A skipped verify pings nothing, and the hourly check tolerates
-# one missed ping, so a single collision spends the whole grace period and the
-# second one alerts -- for a cause that is neither a failure nor anything an
-# operator can act on. A deployment runs about 18 minutes on this host and the
-# poller starts one every five, so the verify cron lands inside one often enough
-# to have made that alert routine: the pair observed on 2026-09-16 was a DOWN and
-# an UP one second apart, the recovering run's own ping arriving as the grace
-# expired. Waiting turns the common collision into a ping in the same hour. The
-# budget comes from the cadence and not from the deployment: 15 waiting plus the
-# 40-minute hold of the services and the array check was 55 minutes, inside the
-# hour. The Immich originals check (#907) makes the worst case 65, so a verify
-# that waits its whole budget and then times out every run overlaps the next
-# hour's cron by five minutes, and that cron waits for it like any holder rather
-# than skipping. Each run normally takes a small part of its budget. A
-# deployment with longer left than that is skipped exactly as before -- the skip
-# stays the signal for a verify that cannot run at all.
+# How long --verify waits for a deployment to release the lock before skipping the
+# hour. A skip pings nothing, and two skips alert, so a collision waits instead.
 VERIFY_LOCK_WAIT_SECONDS = 15 * 60
-# How often a waiting acquire re-attempts. Short against both the wait above and
-# a deployment, so verify starts within seconds of the release rather than at the
-# end of a coarse interval, and long enough that an idle wait costs nothing.
 LOCK_WAIT_POLL_SECONDS = 10
-# One palette for styled messages: mid-tones that read on Pushover's light and
-# dark themes alike. Green is recovered, healthy or new; red failed or killed;
-# amber degraded; grey metadata. Spelled identically in scripts/image_prune.py
-# and services/dozzle/alert_relay.py, and tests/policy_test.rb holds the copies
-# identical, so one state reads as one colour whichever program sent it.
+# One palette, held identical across the copy sites by tests/policy_test.rb.
 COLOR_GREEN = "#2e7d32"
 COLOR_RED = "#c62828"
 COLOR_AMBER = "#f9a825"
 COLOR_GREY = "#9e9e9e"
-# What an hourly-only tag's failure looks like in its log, and what each change
-# of its verdict pages as: a title, a lead line, and a closing line that may be
-# empty. The array run also runs verify.yml's always-tagged setup (Docker
-# modules, vault contract, GPU, Compose files), and a failure there is no
-# evidence about the disks, so "degraded" is claimed only when the log carries
-# the literal that opens roles/host_prep/tasks/verify_mdraid.yml's fail_msg. Any
-# other failure, a timeout included, is "unchecked": the check could not run. The
-# record keeps which, so a recovery says "healthy" only after a real mismatch.
+# "degraded" only when the log carries verify_mdraid.yml's fail_msg literal; any other
+# failure, a timeout included, is "unchecked": the check could not run.
 MDRAID_MISMATCH_MARKER = "MDRAID-BASELINE-MISMATCH"
-# The same for roles/immich/tasks/verify_originals.yml (#907): only its ceiling
-# assert says originals are missing; a database it could not read, or a path the
-# helper refused, is a check that could not run.
+# The same for roles/immich/tasks/verify_originals.yml (#907).
 IMMICH_ORIGINALS_MISSING_MARKER = "IMMICH-ORIGINALS-MISSING"
 HOURLY_ONLY_VERIFY_CHECKS = {
     "platform_verify_mdraid": {
@@ -194,38 +129,18 @@ HOURLY_ONLY_VERIFY_CHECKS = {
     },
 }
 TOOLING_TIMEOUT_SECONDS = 15 * 60
-# The ladder for the three commands in a deployment that reach a third party:
-# the checkout fetch, the pip install and the collection install. Few attempts,
-# because they are retried only when they fail fast, and a fast failure that
-# repeats three times in seven seconds is not a blip. The backoffs are one
-# shorter than the attempt count by construction, and are spent under the
-# deployment lock, which is why they are seconds rather than the minutes an
-# unlocked ladder could afford.
+# Retry ladder for the three commands that reach a third party. Spent under the
+# deployment lock, hence seconds.
 NETWORK_RETRY_ATTEMPTS = 3
 NETWORK_RETRY_BACKOFF_SECONDS = (2, 5)
-# Consecutive ticks a revision may fail transiently before it is quarantined
-# anyway. Forgiving without a bound is worse than not forgiving: a cause that
-# only looks transient would be retried every five minutes forever, holding the
-# lock for most of each one, which is the starvation this issue is about.
+# Transient failures forgiven per revision before it is quarantined anyway.
 TRANSIENT_FORGIVENESS_LIMIT = 3
-# Announces to the plays that the process holding the deployment lock is this
-# run's own ancestor. roles/deployment_bundle probes the lock at the first task
-# of every service role and refuses a converge somebody else is already running;
-# without this, both the poller's own plays and an operator's --converge would
-# refuse themselves, because the holder they find is their own parent. The value
-# is the holder's pid, which the lock record below carries too. It is advisory,
-# not a credential: anyone able to export it can already run ansible-playbook by
-# hand, and the containment guard in the same task file remains the real
-# security control.
+# Tells the plays the lock holder is this run's ancestor, so deployment_bundle's
+# lock probe does not refuse our own converge. Advisory, not a credential.
 LOCK_OWNER_ENVIRONMENT = "PLATFORM_DEPLOYMENT_LOCK_OWNER"
-# Where site.yml writes what a release shipped, for announce_release (#558).
-# deploy() alone exports it: the manifests and the Git history are read inside
-# the play, and this script has no YAML parser. An operator's --converge never
-# carries it, so site.yml writes no summary and nothing announces that release.
+# Where site.yml writes what a release shipped (#558); only deploy() exports it.
 SUMMARY_PATH_ENVIRONMENT = "PLATFORM_DEPLOYMENT_SUMMARY_PATH"
-# The GitHub API is called anonymously: sixty requests an hour per address, of
-# which the five-minute poll spends twelve. A Renovate batch can move dozens of
-# images, so release-notes links stop at this many lookups and this budget.
+# Anonymous GitHub API: 60 requests/hour, 12 spent by polls.
 MAX_PULL_REQUEST_LOOKUPS = 8
 PULL_REQUEST_LOOKUP_BUDGET_SECONDS = 30
 
@@ -243,14 +158,7 @@ class DeploymentError(RuntimeError):
 
 
 class TransientDeploymentError(DeploymentError):
-    """The deployment failed for a reason that says nothing about the revision.
-
-    Raised only from the steps that run before the first play, so a revision
-    that fails this way changed nothing on the target and the next tick may try
-    it again. Every raiser is either a network-shaped command whose retry ladder
-    is exhausted or a command that timed out, and a timeout is evidence about
-    the host rather than about what is being deployed.
-    """
+    """Failed before the first play, for a reason that says nothing about the revision."""
 
 
 @dataclass(frozen=True)
@@ -270,33 +178,20 @@ class Config:
     github_api_base: str
     log_retention_days: int
     verify_tags: str
-    # Checks only the hourly --verify run selects, each in an invocation and a
-    # verdict record of its own, because a deployment must not fail on them.
-    # Comma-separated; optional in the file: see load_config.
+    # Checks only the hourly --verify runs; comma-separated, optional (see load_config).
     hourly_only_verify_tags: str
-    # Discovered by the installer. NAS firmwares scatter binaries across
-    # /usr/local, /usr/builtin and /opt, so no fixed directory is correct.
+    # Discovered by the installer; NAS firmwares scatter binaries.
     git_path: Path
     curl_path: Path
     tool_path: str
-    # Ansible refuses to run unless locale.getlocale() reports UTF-8, and cron
-    # supplies no locale at all. Which UTF-8 locale exists varies by firmware,
-    # so the installer discovers a working one rather than assuming.
+    # Ansible needs a UTF-8 locale and cron supplies none; the installer finds one.
     ansible_locale: str
-    # The fourth play reinstalls this poller, so the installer's own choices
-    # have to be replayed or the role rejects its own invocation.
+    # Replayed so the reinstall play accepts its own invocation.
     external_scheduler: bool
-    # Dead-man's-switch check URLs at healthchecks.io, one per signal: the tick
-    # heartbeat and the hourly verify verdict (#606, #610). Secret: the token in
-    # the path is the check's whole authentication. Empty means no ping, which
-    # is what an older configuration reads as; see load_config.
+    # Secret healthchecks.io ping URLs (#606, #610). Empty means no ping.
     healthchecks_poller_ping_url: str = ""
     healthchecks_verify_ping_url: str = ""
-    # The protected curl config of each Pushover application this poller sends
-    # to (#558): the Alerts app for what needs a human, the Deployments app for
-    # routine records. Each holds its own application's token and the user key,
-    # so no credential reaches this file or a command line. None means that
-    # application cannot be published to; see load_config.
+    # Protected curl configs holding each Pushover app's token (#558). None: cannot publish.
     pushover_alerts_curl_config: Path | None = None
     pushover_deployments_curl_config: Path | None = None
 
@@ -334,12 +229,7 @@ def _read_config_payload(path: str | os.PathLike[str]) -> dict:
 def _pushover_config_path(raw) -> Path | None:
     """One Pushover curl config path, or None when it cannot be published to."""
 
-    # Never a refusal (#327). The install play copies this script before
-    # it renders the file, so the first tick after the move to Pushover
-    # reads a configuration the pre-Pushover template wrote, which names no
-    # Pushover config at all. Refusing it would stop every deployment
-    # with nothing able to heal the host; reading it as "cannot publish"
-    # costs one tick's notifications and one stderr line.
+    # Never a refusal (#327): an older template's file must still deploy.
     usable = type(raw) is str and Path(raw).is_absolute()
     return Path(raw) if usable else None
 
@@ -347,11 +237,7 @@ def _pushover_config_path(raw) -> Path | None:
 def _ping_url(raw) -> str:
     """One healthchecks.io ping URL, or "" when there is none to ping."""
 
-    # Never a refusal, in either direction. Absent is every configuration
-    # written before #606 and the one this poller meets when the install
-    # play copies it and then fails to render (#327). Unusable is a
-    # monitoring value that must not stop deployments. Both read as "no
-    # ping", and the external check alerts on exactly that silence.
+    # Never a refusal (#327): absent or unusable reads as "no ping".
     usable = type(raw) is str and HEALTHCHECKS_URL_PATTERN.match(raw)
     return raw if usable else ""
 
@@ -393,13 +279,7 @@ def _config_values(payload: dict, unpublishable: list) -> dict[str, object]:
             values[field.name] = _ping_url(payload.get(field.name, ""))
             continue
         if field.name not in payload:
-            # The install play copies this script before it renders the file, so
-            # for one run -- or for good, if the render fails -- this poller reads
-            # a configuration an older template wrote. Refusing it would fail
-            # every tick with nothing able to heal it (#327). Absent means no
-            # hourly-only checks: the services still verify, and the array check
-            # starts once the render lands. An older file's periodic_verify_tags
-            # is ignored on purpose, since it restates the whole deploy list.
+            # Absent in an older template's file (#327): no hourly-only checks.
             if field.name == "hourly_only_verify_tags":
                 values[field.name] = ""
                 continue
@@ -414,10 +294,7 @@ def load_config(path: str | os.PathLike[str]) -> Config:
     payload = _read_config_payload(path)
     unpublishable = []
     values = _config_values(payload, unpublishable)
-    # Two URLs for one check is what the vault contract refuses, compared by the
-    # same function. A configuration that still carries them pings neither, so
-    # both checks go silent and alert, rather than every tick vouching for a
-    # verify that stopped running.
+    # Two URLs for one check: ping neither, so both checks alert.
     if values["healthchecks_poller_ping_url"] and healthchecks_check_identity(
         values["healthchecks_poller_ping_url"]
     ) == healthchecks_check_identity(values["healthchecks_verify_ping_url"]):
@@ -445,9 +322,7 @@ def _run(
 ) -> subprocess.CompletedProcess:
     """Run one command, streaming output, under a real wall-clock deadline.
 
-    The deadline has to cover the read loop, not just the final wait: a child
-    that spawns its own children leaves the inherited stdout pipe open, so
-    reading to EOF can outlive the timeout by however long the grandchild runs.
+    The deadline covers the read loop: a grandchild can hold the stdout pipe open.
     """
 
     deadline = time.monotonic() + timeout
@@ -501,29 +376,10 @@ def _run(
 def _run_network_command(
     arguments, *, failure: str, budget: float, **options
 ) -> subprocess.CompletedProcess:
-    """Run one command that reaches a third party, under a total deadline.
+    """Run one command that reaches a third party, under a total deadline (#351).
 
-    Two properties matter more here than the retry itself.
-
-    The budget is a *total*. Every attempt draws from one deadline, so a ladder
-    can never hold the deployment lock longer than the single attempt it
-    replaced -- which is the whole point of #351, and exactly what a plain
-    retries=3 over an hour-long timeout would have made three times worse.
-
-    And a timeout is never retried in place. A stalled attempt has already spent
-    the budget, and the next five-minute tick will try again with the lock
-    released, which is the only kind of waiting that costs nobody else anything.
-    A killed `git fetch` can also leave its own ref locks behind, so retrying it
-    immediately is the least likely attempt to succeed. Only a fast non-zero
-    exit is retried, and those are cheap enough that several fit under one
-    deadline.
-
-    An exhausted ladder is transient because every caller is network-shaped: a
-    fetch here runs seconds after ls-remote proved the remote and the branch
-    reachable, a pip install reaches pypi.org and a collection install reaches
-    galaxy.ansible.com. A cause that is not really transient still fails
-    identically every tick, which is what may_retry_after_transient_failure
-    bounds.
+    Every attempt draws from one budget; only fast non-zero exits are retried,
+    never a timeout. An exhausted ladder raises TransientDeploymentError.
     """
 
     deadline = time.monotonic() + budget
@@ -577,15 +433,7 @@ def resolve_main_sha(config: Config) -> str:
 def fetch_ci_runs(config: Config) -> tuple[dict, ...]:
     """Fetch one bounded page of push runs for the production branch.
 
-    The whole branch rather than one revision, because the question a poll has
-    to answer is which revision CI has released, and asking about a single SHA
-    cannot see that the head is still running while its parent already passed.
-    It stays one request either way, which matters: the API is called
-    anonymously, and the poll runs every five minutes.
-
-    No `status` filter: on 2026-09-28 GitHub answered status=completed with runs
-    from 2026-09-05, weeks behind the head (#916). candidate_revisions and
-    gating_ci_runs read only completed runs anyway.
+    No `status` filter: status=completed returned weeks-stale runs (#916).
     """
 
     query = urlencode(
@@ -606,10 +454,7 @@ def fetch_ci_runs(config: Config) -> tuple[dict, ...]:
 
 
 def _github_get(config: Config, path: str, timeout: float = NETWORK_TIMEOUT_SECONDS):
-    """One bounded, anonymous GitHub API read under this repository, parsed as JSON.
-
-    EligibilityError for anything that is not a readable answer.
-    """
+    """One bounded, anonymous GitHub API read as JSON; EligibilityError otherwise."""
 
     request = Request(
         f"{config.github_api_base.rstrip('/')}/repos/{config.repository}/{path}",
@@ -636,10 +481,7 @@ def _github_get(config: Config, path: str, timeout: float = NETWORK_TIMEOUT_SECO
 def pull_request_url(config: Config, sha: str, timeout: float = NETWORK_TIMEOUT_SECONDS) -> str | None:
     """The pull request that brought a commit to main, or None if it came without one.
 
-    Renovate merges by rebase, so its commits carry no "(#NNN)" to read a number
-    from; GitHub's commit-to-pull-request index is the only record. Renovate's
-    pull request body carries the upstream release notes, which is why the link
-    is worth a request. EligibilityError when GitHub cannot say.
+    Renovate rebases, so GitHub's commit-to-PR index is the only record.
     """
 
     payload = _github_get(config, f"commits/{sha}/pulls", timeout)
@@ -655,10 +497,7 @@ def pull_request_url(config: Config, sha: str, timeout: float = NETWORK_TIMEOUT_
 def release_pull_requests(config: Config, shas) -> dict[str, str]:
     """Pull request links for a release's image commits, within the anonymous budget.
 
-    Each commit is asked about once, at most MAX_PULL_REQUEST_LOOKUPS of them,
-    inside one total deadline. The first failure -- a 403 for a spent rate
-    limit included -- ends the lookups: asking again only spends more of a
-    budget the next poll needs, and the cost is links, never the message.
+    The first failure ends the lookups; the cost is links, never the message.
     """
 
     links: dict[str, str] = {}
@@ -678,11 +517,7 @@ def release_pull_requests(config: Config, shas) -> dict[str, str]:
 
 
 def gating_ci_runs(config: Config, sha: str, runs) -> list[dict]:
-    """Completed push runs of the gating workflow for this SHA, any conclusion.
-
-    GitHub returns workflow runs newest first, so the first entry is the most
-    recent attempt at this revision.
-    """
+    """Completed push runs of the gating workflow for this SHA, newest first."""
 
     return [
         run
@@ -696,18 +531,9 @@ def gating_ci_runs(config: Config, sha: str, runs) -> list[dict]:
 
 
 def candidate_revisions(config: Config, head: str, runs) -> list[str]:
-    """The revisions one poll may consider, newest first.
+    """The revisions one poll may consider, newest first: the head, then those CI judged.
 
-    The head leads: it is the revision the platform is meant to reach, and the
-    one whose run is most likely still going — which is exactly why it may be
-    absent from a list of completed runs. Behind it come the revisions CI has
-    finished judging, in the order GitHub returns them, which is the order they
-    were pushed.
-
-    Every SHA past the head arrives from the network and ends up as an argument
-    to git, so it is checked against the same pattern as the head before it is
-    allowed to name a revision. The page of runs bounds the list; the walk that
-    reads it stops long before the end.
+    Every SHA past the head comes from the network and is validated before git sees it.
     """
 
     ordered = [head]
@@ -726,29 +552,16 @@ def candidate_revisions(config: Config, head: str, runs) -> list[str]:
     return ordered
 
 
-# Why CI does or does not release a revision. Only GREEN deploys. PENDING and
-# SUPERSEDED are ordinary states worth no notification, because neither is a
-# judgement: one run has not finished, the other never will. The last two stop
-# every deployment until a human intervenes.
+# Only GREEN deploys. PENDING and SUPERSEDED are not judgements; the last two
+# stop every deployment until a human intervenes.
 CI_GREEN = "green"
 CI_PENDING = "pending"
 CI_SUPERSEDED = "superseded"
 CI_FAILED = "failed"
 CI_AMBIGUOUS = "ambiguous"
 
-# Conclusions that end a run without judging the revision it was running. The
-# workflow used to cancel its own superseded runs on every branch, so merging
-# twice inside one CI window left the first revision `cancelled`, and roughly a
-# quarter of pushes to main ended that way. `cancel-in-progress` is now confined
-# to pull requests — a post-merge run is the only run that will ever see the tree
-# it merged, so main pushes queue instead — but a run can still be cancelled by
-# hand, and `skipped`, `stale` and `neutral` say as little as `cancelled` does.
-# Reading any of them as a red main would page a human for a run that never
-# judged the revision at all.
-#
-# Anything absent from this set counts as a refusal, including a conclusion
-# this poller has never heard of: an unrecognised answer from CI is exactly the
-# kind of thing that should stop a deployment rather than pass unnoticed.
+# Conclusions that end a run without judging the revision. Anything else,
+# including an unknown conclusion, counts as a refusal.
 UNJUDGED_CONCLUSIONS = frozenset(
     {"cancelled", "skipped", "stale", "neutral", "action_required"}
 )
@@ -776,16 +589,8 @@ def _run_url(run: dict) -> str:
 def ci_verdict(config: Config, sha: str, runs) -> tuple[str, str, str]:
     """Classify CI for one revision as (verdict, detail, run URL).
 
-    Whether a revision may deploy is only half the answer. A poll that refuses
-    one has to be able to say why as well: a red main blocks every deployment,
-    and a poll that decides nothing looks exactly like a poll with nothing to
-    do. Exactly one successful run releases a revision — several is ambiguity,
-    not success.
-
-    A run that ended without judging the revision is not a refusal and is not
-    the answer either, so a cancelled re-run cannot bury the failure that
-    prompted it: the newest run that actually reached a verdict is the verdict.
-    A revision with nothing but unjudged runs was superseded, not refused.
+    Exactly one successful run releases a revision. The newest run that reached a
+    verdict decides; only unjudged runs means superseded, not refused.
     """
 
     gating = gating_ci_runs(config, sha, runs)
@@ -858,11 +663,7 @@ def _attempted_path(config: Config) -> Path:
 
 
 def _read_attempts(config: Config) -> list[tuple[str, str | None]]:
-    """Every recorded attempt in the order it was made, oldest first.
-
-    Lines are "<sha> <timestamp>". A bare SHA is accepted so a record written by
-    an older poller still parses; it sorts as unknown-age and is pruned first.
-    """
+    """Every recorded attempt, oldest first; a bare SHA from an older poller is accepted."""
 
     try:
         payload = _attempted_path(config).read_text(encoding="ascii")
@@ -887,13 +688,7 @@ def _prune_attempts(
     attempts: list[tuple[str, str | None]],
     now: datetime,
 ) -> list[tuple[str, str | None]]:
-    """Bound the record by count and by age.
-
-    An entry survives while it is inside the newest ATTEMPTED_RETENTION_COUNT and
-    inside the retention window. The caller always appends the current attempt
-    before pruning, so the just-recorded revision is inherently retained: that is
-    what stops a failed revision from being attempted again on the next tick.
-    """
+    """Bound the record by count and age; the just-appended attempt is always kept."""
 
     if not attempts:
         return []
@@ -922,18 +717,9 @@ def _store_attempts(config: Config, attempts: list[tuple[str, str | None]]) -> N
 
 
 def prune_attempts(config: Config, now: datetime) -> None:
-    """Trim the attempted record to its retention bounds.
+    """Trim the attempted record to its retention bounds, every tick.
 
-    Recording an attempt prunes as a side effect, which ties the housekeeping
-    to deployments: the count bound holds either way, but the age bound only
-    takes effect the next time something ships, so a quiet fortnight leaves
-    expired revisions sitting in the file and listed by --status. The poll does
-    it every tick instead, beside the log rotation, so the record is bounded by
-    time rather than by how often the platform happens to change.
-
-    Written back only when the pruning actually removed something. A poll that
-    rewrites unchanged state twelve times an hour is twelve needless writes to
-    the NAS's flash.
+    Written back only when something was removed, to spare the NAS's flash.
     """
 
     attempts = _read_attempts(config)
@@ -970,12 +756,7 @@ def _transient_path(config: Config) -> Path:
 
 
 def read_transient_failures(config: Config) -> tuple[str | None, int]:
-    """The revision currently being forgiven, and how many ticks it has cost.
-
-    Unreadable or unrecognisable state reads as no revision at all, exactly as
-    read_blind_polls treats its own: this file bounds a retry, so losing it must
-    cost the retry rather than the poller.
-    """
+    """The revision being forgiven and its tick count; unreadable state reads as none."""
 
     try:
         parts = _transient_path(config).read_text(encoding="ascii").split()
@@ -998,16 +779,8 @@ def clear_transient_failures(config: Config) -> None:
 def may_retry_after_transient_failure(config: Config, sha: str) -> bool:
     """Whether the next tick may attempt this revision again, and count that it did.
 
-    The counter is per revision, so a different candidate starts the budget
-    over and a revision that eventually deploys leaves an inert record behind
-    rather than needing to be cleared. Reaching the limit clears the record and
-    refuses: the revision is quarantined as it would have been before, because a
-    cause that has failed identically for TRANSIENT_FORGIVENESS_LIMIT ticks is
-    not the network blip this exists to absorb.
-
-    Fails closed. A counter that cannot be written cannot bound the forgiveness
-    it grants, and an unbounded retry would hold the deployment lock for most of
-    every five minutes -- worse than the quarantine it replaces.
+    Per revision, bounded by TRANSIENT_FORGIVENESS_LIMIT. Fails closed: an
+    unwritable counter cannot bound the forgiveness it grants.
     """
 
     recorded, count = read_transient_failures(config)
@@ -1042,24 +815,11 @@ def read_state(config: Config) -> dict:
 
 
 def lock_path(config: Config) -> Path:
-    """The one file every deployment on this host serialises on.
-
-    Named here rather than in each caller because roles/deployment_bundle has to
-    find the same file from Ansible, and it derives it from the account's home
-    exactly as roles/production_auto_deploy derives state_root. Two spellings of
-    one path would be a lock nobody shares.
-    """
+    """The one file every deployment serialises on; roles/deployment_bundle derives the same path."""
 
     return config.state_root / "deployment.lock"
 
 
-# The flock alone says only that somebody is deploying, and #326 is exactly the
-# story of an operator who could not tell what was happening: the race surfaced
-# as a containment refusal naming an unsafe deployment target, so the honest
-# first reading was a corrupted deployment tree rather than a second converge. A
-# holder that says "pid 4711, operator converge, started at ..." turns that into
-# a fact. That is this script's own history, so it sits above the definition,
-# where the identity comparison below does not read it.
 def _record_lock_holder(descriptor: int, holder: str) -> None:
     """Write who holds the lock, for a refused caller to name.
 
@@ -1085,11 +845,7 @@ def _record_lock_holder(descriptor: int, holder: str) -> None:
 
 
 def read_lock_holder(config: Config) -> dict | None:
-    """The holder record, or None when there is nothing readable to report.
-
-    Advisory in both directions: absent when the holder could not write it, and
-    stale when the holder died. Only ever used to make a message specific.
-    """
+    """The holder record, or None. Advisory only: may be absent or stale."""
 
     try:
         payload = json.loads(lock_path(config).read_text(encoding="ascii"))
@@ -1101,13 +857,7 @@ def read_lock_holder(config: Config) -> dict | None:
 def _acquire_lock(descriptor: int, wait_seconds: float) -> bool:
     """Take the flock, re-attempting for wait_seconds. False: somebody still holds it.
 
-    A poll rather than a blocking flock, because the bound is the whole point: a
-    deployment that hangs must not hold a caller past the cadence it belongs to,
-    and flock offers no timeout. SIGALRM would supply one and is process-global
-    in a script whose every mode runs subprocesses under their own budgets.
-
-    A wait of zero is one non-blocking attempt and no sleep, which is the
-    behaviour every caller had before the parameter existed.
+    Polled because flock has no timeout and SIGALRM is process-global.
     """
 
     deadline = time.monotonic() + wait_seconds
@@ -1125,14 +875,7 @@ def _acquire_lock(descriptor: int, wait_seconds: float) -> bool:
 @contextmanager
 def deployment_lock(config: Config, holder: str = "poll",
                     wait_seconds: float = 0.0) -> Iterator[bool]:
-    """Serialise deployments; yield False when another holder already runs one.
-
-    wait_seconds re-attempts the acquire for that long before giving up. It
-    defaults to not waiting at all, which is what every caller but --verify
-    wants: a poll tick that waited out a deployment would run its own against a
-    revision the finished one had already deployed, and an operator converge
-    refused at once is a message rather than a terminal that has stopped.
-    """
+    """Serialise deployments; yield False when another holder already runs one."""
 
     descriptor = os.open(lock_path(config), os.O_WRONLY | os.O_CREAT, 0o600)
     try:
@@ -1143,13 +886,7 @@ def deployment_lock(config: Config, holder: str = "poll",
         try:
             yield True
         finally:
-            # Cleared while the lock is still held, so a reader that finds the
-            # lock taken reads that holder's record or nothing -- never the last
-            # deployment's pid. The weekly image prune takes this same lock and
-            # records itself the same way, so an empty file under a held lock
-            # now means only a poller too old to write one. Only a crash can
-            # leave a record behind, and a reader must still ignore one it finds
-            # under a free lock.
+            # Cleared while still held, so a reader never sees the last deployment's pid.
             with contextlib.suppress(OSError):
                 os.ftruncate(descriptor, 0)
     finally:
@@ -1159,10 +896,7 @@ def deployment_lock(config: Config, holder: str = "poll",
 def deployment_lock_held(config: Config) -> bool:
     """Whether somebody holds the deployment lock, asked without becoming its holder.
 
-    For --status, which must stay read-only: the file is opened read-only so an
-    absent one is never created, no holder record is written, and a free lock is
-    released here rather than at close so the poller's own next tick cannot see
-    this read as a deployment. The same probe as
+    Read-only for --status; the same probe as
     roles/deployment_bundle/files/probe_deployment_lock.py.
     """
 
@@ -1188,23 +922,17 @@ def _tooling_bin(config: Config) -> Path:
 
 
 def _collections_path(config: Config) -> Path:
-    """Collections live beside the virtualenv, not under a shared HOME.
-
-    pip installs ansible-core but not Galaxy collections, and HOME is pinned
-    below, so an operator's ~/.ansible is deliberately not consulted.
-    """
+    """Collections live beside the virtualenv, not under the operator's ~/.ansible."""
 
     return _tooling_bin(config).parent / "collections"
 
 
 def _ansible_environment(config: Config) -> dict[str, str]:
     return {
-        # ansible-core lives in the checkout's virtualenv, per the operator
-        # guide, so the system path alone cannot find ansible-playbook.
+        # ansible-core lives in the checkout's virtualenv.
         "PATH": f"{_tooling_bin(config)}{os.pathsep}{config.tool_path}",
         "HOME": str(config.checkout.parent),
-        # Only LANG: setting LC_ALL and LANG to the same value is rejected as
-        # an unsupported locale setting on some platforms.
+        # Only LANG: LC_ALL and LANG together is rejected on some platforms.
         "LANG": config.ansible_locale,
         "GIT_TERMINAL_PROMPT": "0",
         "PLATFORM_NAS_ADDRESS": config.platform_nas_address,
@@ -1212,10 +940,7 @@ def _ansible_environment(config: Config) -> dict[str, str]:
         "PLATFORM_CALLBACK_HOST": config.platform_callback_host,
         "ANSIBLE_CONFIG": str(config.checkout / "ansible.cfg"),
         "ANSIBLE_COLLECTIONS_PATH": str(_collections_path(config)),
-        # deploy() runs inside poll()'s deployment_lock, in this process, so the
-        # holder these plays will find is this pid. Saying so is what keeps the
-        # poller's own converge from being refused by the concurrency guard it
-        # installs.
+        # The holder the plays find is this pid; stops our own guard refusing us.
         LOCK_OWNER_ENVIRONMENT: str(os.getpid()),
     }
 
@@ -1223,12 +948,7 @@ def _ansible_environment(config: Config) -> dict[str, str]:
 def _vault_arguments(config: Config) -> list[str]:
     """Only the password provider. Credentials belong to the revision.
 
-    The encrypted vault is committed, so `git checkout` puts the candidate's
-    own copy in the checkout and group_vars loads it. Passing a second copy
-    from outside as extra vars would outrank that, letting a stale artifact
-    silently shadow the revision being deployed while every play still
-    reports success. The password provider cannot be committed, so it is the
-    one input that stays outside.
+    An outside vault copy as extra vars would silently shadow the committed one.
     """
 
     return [
@@ -1242,21 +962,8 @@ def _vault_arguments(config: Config) -> list[str]:
 def update_checkout(config: Config, sha: str, log=None) -> None:
     """Materialise the candidate revision in the controller checkout.
 
-    A candidate behind the head is named by GitHub's record of what it ran,
-    which is a record of the past: a revision can have been rewritten off the
-    branch since. Only the branch just fetched says what main is now, so the
-    revision has to be an ancestor of it before anything is checked out --
-    against FETCH_HEAD, which this fetch wrote, rather than a remote-tracking
-    ref some other command may have left behind.
-
-    The three steps are on two budgets and two failure classes, because only the
-    first of them reaches the network. A fetch that fails is somebody else's
-    outage seconds after ls-remote reached the same remote, so it retries and is
-    transient. `merge-base --is-ancestor` returning non-zero is the answer to
-    its question -- the revision was rewritten off the branch -- and a failing
-    checkout is a local repository that needs a person; both are permanent facts
-    about this candidate and quarantine it. A timeout is neither: it says the
-    host is stuck, so it is transient wherever it happens.
+    The candidate must be an ancestor of the FETCH_HEAD just fetched. A failed fetch
+    or any timeout is transient; a non-ancestor or failed checkout quarantines it.
     """
 
     environment = {
@@ -1298,27 +1005,10 @@ def update_checkout(config: Config, sha: str, log=None) -> None:
 
 
 def sync_tooling(config: Config, log=None) -> None:
-    """Match the controller virtualenv to the candidate's own pins.
+    """Match the controller virtualenv to the candidate's own pins, before any ansible runs."""
 
-    This has to happen before any ansible process starts, which is why the
-    checkout is done with git rather than ansible-pull: the tooling that would
-    run ansible-pull is the very tooling being corrected.
-    """
-
-    # This reaches pypi.org, so it takes the ladder and its failure is
-    # transient (#415). It keeps TOOLING_TIMEOUT_SECONDS unchanged: the budget
-    # is a total the attempts and their backoffs share, so the ladder can never
-    # hold the deployment lock longer than the single attempt it replaces.
-    #
-    # The file is a fully resolved lock with a hash on every entry, compiled from
-    # controller-requirements.in (#827). --require-hashes refuses an entry that
-    # lost its hash rather than installing it; there is no --upgrade, because
-    # every entry is an == pin and a changed pin applies without one. Before the
-    # lock, --upgrade over three top-level pins moved every transitive dependency
-    # to whatever PyPI served on the tick, with no pull request involved. The
-    # path stays controller-requirements.txt because the poller that runs is the
-    # previously installed one (#327): it still reads this path, with --upgrade,
-    # and pip hash-checks the whole file on its own once any line has a hash.
+    # Reaches pypi.org, so it takes the ladder (#415). A hashed lock (#827): no
+    # --upgrade, and --require-hashes refuses an unhashed entry.
     requirements = config.checkout / "controller-requirements.txt"
     _run_network_command(
         [
@@ -1336,22 +1026,8 @@ def sync_tooling(config: Config, log=None) -> None:
         log=log,
     )
 
-    # Collections are a separate dependency set from the Python pins, and the
-    # modules the playbooks call live in them. This one reaches
-    # galaxy.ansible.com, so it takes the same ladder for the same reason.
-    #
-    # --no-cache, and here it matters more than anywhere else the platform runs
-    # ansible-galaxy. The Galaxy API response cache is written in two steps: a
-    # blank entry carrying a 24-hour expiry, then its `results` when the response
-    # arrives. A run that dies between them leaves an entry every later read
-    # refuses by name, and the ladder below does not help because that refusal is
-    # deterministic rather than transient. HOME is the checkout's parent, which
-    # is a directory on the NAS that survives every deployment, so a poisoned
-    # entry there fails this call on every candidate revision for a day -- and
-    # this poller is the thing that would otherwise apply a fix merged to main,
-    # so the only route out would be editing the host by hand. Nothing is given
-    # up: --force re-downloads the artifact regardless, so the cache was saving a
-    # version lookup on a path that was going to fetch anyway.
+    # --no-cache: an interrupted run leaves a poisoned Galaxy cache entry in HOME
+    # that fails every candidate for a day, with no merge able to heal it.
     _run_network_command(
         [
             _tooling_bin(config) / "ansible-galaxy",
@@ -1389,20 +1065,14 @@ def _verify_invocation(config: Config, tags: str) -> list[str]:
 
 
 def _deploy_invocations(config: Config):
-    """Every play runs through ansible-playbook from the candidate checkout.
-
-    verify.yml carries its tag list and the others must not receive it, so the
-    tags belong to individual invocations rather than one shared command.
-    """
+    """Every play's ansible-playbook invocation; only verify.yml gets the tag list."""
 
     vault = _vault_arguments(config)
     return (
         ["ansible-playbook", *vault, "validate-vault.yml"],
         ["ansible-playbook", *vault, "site.yml"],
         _verify_invocation(config, config.verify_tags),
-        # The installer's own choices must be replayed: the role requires the
-        # public host, and would otherwise try to install a cron entry on a host
-        # where scheduling is external.
+        # The installer's own choices must be replayed.
         [
             "ansible-playbook",
             *vault,
@@ -1419,16 +1089,10 @@ def _deploy_invocations(config: Config):
 def deploy(config: Config, sha: str, log) -> bool:
     """Deploy one candidate revision, stopping at the first failing play.
 
-    False means this revision failed. TransientDeploymentError means the
-    deployment failed without ever reaching the target, and the caller owns what
-    that costs -- it is raised rather than folded into False because
-    TransientDeploymentError is a DeploymentError, so the broad clause below
-    would otherwise swallow the classification and leave a change that reads
-    correctly and does nothing.
+    False: this revision failed. TransientDeploymentError: it never reached the target.
     """
 
-    # Here and nowhere else: verify.yml shares _ansible_environment, and an
-    # operator's converge must never make site.yml write a summary nothing reads.
+    # Only here: an operator's converge must never make site.yml write a summary.
     environment = _ansible_environment(config) | {
         SUMMARY_PATH_ENVIRONMENT: str(_summary_path(config))
     }
@@ -1465,8 +1129,6 @@ def _timestamp(now: datetime | None = None) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-# Called with the revision being attempted, so one deployment's output is
-# reachable by the SHA that produced it.
 @contextmanager
 def run_log(config: Config, suffix: str):
     """Open one private run log and point 'latest' at it.
@@ -1495,7 +1157,6 @@ def run_log(config: Config, suffix: str):
             sink.flush()
 
 
-# The logs are one per deployment attempt, named for the revision attempted.
 def rotate_logs(config: Config, now: datetime) -> None:
     """Delete run logs older than the configured retention window.
 
@@ -1663,11 +1324,7 @@ def format_duration(seconds: int) -> str:
     return f"{seconds}s"
 
 
-# The poller times a deployment by two recorded timestamps rather than by a
-# monotonic span, so its input needs parsing and the other script's does not.
-# That difference is the whole of why the two format_duration copies differed,
-# and it lives here now: an unparseable pair is "unknown" the same way a
-# negative span is, which format_duration above still decides (#658).
+# Parses the recorded timestamps; format_duration decides the rest (#658).
 def duration_between(started: str, finished: str) -> str:
     """Render the elapsed deployment time, or admit that it is not derivable."""
 
@@ -1681,11 +1338,7 @@ def duration_between(started: str, finished: str) -> str:
 
 
 def commit_link(config: Config, sha: str) -> str:
-    """The revision as an <a href> to its commit page, for an html=1 message.
-
-    The SHA is validated hex; the repository is configuration, so it is escaped
-    with the quotes that would otherwise end the attribute.
-    """
+    """The revision as an escaped <a href> to its commit page, for an html=1 message."""
 
     repository = html_escape(config.repository)
     return f'<a href="https://github.com/{repository}/commit/{sha}">{sha[:12]}</a>'
@@ -1726,11 +1379,7 @@ def render_notification(
 ) -> dict:
     """Build the Pushover fields for a failed deployment.
 
-    Only a failure is rendered here. A successful deployment reports itself from
-    inside the run, where what shipped is still at hand. failure is how poll()
-    left the revision: "failed" quarantines it, "retrying" forgot the attempt
-    after a transient failure, and "quarantined" is a transient failure the
-    poller would not forgive -- its limit reached, or its counter unwritable.
+    failure is "failed", "retrying" or "quarantined", as poll() left the revision.
     """
 
     details = [f"\U0001f516 <b>Revision</b> {commit_link(config, sha)}"]
@@ -1741,8 +1390,6 @@ def render_notification(
         f"⏱️ <b>Took</b> {duration_between(started, finished)}",
         log_line(log_path),
     ]
-    # A forgotten attempt is not a promise about the next poll: a newer green
-    # revision is deployed ahead of it, and --retry-failed takes the full SHA.
     closing = {
         "retrying": "<i>The poller retries this revision on a later poll, unless a newer green "
         "revision deploys first.</i>",
@@ -1787,12 +1434,7 @@ _IMAGE_KINDS = frozenset({"updated", "added", "removed", "repinned"})
 
 
 def read_release_summary(path: Path, candidate: str) -> dict:
-    """The summary site.yml wrote for candidate; ValueError when there is none to trust.
-
-    Version 1 and this very release, or nothing: a file left by an earlier
-    release, or by a site.yml that predates the handshake, describes something
-    else. Every field is checked before any of it reaches a message.
-    """
+    """The summary site.yml wrote for this very candidate; ValueError when there is none to trust."""
 
     try:
         with path.open("rb") as handle:
@@ -1878,9 +1520,7 @@ def _release_image_line(image: dict, links: dict[str, str]) -> str:
 def _release_message(image_lines: list[str], commit_lines: list[str], footer: str) -> str:
     """Sections of whole lines, cut to Pushover's cap without losing the footer.
 
-    fit_message drops lines from the end, which would take the footer first, so
-    the body is sized here: commits give way before images, each dropped run of
-    lines is counted in its own section, and fit_message is only the backstop.
+    Commits give way before images; fit_message is only the backstop.
     """
 
     def compose(shown_images: int, shown_commits: int) -> list[str]:
@@ -1914,10 +1554,7 @@ def render_release(
 
     release, previous = summary["release"], summary["previous"]
     repository = html_escape(config.repository)
-    # Links in the body name twelve-character SHAs, which GitHub resolves: the
-    # markup counts against Pushover's 1024, and full SHAs alone pushed an
-    # ordinary three-image, four-commit release over it. The button has its
-    # own 512 and keeps them whole.
+    # Twelve-character SHAs keep the body under Pushover's 1024; the button keeps them whole.
     commit_lines = [
         f'• <a href="https://github.com/{repository}/commit/{commit["sha"][:12]}">'
         f"{html_escape(commit['subject'])}</a>"
@@ -1948,12 +1585,7 @@ def render_release(
 def announce_release(config: Config, candidate: str, started: str, finished: str) -> None:
     """Send the one Deployments message for a release that deployed and verified.
 
-    Never raises and never changes an outcome: the release is already recorded
-    as deployed, and a message about it is worth no more than that. A summary
-    that is missing -- a site.yml older than the handshake -- stale or malformed
-    costs the message; GitHub unreachable costs the release-notes links; a
-    refused or unanswered send costs the message. Each says so in one stderr
-    line, and none is retried: the next release has its own message.
+    Never raises or retries; each failure costs the message or its links and one stderr line.
     """
 
     try:
@@ -1989,20 +1621,10 @@ def _usable_url(url: str) -> bool:
 def publish(config: Config, app: str, fields: dict) -> bool:
     """Send one message to a Pushover application; True only if Pushover accepted it.
 
-    app is "alerts" or "deployments". The token and the user key live only in
-    that application's protected curl config, so argv -- readable by every
-    account on the host, and carried whole by a TimeoutExpired -- holds nothing
-    but the message. Every field goes as --form-string, which never reads a
-    leading @ or < as a file.
-
-    Only an accepted answer counts as delivered, so a state record that moves
-    after delivery does not move on a refusal or on silence. A refusal names the
-    vault keys to fix and never a value; neither outcome raises, because a
-    notification nobody received must not also stop a deployment.
+    Credentials stay in the app's curl config, never argv; fields go as --form-string.
+    Never raises: a lost notification must not also stop a deployment.
     """
 
-    # An application this script configures no curl config for reads as cannot
-    # publish, like an unconfigured one, rather than raising.
     curl_config = getattr(config, f"pushover_{app}_curl_config", None)
     if curl_config is None:
         return False
@@ -2033,8 +1655,7 @@ def publish(config: Config, app: str, fields: dict) -> bool:
             env={"PATH": config.tool_path, "LC_ALL": "C"},
         )
     except (OSError, ValueError, subprocess.SubprocessError):
-        # ValueError is a NUL byte in a field, which no argv can carry: nothing
-        # was sent, and a notice that cannot be sent must not raise either.
+        # ValueError is a NUL byte in a field: nothing was sent.
         return False
     verdict = pushover_verdict(result.returncode, result.stdout)
     if verdict == "refused":
@@ -2072,12 +1693,7 @@ def healthchecks_check_identity(url):
 
 
 def _healthchecks_fail_url(url: str) -> str:
-    """A ping URL's /fail sibling: on the path, before any query (#606).
-
-    Appending to the whole string put it after a query -- `uuid?rid=42/fail` --
-    which healthchecks.io reads as a plain success ping. The fragment is never
-    sent anyway, so it is dropped rather than left to carry the suffix.
-    """
+    """A ping URL's /fail sibling, on the path before any query (#606)."""
 
     parts = urlsplit(url)
     return urlunsplit(parts._replace(path=f"{parts.path.rstrip('/')}/fail", fragment=""))
@@ -2086,17 +1702,8 @@ def _healthchecks_fail_url(url: str) -> str:
 def ping_healthchecks(config: Config, url: str, failed: bool) -> None:
     """Report one run to an external dead-man's switch. Never raises (#606).
 
-    Every alert this platform raises comes from the host it would be reporting
-    about, so a stopped host, daemon or cron says nothing. healthchecks.io
-    alerts when these pings stop, from outside, and marks a check down at once
-    on `/fail`.
-
-    The URL goes to curl on stdin, never on the command line: argv is readable
-    by every account on the host, and a TimeoutExpired carries argv in its repr.
-    curl's own output is captured and dropped because its errors name the URL;
-    the one line printed here names nothing. And no failure here can change an
-    exit code or a recorded state -- a monitor that fails a deployment is worse
-    than the silence it replaces, and the silence is reported anyway.
+    The URL goes to curl on stdin and its output is dropped, so it never reaches
+    argv or a log.
     """
 
     if not url:
@@ -2154,13 +1761,7 @@ def _blind_alarm_path(config: Config) -> Path:
 
 
 def read_blind_alarm(config: Config) -> bool:
-    """Whether this stretch of blindness has actually been announced.
-
-    Delivery, not arithmetic, is what suppresses re-announcement. The count on
-    its own cannot say: a count past the threshold is what both a delivered
-    alarm and an undeliverable one leave behind, and reading the first meaning
-    into the second is how the poller went blind in silence.
-    """
+    """Whether this stretch of blindness has actually been announced; delivery decides."""
 
     try:
         raw = _blind_alarm_path(config).read_text(encoding="ascii").strip()
@@ -2170,14 +1771,7 @@ def read_blind_alarm(config: Config) -> bool:
 
 
 def note_blind_poll(config: Config, reason: str) -> None:
-    """Count one blind poll and announce the transition into blindness once.
-
-    The count is recorded on every poll and the announcement is retried on
-    every poll until it lands, because the alarm this raises is the only thing
-    that distinguishes a poller that cannot see main from an idle one. A
-    publisher that is briefly unreachable must therefore cost a delayed alarm,
-    never the only alarm this outage would ever get.
-    """
+    """Count one blind poll and announce the transition into blindness, retrying until delivered."""
 
     count = read_blind_polls(config) + 1
     _write_blind_polls(config, count)
@@ -2200,9 +1794,7 @@ def note_blind_poll(config: Config, reason: str) -> None:
         },
     )
     if not published:
-        # Reported to cron's mail and retried on the next poll. It must not
-        # raise: a notification nobody received is bad, and a deployment
-        # stopped because a notification could not be sent is worse.
+        # Must not raise: a stopped deployment is worse than a missed notice.
         print("production auto-deploy: blindness notification failed", file=sys.stderr)
         return
     _write_private(_blind_alarm_path(config), b"announced\n")
@@ -2213,16 +1805,9 @@ def note_seeing_poll(config: Config) -> None:
 
     count = read_blind_polls(config)
     if count == 0:
-        # The overwhelming majority of polls land here. Rewriting a zero every
-        # five minutes would fsync the state directory for no change.
         return
     if count >= BLIND_POLL_THRESHOLD:
-        # Gated on the count rather than on the delivered alarm, so an
-        # all-clear still follows an alarm this revision of the poller did not
-        # itself send -- the count it inherits is all a freshly installed
-        # poller knows about the outage it woke up inside.
-        # -1 on the Alerts app: it closes an alarm, so it belongs beside it,
-        # and it is a record rather than something to wake anybody for.
+        # Gated on the count, so an all-clear follows an alarm an older poller sent.
         published = publish(
             config,
             "alerts",
@@ -2236,8 +1821,6 @@ def note_seeing_poll(config: Config) -> None:
             },
         )
         if not published:
-            # The count stays where it is so the next seeing poll tries again,
-            # for the same reason the alarm above retries.
             print(
                 "production auto-deploy: recovery notification failed", file=sys.stderr
             )
@@ -2263,19 +1846,11 @@ def read_ci_refusal(config: Config) -> str:
 def note_ci_refusal(
     config: Config, sha: str, verdict: str, detail: str, url: str
 ) -> None:
-    """Announce once that CI refuses a revision, and forget it when that clears.
-
-    A revision CI refuses is the one failure the poller used to swallow whole:
-    eligibility simply said no, the poll returned quietly, and every subsequent
-    deployment stopped with nothing to show for it. Announced once per revision
-    and verdict rather than every poll, because the cron cadence is five
-    minutes and a red main stays red until somebody fixes it.
-    """
+    """Announce once per revision and verdict that CI refuses it, and forget it when that clears."""
 
     announced = read_ci_refusal(config)
     if verdict in (CI_GREEN, CI_PENDING, CI_SUPERSEDED):
-        # Neither pending nor superseded is a judgement, and clearing on them
-        # is what lets a re-run that fails a second time be reported again.
+        # Clearing on a non-judgement lets a second failed re-run be reported again.
         if announced:
             _write_private(_ci_refusal_path(config), b"\n")
         return
@@ -2299,9 +1874,7 @@ def note_ci_refusal(
         fields |= {"url": url, "url_title": "Open CI run"}
     published = publish(config, "alerts", fields)
     if not published:
-        # Recorded only once it has actually been delivered, so a publisher
-        # that was briefly unreachable reports on the next poll instead of
-        # losing the only notice this revision ever gets.
+        # Recorded only once delivered, so an unreachable publisher retries next poll.
         print("production auto-deploy: CI refusal notification failed", file=sys.stderr)
         return
     _write_private(_ci_refusal_path(config), marker.encode("ascii", "replace") + b"\n")
@@ -2311,14 +1884,8 @@ def note_ci_refusal(
 class Selection:
     """What one poll decided, and enough of why to be able to say so.
 
-    `candidate` is the revision to deploy, when there is one. `judged` and
-    `verdict` carry the CI answer worth announcing — for the revision that
-    stopped the walk, or for the head while its own run is still going. A
-    `verdict` of None means CI was never consulted, which is not the same as
-    CI having nothing to say: the caller must leave the announced refusal alone
-    rather than treat an unasked question as an answer. `attempted` names the
-    revision the poller has already had its turn at, which is what makes
-    "nothing to do" different from "nothing may deploy".
+    `verdict` None means CI was never consulted, which must leave an announced refusal alone.
+    `attempted` separates "nothing to do" from "nothing may deploy".
     """
 
     candidate: str | None = None
@@ -2332,29 +1899,8 @@ def select_revision(
 ) -> Selection:
     """Choose the newest revision CI has released, walking main backwards.
 
-    CI takes longer than the merge cadence, so main's head is usually still
-    running while the revision behind it is already green. Waiting for the head
-    means waiting out a run that has nothing to do with the change that already
-    passed — half an hour of a deployable revision sitting undeployed, for
-    every merge that lands while a run is going.
-
-    So a revision CI has not judged is stepped over rather than waited for. It
-    may be the head, whose run has not finished and which deploys in its own
-    right once it does; it may equally be a revision the workflow cancelled
-    when the next merge superseded it, which will never be judged at all. Two
-    merges inside one CI window leave a run of those, which is why the walk
-    cannot stop at the first revision behind the head.
-
-    A judgement ends the walk. A revision CI refused blocks every deployment
-    behind it, exactly as a red head always has. A revision already attempted
-    means this poller has had its turn at it — and at everything older.
-
-    That record is pruned, though, and GitHub's page of runs can be weeks stale,
-    which together selected revisions from the 16th and 17th on 2026-09-28
-    (#916). So what keeps the walk from going backwards is git: a revision that
-    is not strictly newer than the last successful one, or not on the head, ends
-    the walk too, and so does one the checkout does not have. A retry reaches
-    this check like any other revision.
+    Unjudged revisions are stepped over; a judgement or an attempted revision ends
+    the walk, as does one git says is not strictly newer than the last success (#916).
     """
 
     attempted = attempted_shas(config)
@@ -2373,19 +1919,12 @@ def select_revision(
         if verdict[0] not in (CI_PENDING, CI_SUPERSEDED):
             return Selection(judged=sha, verdict=verdict)
         if unjudged is None:
-            # Normally the head, its own run still going. Announced to nobody,
-            # but it is what clears a refusal once the revision is re-run.
             unjudged = Selection(judged=sha, verdict=verdict)
     return unjudged if unjudged is not None else Selection()
 
 
 def _is_ancestor(config: Config, ancestor: str, descendant: str) -> bool:
-    """Whether the checkout knows `ancestor` to be an ancestor of `descendant`.
-
-    Any non-zero exit is no: 1 is git's answer, 128 a commit the checkout does
-    not have, and neither may make a revision eligible. A timeout or a git that
-    cannot run is a host that cannot decide, so the poll decides nothing.
-    """
+    """Whether git knows `ancestor` precedes `descendant`; any non-zero exit is no."""
 
     try:
         result = _run(
@@ -2410,14 +1949,7 @@ def _newer_than_deployed(config: Config, sha: str, head: str, deployed: str) -> 
 
 
 def _fetch_unseen_head(config: Config, head: str) -> None:
-    """Fetch the branch when the checkout does not have the head yet.
-
-    Selection asks git whether a revision is newer than the deployed one, and it
-    runs before update_checkout's fetch, so a merge the checkout has not seen
-    would never be newer than anything. Only asked once something has deployed,
-    because a fresh host's selection asks git nothing. A failed fetch is a poll
-    that could not see, exactly like a failed ls-remote.
-    """
+    """Fetch the branch when the checkout does not have the head yet, so selection can compare it."""
 
     environment = {"PATH": config.tool_path, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"}
     try:
@@ -2445,10 +1977,7 @@ def _eligible_revision(
 ) -> Selection:
     """Decide what this poll may deploy, and how CI judged what it examined.
 
-    An explicit retry overrides the attempted record for one revision, not the
-    ordering: the revision still has to be the one the walk would have chosen
-    anyway, so a retry can never put an older revision back on the NAS than one
-    a later poll has already deployed.
+    A retry overrides the attempted record, never the ordering.
     """
 
     selection = select_revision(config, head, fetch_ci_runs(config), retry_sha)
@@ -2467,10 +1996,7 @@ def _eligible_revision(
 def _poll_selection(config: Config, retry_sha: str | None) -> Selection:
     """Decide what this poll may deploy, recording whether it could see."""
 
-    # Eligibility is the part that reaches the network. Failing it leaves
-    # the poller unable to deploy anything at all, and a poll that decides
-    # nothing looks exactly like a poll with nothing to do, so the outcome
-    # is tracked rather than only printed to a cron mailbox nobody reads.
+    # Eligibility reaches the network; failing it is tracked, not just printed.
     try:
         head = resolve_main_sha(config)
         if read_state(config)["last_successful"] is not None:
@@ -2492,11 +2018,7 @@ def _deploy_once(config: Config, candidate: str, log) -> tuple[bool, str]:
     try:
         succeeded = deploy(config, candidate, log)
     except TransientDeploymentError as error:
-        # Nothing reached the target: every step that raises this runs
-        # before the first play. So the attempted record can be undone,
-        # and the next tick retries the revision rather than an operator
-        # -- #351, on a host whose premise is that nobody touches it.
-        # Bounded, and only ever undone here, where the record was made.
+        # Nothing reached the target, so undo the attempted record and retry (#351).
         succeeded = False
         note = f"production auto-deploy: transient failure: {error}"
         log.write(note.encode("ascii", "replace") + b"\n")
@@ -2512,8 +2034,7 @@ def _attempt(config: Config, selection: Selection) -> bool:
     """Attempt the selected candidate once, under the held lock, and report it."""
 
     candidate = selection.candidate
-    # Recorded before the attempt: a crash mid-deploy must not become a
-    # retry loop on the next five-minute tick.
+    # Recorded before the attempt, so a crash mid-deploy is not a retry loop.
     record_attempt(config, candidate)
     started = _timestamp()
     with run_log(config, candidate) as log:
@@ -2522,17 +2043,9 @@ def _attempt(config: Config, selection: Selection) -> bool:
         finished = _timestamp()
         if succeeded:
             record_success(config, candidate, finished)
-            # After the record, so nothing about the message can change
-            # it. What shipped was written by site.yml, which read the
-            # manifests and the Git history; succeeded means verify.yml
-            # passed too, so this is the one message a release gets.
+            # The one message a release gets, sent after the record.
             announce_release(config, candidate, started, finished)
-        # A failure is announced here, best effort but never silent: a
-        # misconfigured publisher would otherwise lose every failure with
-        # nothing to show for it.
-        #
-        # The link is to the run that released the revision, which is what
-        # a human opens first to see what changed and whether it was green.
+        # Best effort but never silent; the link is the run that released the revision.
         if not succeeded and not notify(
             config,
             candidate,
@@ -2564,9 +2077,7 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
             return None
         if retry_sha is not None:
             forget_attempt(config, retry_sha)
-            # The operator's explicit retry starts the forgiveness budget over
-            # too. Inheriting a spent one would quarantine the revision again on
-            # the first blip after the very intervention meant to clear it.
+            # An explicit retry also resets the forgiveness budget.
             clear_transient_failures(config)
         return _attempt(config, selection)
 
@@ -2601,37 +2112,10 @@ def _checkout_head_line(config: Config) -> str | None:
 
 
 def converge(config: Config, arguments: list[str]) -> int:
-    """Run one operator ansible-playbook invocation under the deployment lock.
+    """Run one operator ansible-playbook invocation under the deployment lock (#326).
 
-    Issue #326: the poller serialises itself, but the documented manual path was
-    a bare ansible-playbook that took no lock at all, so on a host polling every
-    five minutes any hand-run converge lasting longer than five minutes would
-    overlap the poller's. That is not hypothetical -- it happened, and it
-    surfaced 1463 tasks in as an unsafe-deployment-target refusal, because the
-    poller had repointed `current` underneath a run that was still converging
-    services against the release it had activated itself.
-
-    What this mode adds is the lock, the tooling and the tree. The arguments,
-    the inventory, the vault password provider and the tags stay the
-    operator's. The ansible-playbook and the working directory are the
-    poller's: the controller checkout's virtualenv and the checkout itself,
-    because issue #902 found the launcher unusable as documented -- the login
-    PATH holds no ansible-playbook and the operator's cwd no site.yml, so the
-    documented command died on ENOENT unless the operator first recreated the
-    poller's own setup by hand. Relative paths in the arguments therefore
-    resolve against the checkout. That checkout is at whatever revision
-    update_checkout last reset it to, which need not be the one the operator
-    means, so its HEAD is printed before anything runs and is read under the
-    lock, after the last poll that could move it. It is still `flock` around
-    one ansible-playbook invocation, using the poller's own lock rather than a
-    second scheme, and writing the holder record that plain flock(1) cannot.
-
-    The child is run with the inherited terminal: --ask-vault-pass has to be able
-    to prompt, and the operator has to see the recap as it happens, so the output
-    is deliberately neither captured nor logged. There is no timeout for the same
-    reason -- a converge is an attended operation that legitimately runs for
-    hours, and killing one at an arbitrary deadline is the one thing worse than
-    letting it finish.
+    Uses the poller's virtualenv and checkout (#902), whose HEAD is printed first.
+    Inherits the terminal and has no timeout: it is an attended operation.
     """
 
     with deployment_lock(config, holder="operator converge") as acquired:
@@ -2646,13 +2130,9 @@ def converge(config: Config, arguments: list[str]) -> int:
             return 1
         environment = dict(os.environ)
         environment[LOCK_OWNER_ENVIRONMENT] = str(os.getpid())
-        # The collections the poller's plays load (#902): without them the
-        # virtualenv's ansible-playbook fails on the first community.* module.
-        # HOME is deliberately not pinned, so --ask-vault-pass and the
-        # operator's own config keep working, and an operator's own export wins.
+        # The collections the poller's plays load (#902); HOME stays the operator's.
         environment.setdefault("ANSIBLE_COLLECTIONS_PATH", str(_collections_path(config)))
-        # Never inherited: announce_release does not run after an operator's
-        # command, so a converge that wrote the summary would announce nothing.
+        # announce_release never runs after an operator's command.
         environment.pop(SUMMARY_PATH_ENVIRONMENT, None)
         print(
             f"production auto-deploy: converging {config.checkout} at "
@@ -2687,11 +2167,7 @@ def _hourly_only_tags(config: Config) -> list[str]:
 
 
 def read_verify_verdict(config: Config, tag: str | None = None) -> str | None:
-    """The last verdict --verify recorded: "pass", "fail", or None for no record.
-
-    A file of its own, like every other fact in the state directory, so poll()
-    never rewrites it and a state directory from an older poller simply lacks it.
-    """
+    """The last verdict --verify recorded: "pass", "fail", or None for no record."""
 
     try:
         parts = _verify_verdict_path(config, tag).read_text(encoding="ascii").split()
@@ -2724,13 +2200,8 @@ def note_verify_verdict(
 ) -> None:
     """Page on a change of verdict only, and record it once the page landed.
 
-    No record reads as a pass: a first failure pages and a first pass does not.
-    The record moves only after delivery, as note_ci_refusal's does, because a
-    recorded failure nobody received would make every later one a quiet repeat.
-    tag None is the services' verdict; an hourly-only tag keeps its own record and
-    pages under its own title, so the two signals never mask each other (#609).
-    failure is "fail", or "unchecked" for an hourly-only check that could not run;
-    a record of either pages its change, and only "fail" is recovered from.
+    tag None is the services' verdict; each hourly-only tag keeps its own (#609).
+    failure is "fail", or "unchecked" for a check that could not run.
     """
 
     verdict = "pass" if passed else failure
@@ -2741,9 +2212,7 @@ def note_verify_verdict(
         failed = verdict != "pass"
         run_url = ""
         if failed and tag is None:
-            # Best effort, and only here, where the verdict changed: one more
-            # anonymous GitHub request, whose failure costs the link and nothing
-            # else.
+            # Best effort: a failure costs only the link.
             with contextlib.suppress(EligibilityError):
                 run_url = ci_verdict(config, sha, fetch_ci_runs(config))[2] or ""
         if tag is None:
@@ -2778,9 +2247,7 @@ def note_verify_verdict(
         if not published:
             print("production auto-deploy: verify notification failed", file=sys.stderr)
             return
-    # Caught rather than raised: verify.yml did run, so "could not verify" would
-    # be false. The cost of an unwritable state root is a page every run, which
-    # is the loudest way to report it.
+    # Caught rather than raised: verify.yml did run.
     try:
         _write_private(
             _verify_verdict_path(config, tag),
@@ -2812,30 +2279,11 @@ def _run_verify_play(config: Config, tags: str, log_path: Path, timeout: float) 
 def verify(config: Config) -> bool | None:
     """Verify the deployed revision: the services, then each hourly-only tag. None: skipped.
 
-    It runs from the controller checkout, which is the only tree carrying the
-    playbooks, and only while that checkout holds the last successful revision.
-    A deployment detaches it to the candidate before any play runs, so after a
-    failed one it holds a revision whose verify.yml may name services that never
-    activated -- and that failure has already paged. Verification resumes with
-    the next successful deployment.
-
-    Under the deployment lock (#326), waited for up to VERIFY_LOCK_WAIT_SECONDS
-    rather than taken or abandoned on one attempt. A deployment in progress runs
-    verify.yml itself, so the hour is not unverified while one holds the lock --
-    but the external check hears only the ping, and a skip pings nothing, so
-    abandoning the hour spent a grace period the next collision then alerted on.
-    Waiting spends minutes instead. It holds nothing while it waits, so a
-    deployment is not delayed by a verify queued behind it. Nothing here writes
-    the attempted record or the last success, so a failed verify cannot hold back
-    the next poll.
+    Only while the checkout holds the last successful revision. Waits up to
+    VERIFY_LOCK_WAIT_SECONDS for the deployment lock (#326).
     """
 
-    # Said before the wait rather than after it, because --verify is an operator
-    # command too and fifteen silent minutes read as a hang. Racy in both
-    # directions by construction -- the probe takes no lock, so a deployment can
-    # start or end either side of it -- and harmless in both: the notice can
-    # appear before a wait that turns out to be instant, or be absent from one
-    # that waits, and neither changes what the acquire below does.
+    # Said before the wait so fifteen silent minutes do not read as a hang; racy and harmless.
     if VERIFY_LOCK_WAIT_SECONDS and deployment_lock_held(config):
         print(
             "production auto-deploy: verify waiting up to "
@@ -2867,10 +2315,7 @@ def verify(config: Config) -> bool | None:
         log_path = config.log_root / "verify.log"
         passed = _run_verify_play(config, config.verify_tags, log_path, VERIFY_TIMEOUT_SECONDS) == 0
         note_verify_verdict(config, passed, head, log_path)
-        # verify.yml runs its roles before its tasks, and a failing host leaves
-        # the run, so a service failure in the same invocation would hide an
-        # hourly-only check and a paged one would hide the services (#609). One
-        # invocation and one record per tag, whatever the services' outcome.
+        # One invocation and record per tag, so one failure cannot hide another (#609).
         results = [passed]
         for tag in _hourly_only_tags(config):
             tag_log = config.log_root / f"verify-{tag.removeprefix('platform_verify_')}.log"
@@ -2890,11 +2335,7 @@ def verify(config: Config) -> bool | None:
 
 
 def _next_poll_verdict(config: Config) -> tuple[str, str]:
-    """Explain what the next poll would do, without doing any of it.
-
-    Silence is the normal outcome of a poll, so an operator otherwise cannot
-    tell a healthy idle poller from a broken one.
-    """
+    """Explain what the next poll would do, without doing any of it."""
 
     try:
         head = resolve_main_sha(config)
@@ -2914,12 +2355,8 @@ def _next_poll_verdict(config: Config) -> tuple[str, str]:
         )
     if selection.attempted is not None:
         stopped = selection.attempted
-        # poll() records the attempt before it deploys, so attempted-and-not-
-        # successful is also what a deployment in progress looks like: on
-        # 2026-09-13 this reported a converging revision as failed and offered
-        # --retry-failed against it. The flock is the liveness truth. State is
-        # read after the probe, so a deployment that finished during the CI
-        # query above reads as deployed rather than as failed.
+        # Attempted-but-not-successful also looks like a deployment in progress; the
+        # flock is the liveness truth.
         held = deployment_lock_held(config)
         successful = read_state(config)["last_successful"]
         if successful is not None and successful["sha"] == stopped:
@@ -3021,11 +2458,7 @@ def _parse_arguments(argv):
             mode = "retry"
             retry_sha = remaining.pop(0)
         elif argument == "--converge" and mode is None:
-            # Everything after --converge belongs to ansible-playbook, not to
-            # this parser: the operator's own flags are passed through
-            # unexamined, and several of them (--check, --diff, --tags) collide
-            # with nothing here only because parsing stops at this point. The
-            # launcher supplies --config first, so it is always already seen.
+            # Everything after --converge belongs to ansible-playbook.
             mode = "converge"
             playbook_arguments = _playbook_arguments(remaining)
             remaining = []
@@ -3037,26 +2470,12 @@ def _parse_arguments(argv):
 def _verify_mode(config: Config) -> int:
     """Run --verify and ping its check with the verdict."""
 
-    # The verify check's ping (#610), keyed only on what verify() hands
-    # back, so it survives any change to how verify() reaches its
-    # verdict. True pings plain and False pings /fail, every run,
-    # whatever note_verify_verdict decided to page: the check needs the
-    # heartbeat, not the change. A run that could not verify at all -- any
-    # raise, OSError included, which leaves `passed` False -- pings /fail
-    # as well, because off the box a verification that could not run is
-    # a failure. None is a skip -- lock held, nothing deployed, the
-    # checkout not at the deployed revision -- and pings nothing, so a
-    # verify that keeps skipping goes silent and alerts after the grace
-    # period, which is the state that must not hide. ping_healthchecks
-    # never raises, so this `finally` changes no exception, return value
-    # or message.
+    # The verify check's ping (#610): True pings plain, False (or any raise) /fail,
+    # None (skipped) pings nothing so repeated skips alert.
     passed = False
     try:
         passed = verify(config)
     except OSError as error:
-        # Nothing was verified, so no verdict is recorded and Pushover hears
-        # nothing; the external verify check still hears /fail from the
-        # `finally` below.
         print(f"production auto-deploy: could not verify: {error}",
               file=sys.stderr)
         return 1
@@ -3073,29 +2492,8 @@ def _verify_mode(config: Config) -> int:
 def _poll_mode(config: Config, mode: str, retry_sha: str | None) -> int:
     """Run --poll or --retry-failed, pinging the tick check for --poll only."""
 
-    # The tick heartbeat (#606), sent after poll() has released the lock.
-    # None is healthy: nothing to deploy, a quarantined revision waiting for
-    # an operator, or the lock held by a deployment or a verify. True is a
-    # deployment. False is a failed deployment and pings /fail, but only for
-    # the tick that failed: the revision is quarantined after one attempt,
-    # so the ticks after a #327- or #559-shaped failure have nothing to do
-    # and ping plain again -- /fail, then plain, then plain. A transient
-    # failure is retried for up to TRANSIENT_FORGIVENESS_LIMIT ticks and
-    # pings /fail on each. That is the intent rather than a gap: a failure
-    # that persists on the box is paged there, through Pushover, and --status
-    # names the revision; these external checks exist to hear the NAS or
-    # the poller being gone, which nothing on the box can report. A raise
-    # that is not caught below leaves `outcome` False: a tick that did not
-    # finish. An OSError is caught, and leaves it False as well (#658): a
-    # state or log directory the installer owns is missing or unwritable,
-    # so nothing was deployed and the tick pings /fail -- only the report
-    # changes, from a traceback to the sentence below. An EligibilityError
-    # pings plain: GitHub could not be read, but the poller is alive and
-    # deciding, and sustained blindness already pages on-box after
-    # BLIND_POLL_THRESHOLD polls, where a /fail here would page off-box on a
-    # single GitHub blip. A manual --retry-failed pings nothing, so it
-    # cannot vouch for a dead cron. ping_healthchecks never raises, so this
-    # `finally` changes no exception, exit code or message.
+    # The tick heartbeat (#606): None and True ping plain, False pings /fail, an
+    # EligibilityError pings plain (blindness already pages on-box), --retry-failed nothing.
     outcome = False
     try:
         outcome = poll(config, retry_sha=retry_sha)
@@ -3103,13 +2501,7 @@ def _poll_mode(config: Config, mode: str, retry_sha: str | None) -> int:
         outcome = None
         raise
     except OSError as error:
-        # A private directory the installer owns is missing or unwritable.
-        # Cron keeps only the most recent output, so this has to read as a
-        # sentence rather than as a traceback a week after the fact. The
-        # --verify branch above and scripts/image_prune.py report the same
-        # class the same way; this was the branch that ran every five
-        # minutes and did not (#658). `outcome` stays False, so the
-        # `finally` still pings /fail for the tick.
+        # A private directory the installer owns is missing or unwritable (#658).
         print(f"production auto-deploy: {error.filename or 'a managed path'} is unusable",
               file=sys.stderr)
         return 1
@@ -3142,13 +2534,10 @@ def main(argv=None) -> int:
             return _verify_mode(config)
         return _poll_mode(config, mode, retry_sha)
     except ConfigurationError:
-        # No ping: the URL is in the file that could not be trusted. The tick
-        # check hears silence and alerts once its grace period runs out.
+        # No ping: the URL is in the untrusted file.
         print("production auto-deploy: unusable configuration", file=sys.stderr)
         return 1
     except EligibilityError:
-        # Not "nothing to deploy": poll() returns None for that. Reaching
-        # here means the candidate could not be established at all.
         print("production auto-deploy: could not determine a candidate",
               file=sys.stderr)
         return 0

@@ -68,9 +68,7 @@ current = manifest(
 )
 
 changes = changes_of(previous, current)
-# The full pinned reference is what the summary's Git pickaxe searches for, so an
-# image the release runs carries it verbatim, digest included, and a removed one
-# carries none: there is nothing in the release to find.
+# The summary's Git pickaxe searches for the full pinned reference, digest included.
 assert changes == [
     {"name": "immich/immich-server", "kind": "updated", "from": "v1.121.0", "to": "v1.122.0",
      "reference": "ghcr.io/immich-app/immich-server:v1.122.0" + DIGEST_B},
@@ -91,22 +89,18 @@ assert lines_of(changes) == [
     "retired 1.0.0 (removed)",
 ]
 
-# An unchanged release must read as unchanged rather than as a repin.
 assert changes_of(current, current) == []
 assert lines_of([]) == []
 
-# A first install has no previous manifest at all.
 first_install = changes_of(None, manifest({"pinchflat": {"pinchflat": "docker.io/x/pinchflat:v2.27.0" + DIGEST_A}}))
 assert first_install == [
     {"name": "pinchflat", "kind": "added", "to": "v2.27.0", "reference": "docker.io/x/pinchflat:v2.27.0" + DIGEST_A}
 ]
 
-# The plain summary's title filter went with the plain summary (#558 stage 4a).
 assert not hasattr(plugin, "deployment_report_headline")
 assert "deployment_report_headline" not in plugin.FilterModule().filters()
 
-# The change-line renderer is a helper of the summary document, and no role or
-# playbook ever called it as a filter (#844).
+# Never called as a filter (#844).
 assert "deployment_change_lines" not in plugin.FilterModule().filters()
 
 # A digest-only pin is still a released change, and an untagged image is named.
@@ -118,9 +112,7 @@ assert untagged == [
     {"name": "beszel", "kind": "repinned", "to": "untagged", "reference": "docker.io/henrygd/beszel" + DIGEST_B}
 ]
 
-# The poller's summary: each image paired with the commit its own lookup found,
-# keyed by reference so two images never trade commits, and nothing a lookup
-# could not settle. A removed image carries no reference and gets no commit.
+# Keyed by reference so two images never trade commits.
 document_of = plugin.deployment_summary_document
 SHA_J, SHA_I, RELEASE, PREVIOUS = "1" * 40, "2" * 40, "3" * 40, "4" * 40
 lookups = [
@@ -145,7 +137,6 @@ assert document == {
     ],
     "commits": [{"sha": SHA_J, "subject": "fix: pin jellyfin 10.11.0"}],
 }, document
-# A first install has no predecessor to name.
 assert document_of(first_install, [], [], RELEASE, "")["previous"] == ""
 require_rejected(document_of, changes, "lookups", [], RELEASE, PREVIOUS)
 

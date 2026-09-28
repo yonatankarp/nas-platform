@@ -1,15 +1,6 @@
-"""Repair a managed user's non-secret properties after proving its identity.
+"""Repair a managed user's non-secret properties after re-proving its identity.
 
-Run inside the Paperless webserver container by `manage.py shell -c`. Inputs
-arrive as environment variables.
-
-Deliberately never touches the password: this path runs against accounts that
-already exist, and a repair that reset credentials would silently revoke a
-working login. The identity binding is re-proven here rather than trusted from
-the earlier check, because this transaction is the one that writes.
-
-Group names are resolved as a set and the count is asserted, so a missing group
-fails the play instead of silently narrowing the user's access.
+Never touches the password; a missing group fails rather than narrowing access.
 """
 
 import json

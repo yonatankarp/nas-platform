@@ -1,38 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 #
-# Behaviour of the Komga service contract's two Ruby programs.
-#
-# Until #147 both programs lived in `<<'RUBY'` heredocs inside
-# tests/contracts/komga.sh. `sh -n` reads a quoted heredoc as opaque text, so
-# the only thing that ever executed the static half was
-# `tests/contracts/komga.sh static`, and the only thing that ever executed the
-# runtime half was the komga integration lane or the Mac proof -- both of which
-# need Docker, a converged service and a real vault. A contract that passes says
-# nothing about which of its assertions still bite. Both halves are files now,
-# so each assertion can be moved on its own.
-#
-# Three layers, because the contract has three kinds of property:
-#
-#   Static -- build a fixture repository from the seven files the static program
-#   reads, break exactly one thing in it, and require the program to name that
-#   thing. The assertion text is the interface: a guard that fails for the wrong
-#   reason has stopped guarding what it names, so every row pins the exact
-#   diagnostic.
-#
-#   Runtime -- serve Komga's own API from an HTTP fixture, put `docker` and
-#   `ansible-vault` stubs on PATH, and drive every mode the program dispatches.
-#   None of this had any test at all before the cut.
-#
-#   Wrapper -- tests/contracts/komga.sh is what turns a mode into an invocation.
-#   Its rows prove the mode guard, the runtime-context derivation, the three
-#   self-read greps, that both programs come from the checkout while the tree
-#   they inspect does not, and that neither can consume the caller's stdin.
-#
-# Run with --self-test to plant a regression in each program and in the wrapper
-# and prove the rows above detect it. It accumulates its mismatches rather than
-# aborting on the first: at three layers and eighty-odd plants, learning them
-# one at a time is the expensive habit.
+# Behaviour of the Komga service contract's two Ruby programs and its wrapper,
+# tests/contracts/komga.sh. Run with --self-test to plant a regression in each.
 
 require "fileutils"
 require "json"
@@ -52,20 +22,14 @@ include TestScaffold
 include ContractTestSupport
 
 ROOT = File.expand_path("..", __dir__)
-# The prefix every refusal this file judges has to carry. Matching the
-# fragment alone accepted a backtrace or an echoed argument as a refusal.
+# Matching the fragment alone accepted a backtrace or an echoed argument as a refusal.
 DIAGNOSTIC_PREFIX = "Komga contract failed: "
 CONTRACT = File.join(ROOT, "tests", "contracts", "komga.sh")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "komga-static.rb")
 RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "komga-runtime.rb")
 
-# Exactly what the static program reads: seven paths handed to it as argv, plus
-# the shared flatten_tasks it requires through PLATFORM_CONTRACT_REPO_DIR. This
-# list is the whole of it -- unlike arr and trailarr, komga's static half reads
-# nothing its own argv does not name, so the fixture is not quietly narrower
-# than production. The inventory is the seventh because the one-convergence
-# migration flag is declared at two layers and group_vars/all outranks the role
-# defaults, so the contract has to see both (#343).
+# Exactly what the static program reads. The inventory is here because the
+# migration flag is declared at two layers and group_vars/all outranks defaults (#343).
 FIXTURE_FILES = %w[
   services/komga/compose.yml
   services/komga/compose.mac.yml
@@ -91,9 +55,7 @@ ADMIN_PASSWORD = "komga-contract-password"
 FIXTURE_LIBRARY_URL = "/data/Comics/task-10-contract-comic/Task 10 Contract Comic.cbz"
 FIXTURE_RELATIVE = "Comics/task-10-contract-comic/Task 10 Contract Comic.cbz"
 
-# The complete owned setting set the runtime half compares against, taken from
-# the role's own defaults rather than restated, so a fixture cannot drift away
-# from what the platform actually declares.
+# Taken from the role's own defaults so a fixture cannot drift from the platform.
 OWNED_SETTINGS = YAML.safe_load_file(File.join(ROOT, "roles/komga/defaults/main.yml"))
                      .fetch("komga_library_settings")
 MANAGED_SETTINGS = %w[
@@ -111,10 +73,7 @@ def build_fixture_repository(root)
   end
 end
 
-# Every substitution states how many matches it expects. A replacement that
-# still contains its own pattern plants nothing, and a bare `sub` cannot tell
-# that from a plant that worked: the row then reports a pass, or a failure with
-# the wrong diagnostic.
+# States its expected match count: a plant that matched nothing would report a pass.
 def mutate_text(root, relative, pattern, replacement, occurrences: 1)
   path = File.join(root, relative)
   body = File.read(path)
@@ -155,10 +114,8 @@ STATIC_ROWS = [
     expects: "storage contract differs"
   },
   {
-    # The property 02d60e2 left unasserted, planted at the mechanism that
-    # implements it: a config path resolving under the media root can land
-    # inside the library mounted /data:ro, which puts Komga's database in a
-    # read-only tree.
+    # A config path under the media root can land inside the library mounted
+    # /data:ro, putting Komga's database in a read-only tree.
     name: "config storage moved under the media root",
     break: lambda { |root|
       mutate_text(root, "roles/komga/templates/env.j2",
@@ -168,8 +125,6 @@ STATIC_ROWS = [
     expects: "config storage is not rooted outside the media tree"
   },
   {
-    # The other half. Rooting config outside the media tree only separates it
-    # from the library while the library is still in the media tree.
     name: "a library moved out of the media root",
     break: lambda { |root|
       mutate_text(root, "roles/komga/templates/env.j2",
@@ -336,9 +291,7 @@ STATIC_ROWS = [
     expects: "application readiness status gate differs"
   },
   {
-    # "Claim Komga with the vault administrator" is consumed by no earlier
-    # assertion, so this row genuinely produces the accumulating existence
-    # report rather than an ordering diagnostic that fires first.
+    # Consumed by no earlier assertion, so this reaches the existence report.
     name: "a required task that survives only under a different name",
     break: lambda { |root|
       mutate_text(root, "roles/komga/tasks/main.yml",
@@ -348,10 +301,8 @@ STATIC_ROWS = [
     expects: "missing Claim Komga with the vault administrator"
   },
   {
-    # The guard moves, not the creation. Moving the creation earlier also puts
-    # it ahead of the repair that frees its root, so the program refuses two
-    # lines later with the repair-ordering sentence instead and the row can no
-    # longer say which invariant broke. Found by --self-test, not by reading.
+    # The guard moves, not the creation: moving the creation trips the
+    # repair-ordering sentence first.
     name: "a library preflight that no longer precedes every mutation",
     break: lambda { |root|
       path = File.join(root, "roles/komga/tasks/main.yml")
@@ -393,9 +344,7 @@ STATIC_ROWS = [
     expects: "library updates must preserve the selected identifier"
   },
   {
-    # Read as the guard's own conditions rather than as a joined string: the
-    # input is named in three live places in this role, so a whole-file
-    # substring answered for whichever of the three happened to survive.
+    # Read as the guard's own conditions: the input is named in three live places.
     name: "an ambiguity guard that lost its one-convergence clause",
     break: lambda { |root|
       mutate_text(root, "roles/komga/tasks/main.yml",
@@ -463,10 +412,6 @@ end
 # ---------------------------------------------------------------------------
 # Runtime layer
 # ---------------------------------------------------------------------------
-#
-# Komga's own API, modelled closely enough that every mode the runtime program
-# dispatches reaches its own sentence. The library list is mutable, because the
-# drift and migration modes mutate it and a later mode then reads it back.
 
 def managed_library(id:, name: LIBRARY_NAME, root: COMICS_ROOT, overrides: {})
   MANAGED_SETTINGS.merge("id" => id, "name" => name, "root" => root,
@@ -541,9 +486,6 @@ def write_stub(directory, name, body)
   path
 end
 
-# The whole runtime environment: media and report roots, a vault the stub
-# `ansible-vault` prints, and a `docker` stub whose one answer is read from a
-# file, because only one of the two inspect formats is reached per run.
 def with_runtime_sandbox(state)
   Dir.mktmpdir("nas-platform-komga-runtime.") do |raw|
     sandbox = File.realpath(raw)
@@ -587,8 +529,6 @@ def run_runtime(program, mode, state, paths, port, extra_env: {})
   Open3.capture3(environment, RbConfig.ruby, program, mode, in: "/dev/null")
 end
 
-# Each row states its mode, the state the fixture serves, whatever it wants
-# arranged on disk first, and the sentence it must produce.
 RUNTIME_ROWS = [
   { name: "a converged platform in run mode", mode: "run", expects: nil,
     wants: RUN_SUCCESS },
@@ -606,10 +546,8 @@ RUNTIME_ROWS = [
   { name: "a library listing that is not JSON", mode: "run",
     state: { malformed_libraries: "not json at all" },
     expects: "returned malformed JSON" },
-  # This row's fixture also fails the name-binding check below the schema
-  # sweep, so the schema plant is proven through the opaque-identifier row
-  # instead. The row still earns its place: it is the one that says an
-  # unnamed candidate is refused at all.
+  # This fixture also fails the name-binding check, so the schema plant is
+  # proven through the opaque-identifier row instead.
   { name: "a managed library candidate with no name", mode: "run",
     libraries: lambda {
       [{ "id" => "comics", "root" => COMICS_ROOT },
@@ -703,10 +641,7 @@ RUNTIME_ROWS = [
     mutate_after_seed: ->(state) { state.fetch(:libraries).first["id"] = "recreated" },
     expects: "Komga managed library identifiers changed across recreation" },
   {
-    # An *unowned* setting, deliberately. The owned set is compared a few lines
-    # earlier and would refuse first with its own sentence, so this row moves a
-    # field the platform does not own but the persistence snapshot still
-    # records -- which is the only way to reach this assertion.
+    # An *unowned* setting: the owned set is compared earlier and would refuse first.
     name: "a managed library setting that changed across recreation",
     mode: "assert-persistence", seed_first: true,
     libraries: lambda {
@@ -801,11 +736,7 @@ RUNTIME_ROWS = [
     expects: "the migration replaced the Comics library instead of repointing it" }
 ].freeze
 
-# Arranges the comic fixture the repeated-seed row needs, using the program
-# under test rather than the checkout's. Threading `program` through matters
-# even though no plant reaches seed_fixture today: a helper that quietly used
-# the real program would let a future plant there pass vacuously, which is the
-# whole shape this file exists to prevent.
+# Uses the program under test so a future plant in seed_fixture cannot pass vacuously.
 def seed_the_fixture(paths, program)
   _out, _err, status = run_runtime(program, "seed-fixture-only", {}, paths, 1)
   raise "arranging the comic fixture failed" unless status.success?
@@ -818,9 +749,7 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
     state = { libraries: (row[:libraries] || method(:converged_libraries)).call }
              .merge(row.fetch(:state, {}))
     with_runtime_sandbox(state) do |paths|
-      # :before runs against the real report directory; the symlink row then
-      # repoints PLATFORM_REPORT_ROOT at the link its :before created, which is
-      # the only way to hand the program an unsafe root it can still resolve.
+      # The symlink row repoints PLATFORM_REPORT_ROOT at the link :before created.
       before = row[:before]
       before&.arity == 2 ? before.call(paths, program) : before&.call(paths)
       if state.fetch(:report_root_link, false)
@@ -852,11 +781,8 @@ end
 # Wrapper layer
 # ---------------------------------------------------------------------------
 #
-# tests/contracts/komga.sh resolves both programs from its own checkout rather
-# than from the tree it inspects, so a copy of the three files into a throwaway
-# tests/contracts/ is a whole working contract. That is what lets a row point
-# PLATFORM_CONTRACT_REPO_DIR at a broken fixture and still exercise the real
-# wrapper.
+# The wrapper resolves both programs from its own checkout, so a copy into a
+# throwaway tests/contracts/ can point at a broken fixture and still run for real.
 
 def with_contract_copy(static: File.read(STATIC_PROGRAM), runtime: File.read(RUNTIME_PROGRAM),
                        wrapper: File.read(CONTRACT), &block)
@@ -879,8 +805,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     failures << "wrapper: static mode did not report the property it proved" unless
       stdout.include?(STATIC_SUCCESS)
 
-    # The tree under inspection is broken, the wrapper's own checkout is not:
-    # the row that proves the wrapper still runs the static program at all.
     Dir.mktmpdir("nas-platform-komga-broken.") do |raw|
       broken = File.realpath(raw)
       build_fixture_repository(broken)
@@ -893,11 +817,8 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
         (stdout + stderr).include?("roles/komga/meta/argument_specs.yml is absent")
     end
 
-    # `run` is the default mode, not `static`, so a bare invocation must reach
-    # the runtime half's environment requirements rather than the static
-    # success line. The wrapper names the unset root in its own words, so its
-    # message is asserted rather than the shell's, and the substantive property
-    # is stated separately below.
+    # `run` is the default mode, so a bare invocation must reach the runtime
+    # half's environment requirements.
     [[], %w[run], %w[totally-unknown]].each do |argv|
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => copy_root, "PLATFORM_MEDIA_ROOT" => nil,
@@ -914,8 +835,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
         stdout.include?(STATIC_SUCCESS)
     end
 
-    # The runtime-context derivation, which decides which container the runtime
-    # half inspects and whether a Docker healthcheck is required at all.
     roots = { "PLATFORM_MEDIA_ROOT" => copy_root, "PLATFORM_REPORT_ROOT" => copy_root }
     {
       "an invalid runtime context" =>
@@ -938,13 +857,8 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
                   "#{(stdout + stderr).strip.inspect}" unless (stdout + stderr).include?(expects)
     end
 
-    # The run-mode environment contract, as tests/pinchflat_contract_test.rb
-    # holds it. The argv rows above clear both roots, so the media guard always
-    # fires first and shadows the report guard; here each name is set to "" on
-    # its own with the other valid. "" rather than deleted, because ${VAR:?}
-    # refuses null as well as unset. The port is unparseable so a guard planted
-    # as `:=` fails fast in the runtime program rather than polling a port
-    # nothing listens on; chdir keeps the "" it expands to off this checkout.
+    # Each root set to "" on its own ("" because ${VAR:?} refuses null too). The
+    # port is unparseable so a guard planted as `:=` fails fast.
     full = { "PLATFORM_CONTRACT_REPO_DIR" => copy_root, "PLATFORM_KOMGA_PORT" => "not-a-number" }
            .merge(roots)
     REQUIRED_RUN_ENV.each do |name|
@@ -956,10 +870,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     end
   end
 
-  # The branch every deployment actually takes. Neither tests/integration.sh nor
-  # run_contracts.rb --execute sets PLATFORM_CONTRACT_REPO_DIR, so the default is
-  # the only path in production -- and it is the one where resolving both
-  # programs from the script's own checkout is load-bearing rather than shadowed.
+  # The branch every deployment takes: nothing sets PLATFORM_CONTRACT_REPO_DIR.
   with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => nil }, contract, "static"
@@ -982,14 +893,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
 end
 
 # --- the three self-read greps ---------------------------------------------
-#
-# This is the reason komga was saved for its own tranche. All three have their
-# subject in the runtime program and moved with it, so all three get a plant.
-# There was a fourth, a grep -F whose pattern was its own only subject after
-# 02d60e2 (2026-08-17) deleted the fixture config path it named; it was deleted
-# rather than repointed, and with it the row that asserted its tautology. What
-# it was protecting is a platform property and is asserted in the static layer
-# above, against roles/komga/templates/env.j2.
 
 SELF_READ_ROWS = [
   {
@@ -1007,10 +910,7 @@ SELF_READ_ROWS = [
     expects: "unrelated library fixture API root can collide with /data"
   },
   {
-    # The negated guard, and the one whose repoint this PR had to make: before
-    # the cut its subject was the runtime body inside "$0", so it was live;
-    # left reading the 100-line wrapper it would have gone trivially true
-    # forever, which is audiobookshelf's silent-blinding class.
+    # The negated guard: left reading the wrapper it would be trivially true.
     name: "an unsafe media-root fallback for the fixture config path",
     file: :runtime,
     from: %(LEGACY_LIBRARY_ROOT = "/data"\n),
@@ -1022,10 +922,7 @@ SELF_READ_ROWS = [
 
 def self_read_failures(wrapper_source: File.read(CONTRACT))
   failures = []
-  # A floor rather than non-emptiness. The summary line below derives its count
-  # from this list, so a list that shrank to nothing would report "all 0
-  # self-read guards bite" and pass -- and shrinking is exactly what happened to
-  # this set, once already.
+  # A floor rather than non-emptiness: an empty set would report "all 0 bite".
   failures << "self-read: the guard set has shrunk to #{SELF_READ_ROWS.length} row(s); " \
               "a guard was deleted without its property moving somewhere that can fail" if
     SELF_READ_ROWS.length < 3
@@ -1051,14 +948,10 @@ end
 
 # --- stdin -----------------------------------------------------------------
 #
-# Reports what the program saw on stdin and what the caller still has, which is
-# the only way the redirect is observable: neither program reads stdin, so the
-# redirect is what keeps that true rather than something that changes an outcome
-# today. Both invocations get their own probe, because the runtime one is
-# reached through `exec` and the static row cannot cover it.
+# Neither program reads stdin, so only a probe makes the redirect observable. The
+# runtime one is reached through `exec` and gets its own probe.
 
-# The runtime probe must satisfy the wrapper's three live self-read greps, or
-# the wrapper refuses before it reaches the program at all.
+# Must satisfy the wrapper's three self-read greps or the wrapper refuses first.
 RUNTIME_STDIN_PROBE = <<~'PROBE'
   FIXTURE_SCAN_TIMEOUT_SECONDS = 240
   UNRELATED_LIBRARY_ROOT = "/config/.nas-platform-unmanaged"
@@ -1081,12 +974,8 @@ end
 
 # --- two roots -------------------------------------------------------------
 #
-# Stated as outcomes rather than as the wrapper's text. An inspected tree with
-# no tests/contracts at all must still pass, because both programs come from the
-# checkout; and the static program must still require tests/policy_support.rb
-# out of the inspected tree, because that is the tree whose task files it is
-# flattening. Both rows are promoted from the before/after capture, where they
-# sit among the byte-identical scenarios and are therefore invisible in a diff.
+# A tree with no tests/contracts must pass; tests/policy_support.rb must still
+# come from the inspected tree.
 
 def two_roots_failures(wrapper_source: File.read(CONTRACT))
   failures = []
@@ -1159,10 +1048,7 @@ STATIC_MUTATIONS = [
     rows: ["a library moved out of the media root"]
   },
   {
-    # Removing this one does not make the row pass: an absent line reaches
-    # `values.first.strip` and dies of a NoMethodError, so the contract still
-    # refuses -- for a reason that names nothing. `detects` is what pins the
-    # difference between refusing and refusing usefully.
+    # Removing this still refuses, via NoMethodError; `detects` pins the difference.
     label: "the exactly-once render check",
     from: '  abort "Komga contract failed: #{name} is not rendered exactly once" unless values.length == 1',
     to: "  nil",
@@ -1282,12 +1168,8 @@ STATIC_MUTATIONS = [
     from: "  preflight.none?(&:nil?) && mutations.none?(&:nil?) && preflight.max < mutations.min",
     to: "  preflight.none?(&:nil?) && mutations.none?(&:nil?)",
     rows: ["a library preflight that no longer precedes every mutation"],
-    # Cascade, and it is the two assertions sharing one `preflight` array: with
-    # the library-mutation ordering check gone, the managed-user ordering check
-    # further down refuses instead, because a preflight that follows the library
-    # creation also follows the user reconciliation. Both earn their place --
-    # they name different mutations -- so this is recorded rather than
-    # collapsed, and the row it fires through is the one below it.
+    # Cascade: the managed-user ordering check shares the `preflight` array and
+    # refuses instead.
     detects: "refused for the wrong reason"
   },
   {
@@ -1310,9 +1192,7 @@ STATIC_MUTATIONS = [
     rows: ["a library repair that no longer targets the selected identifier"]
   },
   {
-    # The whole condition, not the predicate inside the block: with the guard's
-    # `that` list gone the block never runs, `any?` on an empty array is already
-    # false, and a plant inside the block changes nothing.
+    # The whole condition: with `that` gone, `any?` on [] is already false.
     label: "the one-convergence gating check",
     from: '  Array(role_task.call("Refuse ambiguous Komga library candidates")
     .dig("ansible.builtin.assert", "that")).any? do |condition|
@@ -1341,9 +1221,7 @@ RUNTIME_MUTATIONS = [
     from: 'fail_contract("encrypted vault could not be read") unless vault_status.success?',
     to: "nil unless vault_status.success?",
     rows: ["a vault that cannot be decrypted"],
-    # Without the refusal the program carries on and YAML.safe_load of the
-    # stub's stderr-only output yields nil, so the very next fetch raises. It
-    # still refuses, and now says so in a stack trace instead of a sentence.
+    # Without the refusal the next fetch raises a stack trace instead.
     detects: "refused for the wrong reason"
   },
   {
@@ -1377,13 +1255,8 @@ RUNTIME_MUTATIONS = [
     from: '    name_matches.length == 1 && name_matches.fetch(0).fetch("id") == root_matches.fetch(0).fetch("id")',
     to: "    true",
     rows: ["the managed name bound to some other library"],
-    # Cascade, recorded rather than tolerated. With the binding check gone the
-    # resolved entry is the differently-named library at the managed root, and
-    # `managed library Comics is not at its declared root` refuses instead. That
-    # comparison is unreachable while the binding check holds -- resolve already
-    # requires the name match and the root match to be the same entry -- so it
-    # gets no row of its own: a row expecting the current redundancy would
-    # freeze it, and this note is what records that it exists.
+    # Cascade: `not at its declared root` refuses instead. It is unreachable while
+    # the binding check holds, so it gets no row of its own.
     detects: "refused for the wrong reason"
   },
   {
@@ -1437,10 +1310,7 @@ RUNTIME_MUTATIONS = [
       library_state.fetch("libraries").map { |entry| entry.fetch("id") }',
     to: "    true",
     rows: ["a managed library identifier that changed across recreation"],
-    # Cascade: the whole-snapshot comparison on the next line subsumes the
-    # identifier one, so a recreated identifier still refuses -- with the
-    # broader sentence. The narrower check earns its place by naming the
-    # identifier, which is the field an operator has to act on.
+    # Cascade: the whole-snapshot comparison subsumes the identifier one.
     detects: "refused for the wrong reason"
   },
   {
@@ -1474,9 +1344,7 @@ RUNTIME_MUTATIONS = [
     label: "the drift fixture check",
     from: '    library.fetch("name") == LEGACY_LIBRARY_NAME && library.fetch("scanOnStartup") == true',
     to: "    true",
-    # The refusing row, not the accepting one. "drift verified against an
-    # installed drift" expects success, so removing the check leaves it green
-    # and proves nothing -- which is what --self-test reported first time round.
+    # The refusing row: the accepting one stays green without the check.
     rows: ["a half-installed drift whose scan-on-startup never moved"]
   },
   {
@@ -1494,8 +1362,7 @@ RUNTIME_MUTATIONS = [
   }
 ].freeze
 
-# The wrapper's own regressions. Each one is a line that today changes no
-# outcome, which is exactly why it needs a plant rather than a passing contract.
+# Each is a line that changes no outcome today, so it needs a plant.
 WRAPPER_MUTATIONS = [
   {
     label: "a dropped stdin redirect on the static invocation",
@@ -1570,10 +1437,7 @@ WRAPPER_MUTATIONS = [
     layer: :self_read
   },
   {
-    # The repoint this PR made, planted in reverse. Left reading "$0" the
-    # negated guard is trivially true against the 100-line wrapper, so the
-    # forbidden shape planted in the runtime program goes unnoticed. This is the
-    # measurement that makes the repoint load-bearing rather than cosmetic.
+    # Left reading "$0" the negated guard is trivially true against the wrapper.
     label: "the unsafe media-root fallback guard rerooted back to the wrapper",
     from: %(    "$runtime_program" >/dev/null; then\n),
     to: %(    "$0" >/dev/null; then\n),
@@ -1595,11 +1459,8 @@ if ARGV.include?("--self-test")
   mismatches = []
   planted = 0
 
-  # Every plant is prepared on the main thread, before the pool. `plant` and
-  # `rows_named` abort with a sentence naming what they could not find, and an
-  # abort inside a worker raises SystemExit there: the thread dies without
-  # recording its result and the pool's own `collected.fetch` then reports a
-  # KeyError instead of that sentence.
+  # Plants are prepared on the main thread: an abort inside a worker raises
+  # SystemExit there and surfaces as a KeyError instead of its sentence.
   static_cases = STATIC_MUTATIONS.map do |mutation|
     [mutation,
      plant(File.read(STATIC_PROGRAM), mutation),

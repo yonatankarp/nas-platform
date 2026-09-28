@@ -1,10 +1,5 @@
 #!/usr/bin/env ruby
-# Beszel and host preparation policy.
-#
-# Identity reads must be server-filtered and retain totals so the role can refuse a
-# result that exceeds one response page, PocketBase relation writes need their
-# connection pool refreshed exactly once, and verification-only runs must still
-# carry the tasks their assertions depend on. Split out of policy_test.rb.
+# Beszel and host preparation policy. Split out of policy_test.rb.
 
 require "open3"
 require "rbconfig"
@@ -17,32 +12,16 @@ include TestScaffold
 
 failures = []
 
-# Re-derived rather than shared: these are file reads, so each script that needs
-# them opens the file itself instead of threading state between scripts.
-#
-# The runtime program, not tests/contracts/beszel.sh. Until #147 the contract's
-# 314-line runtime body lived in a `<<'RUBY'` heredoc inside that wrapper, so
-# reading the wrapper reached it; the wrapper is 54 lines now and holds none of
-# it. Every subject the two checks below name -- the drift fixture's role patch,
-# its verified-prerequisite readback, the encoded identity filters and the
-# wrong-owner refusal -- moved into this file, so this is where they are read
-# from. The `? :` fallback is kept: with "" the positive conjuncts go false and
-# both checks fail loudly, which is what a fixture missing the program should do.
+# The runtime program, not the tests/contracts/beszel.sh wrapper (#147). With ""
+# the positive conjuncts go false, so a fixture missing the program fails loudly.
 beszel_contract_path = File.join(ROOT, "tests", "contracts", "beszel-runtime.rb")
 beszel_contract = File.file?(beszel_contract_path) ? File.read(beszel_contract_path) : ""
 harness = File.read(File.join(ROOT, "tests", "integration.sh"))
-# The launcher is tests/integration.sh; the program it runs in the controller
-# container is tests/integration_controller.sh. Every property below is read
-# from whichever of the two holds the code it polices.
+# tests/integration.sh launches tests/integration_controller.sh, which holds the code.
 controller = File.read(File.join(ROOT, "tests", "integration_controller.sh"))
 
-# Identity reads must be server-filtered and retain totals so the role can refuse
-# an identity result that exceeds the complete 500-record response page.
-#
-# Read through static_role_tasks, not main.yml: the role is one stage per file and
-# main.yml is an index of static imports, so the role Ansible runs is the imports
-# spliced in where they stand. A bare read of the index would select nothing and
-# report every property below holding on a role it never looked at.
+# Read through static_role_tasks: main.yml is an index of static imports, so a
+# bare read of it would select nothing and every check below would pass vacuously.
 beszel_tasks = flatten_tasks(
   static_role_tasks(File.join(ROOT, "roles", "beszel", "tasks", "main.yml"))
 )

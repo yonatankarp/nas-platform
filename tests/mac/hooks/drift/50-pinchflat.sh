@@ -1,11 +1,6 @@
 #!/bin/sh
-# Pinchflat's drift is its identity, because its identity is its whole owned
-# configuration: one basic-authentication pair rendered into the deployed
-# environment file. Rewriting the password there and recreating the container
-# from the deployed bundle is exactly what a hand edit on the NAS would do.
-#
-# The lane then requires that verification alone refuses the drifted deployment,
-# and leaves it drifted for the reconcile phase to repair by converging.
+# Pinchflat's drift is its basic-auth password in the deployed .env; verification
+# must refuse it, and it is left drifted for the reconcile phase.
 set -eu
 set +x
 umask 077
@@ -29,8 +24,7 @@ runtime=$PLATFORM_DOCKER_ROOT/nas-platform/runtime/services/pinchflat/.env
 [ -f "$runtime" ] && [ ! -L "$runtime" ] ||
   mac_die 'the deployed Pinchflat environment is absent or unsafe'
 
-# A value the vault cannot hold, so the drifted state can never coincide with
-# the authored one however the vault was generated.
+# A value the vault cannot hold, so drift never coincides with the authored state.
 drifted_password='drifted-not-the-vault-password'
 grep -q '^PINCHFLAT_BASIC_AUTH_PASSWORD=' "$runtime" ||
   mac_die 'the deployed Pinchflat environment carries no basic-auth password'

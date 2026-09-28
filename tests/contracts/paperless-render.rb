@@ -1,26 +1,13 @@
 #!/usr/bin/env ruby
-# The effective-Compose half of the Paperless service contract: the networking
-# and mount properties that can only be decided on the config Compose actually
-# merges, not on an override's source text.
+# Effective-Compose half of the Paperless service contract.
 #
 # usage: PAPERLESS_RENDERED_COMPOSE=<docker compose config --format json> \
 #          ruby -rjson -rpathname paperless-render.rb VARIANT
 #
-# The whole input is one argv element and one environment variable, which is
-# why the wrapper renders each variant itself and invokes this three times.
-# Preloads are transcribed from the heredoc this came from: -rjson is
-# load-bearing, because the body calls JSON.parse without requiring json and
-# raises NameError run bare, and -rpathname is carried verbatim rather than
-# dropped -- the heredoc declared it and the extraction moves code, not
-# invocations.
+# -rjson is required: the body calls JSON.parse without requiring json.
 variant = ARGV.fetch(0)
 services = JSON.parse(ENV.fetch("PAPERLESS_RENDERED_COMPOSE")).fetch("services")
-# Networking is asserted on the merged effective config rather than on the
-# override's source text. Compose merges two `ports:` lists by appending them, so
-# a sandbox override that publishes its allocated port without `!override`
-# publishes the production 8000 alongside it and two sandboxes collide on it
-# again. The source text of such an override reads correctly; only the render
-# shows the merged list.
+# Compose appends `ports:` lists, so only the merged render shows a missing `!override`.
 webserver_networking = services.fetch("webserver")
 abort "Paperless contract failed: #{variant} effective config must not use host networking" if
   webserver_networking.key?("network_mode")

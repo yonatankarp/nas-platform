@@ -6,9 +6,7 @@ audiobookshelf_compose_project_name: >-
      if platform_project_name | default('') | length > 0 else 'audiobookshelf' }}
 
 audiobookshelf_owned_server_settings:
-  # False because /audiobooks is mounted read-only: "with item" writes cover and
-  # metadata.json into the book folder and fails with EROFS. They land under
-  # /metadata instead, which is recovery: critical.
+  # /audiobooks is read-only, so covers land under /metadata instead.
   storeCoverWithItem: false
   storeMetadataWithItem: false
   sortingIgnorePrefix: false
@@ -56,13 +54,8 @@ audiobookshelf_library_settings:
   markAsFinishedPercentComplete: null
   markAsFinishedTimeRemaining: 10
 
-# Audiobookshelf's half of roles/managed_users. tasks/managed_users.yml maps these
-# onto that role's parameters one for one, so this block is the whole statement
-# of what Audiobookshelf's managed-user contract is; roles/komga/defaults/main.yml
-# is the block to compare it against.
-#
-# The four relative paths are asserted against config/managed-user-capabilities.yml
-# on the deployed release before any request is sent.
+# Audiobookshelf's half of roles/managed_users; compare roles/komga/defaults/main.yml.
+# The relative paths are asserted against config/managed-user-capabilities.yml.
 audiobookshelf_managed_users_identity_attribute: username
 audiobookshelf_managed_users_id_attribute: id
 audiobookshelf_managed_users_list_path: api/users
@@ -71,15 +64,10 @@ audiobookshelf_managed_users_create_path: api/users
 audiobookshelf_managed_users_reconcile_interface: api/users/{id}
 audiobookshelf_managed_users_create_status: [200]
 audiobookshelf_managed_users_repair_status: [200]
-# The login response is required to echo the declared username exactly, not
-# merely up to case -- the refusal this service has always made.
 audiobookshelf_managed_users_authenticate_identity_normalized: false
 
-# The users listing is a paginated envelope, and a truncated listing reads as an
-# absent identity, which the next step would create a second time. BRACE-FREE and
-# ordered: the envelope is proved a mapping before any key is read out of it.
-# The shared role asserts these against the first listing and again against the
-# listing it re-reads after creation.
+# A truncated listing reads as an absent identity and would be created twice.
+# Brace-free and ordered: the envelope is proved a mapping before any key is read.
 audiobookshelf_managed_users_listing_conditions:
   - managed_users_listing.json is mapping
   - managed_users_listing.json.users | type_debug == 'list'
@@ -90,9 +78,7 @@ audiobookshelf_managed_users_listing_conditions:
     managed_users_listing.json.total | int ==
       managed_users_listing.json.users | length
 
-# Evaluated inside the shared role's loops, against its own names: the listing it
-# registered, the single match it bound, `item`, and the declared user it binds
-# as managed_users_authenticating_user for both authenticate requests.
+# Evaluated inside the shared role's loops, against its own names.
 audiobookshelf_managed_users_list_json: "{{ managed_users_listing.json.users }}"
 audiobookshelf_managed_users_authenticate_body:
   username: "{{ managed_users_authenticating_user.username }}"
@@ -108,17 +94,14 @@ audiobookshelf_managed_users_create_body:
   permissions: "{{ item.permissions.flags }}"
   librariesAccessible: "{{ item.permissions.librariesAccessible }}"
   itemTagsSelected: "{{ item.permissions.itemTagsSelected }}"
-# The pinned permission fields, split. Nothing password-shaped may appear here:
-# the capability register declares an existing identity's password update
-# forbidden, and the shared role refuses a repair body carrying one.
+# Nothing password-shaped here: an existing identity's password update is forbidden.
 audiobookshelf_managed_users_repair_body:
   type: "{{ item.type }}"
   isActive: "{{ item.is_active }}"
   permissions: "{{ item.permissions.flags }}"
   librariesAccessible: "{{ item.permissions.librariesAccessible }}"
   itemTagsSelected: "{{ item.permissions.itemTagsSelected }}"
-# Only the declared permission flags are compared: Audiobookshelf expands the
-# permissions object with flags nobody declared, and a repair must not reset them.
+# Only declared flags are compared; Audiobookshelf adds undeclared ones.
 audiobookshelf_managed_users_repair_condition: >-
   {{ managed_users_match.type != item.type or
      managed_users_match.isActive | bool != item.is_active | bool or

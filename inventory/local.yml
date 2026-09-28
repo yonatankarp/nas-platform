@@ -6,11 +6,8 @@ platform_hosts:
       hosts:
         nas:
           ansible_connection: local
-          # Deliberately has no fallback to PLATFORM_NAS_ADDRESS. This is the
-          # identity handed to clients -- Beszel's application URL, Seerr's
-          # notification links, Vaultwarden's WebAuthn domain -- so inheriting
-          # the SSH transport address hands devices an address they may not use
-          # and nothing reports an error. Unset fails preflight loudly instead.
+          # No fallback to PLATFORM_NAS_ADDRESS: this is the address handed to clients,
+          # so an unset value must fail preflight rather than leak the SSH address.
           platform_public_host: >-
             {{ lookup('env', 'PLATFORM_PUBLIC_HOST') }}
           platform_callback_host: >-

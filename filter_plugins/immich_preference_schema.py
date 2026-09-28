@@ -1,33 +1,9 @@
 """Schema validation for the Immich managed-user preference structures.
 
-`roles/vault_contract` previously expressed this as 71 Jinja conditions across
-two `assert` tasks: one validating the four preference collections and their
-cross-references, one looping every profile and override through a 55-condition
-field schema. Both ran under `no_log` with a generic `fail_msg`, so a single
-mistyped field reported only that something in the Immich preferences was wrong.
-
-This module keeps the same rules as a declarative table and reports which field
-failed, by path. It follows `vault_managed_user_schema` in never putting a value
-in a message, and adds one rule that module does not need: **no key is named
-either**. The preference collections are keyed by managed-user email, and a
-profile name can be attacker-chosen through the vault, so a path is built from
-the key's position rather than its text. `tests/managed_users_vault_test.rb`
-enforces this by asserting the rejected value never appears in the output.
-
-Semantics are matched to Ansible's Jinja tests: `is integer` rejects booleans,
-`is boolean` rejects integers, and `is string` rejects None. That was checked by
-hand against ansible-core 2.21.2 and has not been re-checked since -- it is a
-dated record of one reading, not a statement about the version
-`controller-requirements.txt` pins today, and nothing here asserts these
-semantics against the running interpreter. Re-deriving it means running the
-expressions, not bumping the number.
-
-Every preference field is optional, because the original conditions
-read `field | default(<literal>)` before testing; `default` substitutes only for
-an undefined key, so a key present and null was rejected then and is rejected
-here. A non-string compared against an enum also failed, since `5 in ['asc',
-'desc']` is false rather than an error, which is why `_field` reports the type
-before the membership.
+Reports failing fields by path, never a value and never a key: collections are keyed
+by email and profile names come from the vault, so paths use positions
+(tests/managed_users_vault_test.rb). Jinja semantics are matched: `is integer` rejects
+booleans, `is boolean` rejects integers, `is string` rejects None; null is rejected.
 """
 
 import runpy
@@ -52,9 +28,7 @@ AVATAR_COLORS = ("primary", "pink", "red", "yellow", "blue", "green", "purple",
                  "orange", "gray", "amber")
 ASSET_ORDERS = ("asc", "desc")
 
-# Every scope is optional, and so is every field within it. The allowed sets here
-# are literals from the Immich API, not vault data, so naming them in an error is
-# safe; a set derived from vault data never is.
+# Allowed sets are Immich API literals, so naming them in an error is safe.
 SCOPES = {
     "albums": {"defaultAssetOrder": (ENUM, ASSET_ORDERS)},
     "avatar": {"color": (ENUM, AVATAR_COLORS)},
@@ -90,11 +64,7 @@ def _unsupported(errors, path, value, allowed, noun):
 
 
 def _field(errors, path, value, kind, allowed):
-    # `==` rather than `is`, and an `else` that refuses: the kinds are module-level
-    # string literals, so CPython interning made identity work, and an unmatched
-    # kind fell off the end validating nothing at all. A table entry naming a kind
-    # this function does not implement is a mistake in the table, not a field the
-    # schema declines to check, so it raises the way its siblings do (#648).
+    # `==` not `is`, and an unknown kind raises rather than validating nothing (#648).
     if kind == BOOLEAN:
         if not _GUARDS.is_boolean(value):
             errors.append(f"{path}: must be a boolean")
@@ -112,8 +82,7 @@ def _field(errors, path, value, kind, allowed):
         elif value not in allowed:
             errors.append(f"{path}: must be one of {', '.join(allowed)}")
     else:
-        # Safe to name: every kind reaching here is a literal from SCOPES, never
-        # a vault-supplied key or value, so the redaction rule above is intact.
+        # Safe to name: every kind here is a literal from SCOPES.
         raise AnsibleFilterError(f"{path}: unknown field kind {kind!r}")
 
 

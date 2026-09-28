@@ -3,24 +3,9 @@
 require "open3"
 require "yaml"
 
-# These exact six paths are public database identifiers, not credentials, and
-# ordinary Ansible evidence emits them. Every other vault String of at least
-# eight bytes remains fail-closed, so a new field cannot silently weaken the
-# evidence scan.
-#
-# The first four are here because normal Dozzle evidence names them. The two
-# Nextcloud entries are here for a broader reason worth stating, because it is
-# the one that will recur: generate-secrets.yml mints these two as the bare
-# service name, and a bare service name is what ansible prints in the
-# "TASK [nextcloud : ...]" banner of every capture. tests/mac/verify.sh runs
-# every service's verification in one playbook and tests/mac/hooks/drift/10-beszel.sh
-# hands that whole capture to this scanner, so a real vault carrying the minted
-# value would trip on the banner of a role that did nothing. Renaming the value
-# is not the answer for a real vault -- this repository mints it, an operator
-# does not choose it, and immich and paperless are in the same position and were
-# answered the same way. A service whose name is at least eight bytes and whose
-# database identifiers are the bare name belongs here; the ephemeral vault
-# additionally uses distinct values, so neither half depends on the other.
+# Public database identifiers, not credentials, that ordinary evidence prints; every
+# other vault string of 8+ bytes stays fail-closed. The Nextcloud pair is minted as the
+# bare service name, which every "TASK [nextcloud : ...]" banner contains.
 PUBLIC_DATABASE_IDENTITY_KEYS = %w[
   vault_immich_db_name
   vault_immich_db_username
@@ -66,8 +51,7 @@ def assert_no_vault_secrets(argv)
     vault_yaml.replace("\0" * vault_yaml.bytesize)
   end
   secrets = strings(vault).select { |value| value.bytesize >= 8 }
-  # Ansible Origin diagnostics contain this trusted controller path. Remove
-  # only its canonical, path-token form from the in-memory comparison copy.
+  # Ansible Origin diagnostics contain this trusted path; drop only its canonical form.
   repository_root = File.realpath(File.expand_path("..", __dir__))
   evidence_files.each do |evidence_file|
     evidence = File.binread(evidence_file)

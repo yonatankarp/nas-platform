@@ -1,10 +1,6 @@
 ---
-# Behaviour of roles/host_prep/tasks/verify_mdraid.yml (#609), run as shipped
-# against a fixture sysfs tree rather than restated. Each case writes the
-# md/degraded files a host would expose, runs the real task file, and records
-# whether its assert refused and what the refusal said -- so the pass, fail and
-# skip paths all finalize the assert's messages, which is where a reference to a
-# key absent on one path would crash.
+# Runs roles/host_prep/tasks/verify_mdraid.yml (#609) as shipped against a
+# fixture sysfs tree, so pass, fail and skip all finalize the assert's messages.
 - name: Prove the mdraid baseline verification
   hosts: localhost
   gather_facts: false

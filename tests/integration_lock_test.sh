@@ -34,8 +34,6 @@ if (
 fi
 [ -d "$test_lock_parent/nas-platform-integration.lock" ]
 
-# The holder has to be identifiable, or a lock left behind by a SIGKILL is
-# indistinguishable from one a live run is using and stays forever.
 grep -qx "pid=$$" "$lock_dir/owner" ||
   lock_fail 'integration lock did not record its holder pid'
 grep -qx "uid=$(id -u)" "$lock_dir/owner" ||
@@ -69,9 +67,7 @@ fi
 rm "$integration_lock_path/unexpected"
 release_integration_lock
 
-# A PID nothing owns any more. Read from a child that has already exited, and
-# confirmed dead before use so a recycled number cannot make the recovery cases
-# below pass or fail for the wrong reason.
+# A PID nothing owns, confirmed dead so a recycled number cannot mislead.
 dead_pid=
 dead_pid_attempt=0
 while [ "$dead_pid_attempt" -lt 20 ]; do
@@ -94,10 +90,7 @@ discard_planted_lock() {
   rmdir "$lock_dir"
 }
 
-# The property this whole file exists for: release happens only through an EXIT
-# trap, so a SIGKILL, an OOM, a cancelled Actions job or a sleeping laptop used to
-# leave the lock behind permanently -- and because the same lock gates
-# tests/mac/cleanup.sh, the dead run's containers could not be cleaned up either.
+# The core property: a lock left by a dead holder is recovered.
 plant_lock_owner "$dead_pid" "$(id -u)" "$(uname -n)"
 acquire_integration_lock "$test_lock_parent" 2>/dev/null ||
   lock_fail 'integration lock refused to recover from a dead holder'
@@ -107,11 +100,8 @@ grep -qx "pid=$$" "$lock_dir/owner" ||
   lock_fail 'recovering the integration lock left its recovery guard behind'
 release_integration_lock
 
-# Everything below is the other half of the property: recovery must never be a
-# guess. A holder that is alive, that belongs to another user (where kill -0
-# answers EPERM, which a shell cannot tell from "no such process"), that ran on
-# another machine (where the pid means nothing), or that recorded nothing at all
-# must all be refused rather than deleted.
+# Recovery must never be a guess: a live, other-user, other-host or unrecorded
+# holder is refused rather than deleted.
 plant_lock_owner "$$" "$(id -u)" "$(uname -n)"
 if acquire_integration_lock "$test_lock_parent" >/dev/null 2>&1; then
   lock_fail 'integration lock recovery stole a lock from a live holder'
@@ -130,9 +120,6 @@ if acquire_integration_lock "$test_lock_parent" >/dev/null 2>&1; then
 fi
 discard_planted_lock
 
-# No owner file at all is what a run killed in the single syscall between mkdir
-# and recording itself leaves behind. It is not recoverable without guessing, so
-# the refusal has to name the path instead.
 mkdir "$lock_dir"
 if acquire_integration_lock "$test_lock_parent" >/dev/null 2>&1; then
   lock_fail 'integration lock recovery removed a lock with no recorded holder'
@@ -144,9 +131,7 @@ case $lock_refusal in
 esac
 rmdir "$lock_dir"
 
-# Recovery is serialized by an ordinary mkdir of its own, so two runs cannot both
-# decide the same stale lock is theirs to remove. A guard already held means
-# another process is inside that section: refuse rather than race it.
+# Recovery is serialized by its own mkdir: a held guard means refuse, not race.
 plant_lock_owner "$dead_pid" "$(id -u)" "$(uname -n)"
 mkdir "$lock_dir.reclaim"
 if acquire_integration_lock "$test_lock_parent" >/dev/null 2>&1; then
@@ -157,8 +142,6 @@ acquire_integration_lock "$test_lock_parent" 2>/dev/null ||
   lock_fail 'integration lock recovery stayed blocked after its guard was released'
 release_integration_lock
 
-# One recovery, not a loop: a lock reclaimed and immediately reclaimed again by a
-# live run must be refused rather than taken a second time.
 plant_lock_owner "$dead_pid" "$(id -u)" "$(uname -n)"
 acquire_integration_lock "$test_lock_parent" 2>/dev/null ||
   lock_fail 'integration lock refused to recover a second time'

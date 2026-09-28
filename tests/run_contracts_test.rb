@@ -148,10 +148,8 @@ output, status = run_registry(
 check(failures, !status.success? && output.include?("shell syntax"),
       "syntax-invalid contract was not rejected clearly")
 
-# A contract is mostly Ruby inside a quoted heredoc, and `sh -n` treats that body as
-# opaque text, so the wrapper parsing proves nothing about the code that does the work.
-# This is the only static check that reads it; without it a broken contract surfaces
-# only when an integration run reaches it.
+# `sh -n` treats a quoted heredoc as opaque text; this is the only static check
+# that parses the contract's Ruby.
 output, status = run_registry(
   registry: registry,
   contracts: { "komga.sh" => "#!/bin/sh\nruby - <<'RUBY'\ndef broken(\nRUBY\n" }
@@ -208,12 +206,8 @@ check(failures, status.success? && probe == "alpha,beta\ncaller-stdin\n",
       "sibling Ruby program was not run with its arguments, preloads and an empty stdin: " \
       "#{probe.inspect} #{output.lines.first&.strip}")
 
-# The trap the sibling shape introduces, demonstrated rather than legislated: a
-# heredoc exhausts the caller's stdin by construction, a sibling program inherits
-# it, so an invocation missing `</dev/null` eats input the contract still needs.
-# tests/mac/run.sh:225-236 carries the same redirect for the same reason. The
-# harness does not grep the wrapper for it -- these invocations already span
-# continuation lines, and a line-shaped rule would dictate their layout.
+# A heredoc exhausts the caller's stdin and a sibling program inherits it, so an
+# invocation missing `</dev/null` eats input the contract still needs.
 output, status, probe = run_registry(
   registry: registry,
   contracts: {
@@ -227,8 +221,7 @@ end
 check(failures, !status.success? && output.include?("contract failed") && !probe,
       "sibling Ruby program invoked without </dev/null did not consume the caller stdin")
 
-# A file is no more visible to `sh -n` than a heredoc was, so extraction must not
-# retire the static parse. This is the check that lets the later PRs move code.
+# A file is no more visible to `sh -n` than a heredoc, so extraction keeps the parse.
 output, status = run_registry(
   registry: registry,
   contracts: {

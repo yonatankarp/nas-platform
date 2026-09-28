@@ -1,18 +1,8 @@
 #!/usr/bin/env python3
 """Behaviour of the Bazarr settings projection, its differences and the POST body.
 
-The projection and the POST body were reachable only by spawning
-`ansible-playbook`: the reconciliation fixture drove them through a fake Bazarr,
-and nothing called them directly. They are pure functions, so the properties that
-do not need a running Bazarr are checked here. The difference list joins them
-because it is the printable half of the projection comparison, and what makes it
-printable — that it names settings and never their values — is a property, not
-an observation about today's callers.
-
-`tests/fixtures/acquisition/bazarr_state.json` is a converged readback captured
-from that fixture's Bazarr, keyed by argument name. Starting from a converged
-state is what makes the cases below readable: each one breaks exactly one thing
-and names what must be noticed.
+Pure functions, checked without a running Bazarr. `bazarr_state.json` is a
+converged readback; each case breaks one thing and names what must be noticed.
 """
 
 from __future__ import annotations
@@ -29,7 +19,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "filter_plugins" / "acquisition_bazarr.py"
 STATE = ROOT / "tests" / "fixtures" / "acquisition" / "bazarr_state.json"
 
-
 def load_plugin():
     spec = importlib.util.spec_from_file_location("acquisition_bazarr", PLUGIN)
     if spec is None or spec.loader is None:
@@ -38,10 +27,8 @@ def load_plugin():
     spec.loader.exec_module(module)
     return module
 
-
 plugin = load_plugin()
 STATE_FIXTURE = json.loads(STATE.read_text())
-
 
 def project(**overrides):
     state = copy.deepcopy(STATE_FIXTURE)
@@ -52,21 +39,17 @@ def project(**overrides):
         state["sonarr_api_key"],
     )
 
-
 def settings_with(mutate):
     settings = copy.deepcopy(STATE_FIXTURE["settings"])
     mutate(settings)
     return settings
 
-
 def differences(projections):
     return plugin.acquisition_bazarr_projection_differences(projections)
-
 
 def check(failures, condition, message):
     if not condition:
         failures.append(message)
-
 
 def refuses(failures, call, message):
     try:
@@ -74,7 +57,6 @@ def refuses(failures, call, message):
     except AnsibleFilterError:
         return
     failures.append(message)
-
 
 def collect_failures():
     failures = []
@@ -186,10 +168,7 @@ def collect_failures():
             "an empty Bazarr administrator password must be refused")
 
     # --- acquisition_bazarr_projection_differences ------------------------
-    # The projections carry live credentials, so the drift assert that holds
-    # them runs under no_log and could report only that they were unequal. This
-    # filter is the printable half of that verdict: the same comparison, said
-    # as field paths.
+    # The printable half of the no_log drift verdict, as field paths.
     check(failures, differences(converged) == [],
           "a converged Bazarr must report no differences at all")
 
@@ -251,10 +230,7 @@ def collect_failures():
                             for name in exposed for credential in known_credentials),
           "the difference list must name a credential's setting, never its value")
 
-    # Defence in depth for a projection key that is not a canonical identifier.
-    # Nothing reaches one today — an undeclared live setting is copied to both
-    # sides and so never differs — which is exactly why the rule is checked on a
-    # projection built here rather than on one the fixture can produce.
+    # Defence in depth for a non-canonical projection key; no fixture reaches one.
     crafted = differences({
         "current": {"providers": {"animetosho": {"password=sentinel-value": "a"}}},
         "desired": {"providers": {"animetosho": {"password=sentinel-value": "b"}}},
@@ -316,10 +292,8 @@ def collect_failures():
             "an empty administrator username must be refused")
 
     # --- acquisition_bazarr_rejected_settings -----------------------------
-    # Bazarr answers a settings POST its schema refuses with 406 and dynaconf's
-    # own "{name} must {operation} {op_value} but it is {value}". The value can
-    # be the submitted API key, so the one property that matters is that nothing
-    # after the first " must " is ever returned.
+    # A 406 message's value can be the API key: nothing after the first " must "
+    # may ever be returned.
     named = plugin.acquisition_bazarr_rejected_settings
     secret = "11111111111111111111111111111111"
     rejection = (f"sonarr.apikey must is_type_of <class 'str'> but it is {secret}")
@@ -355,12 +329,8 @@ def collect_failures():
           "a bytes body must be decoded rather than reported as its repr")
 
     # --- acquisition_bazarr_rejection_report ------------------------------
-    # The refusal a 406 reports and the cause it can be blamed on are two
-    # different questions. dynaconf revalidates every validator on any submit,
-    # so `general.hostname` was refused once by a request that never carried it
-    # while the message explained an all-digit API key -- a cause the vault
-    # contract already makes unmintable. The cast is blamed only for a setting
-    # this request submits under a key Bazarr casts, and nothing else is.
+    # dynaconf revalidates every validator on any submit, so the cast is blamed
+    # only for a setting this request submits under a key Bazarr casts.
     report = plugin.acquisition_bazarr_rejection_report
     fixture_body = plugin.acquisition_bazarr_connection_body(
         fixture["declarations"], fixture["username"], fixture["password"],
@@ -415,7 +385,6 @@ def collect_failures():
 
     return failures
 
-
 def main():
     failures = collect_failures()
     if failures:
@@ -423,7 +392,6 @@ def main():
             print(f"FAIL {line}", file=sys.stderr)
         raise SystemExit(f"{len(failures)} Bazarr filter violation(s)")
     print("acquisition Bazarr filters: projection, masking and settings POST hold")
-
 
 if __name__ == "__main__":
     main()

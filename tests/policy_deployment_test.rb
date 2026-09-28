@@ -1,10 +1,6 @@
 #!/usr/bin/env ruby
-# Deployment bundle policy.
-#
-# A release ID names committed controller content, target paths are hostile input
-# until both their lexical form and their filesystem ancestry are checked, and the
-# bundle's Compose selection must resolve before activation. Split out of
-# policy_test.rb: these checks police roles/deployment_bundle and change with it.
+# Deployment bundle policy: release IDs, target-path containment and Compose
+# selection for roles/deployment_bundle. Split out of policy_test.rb.
 
 require "fileutils"
 require "open3"
@@ -17,25 +13,13 @@ require_relative "policy_support"
 include PolicySupport
 include TestScaffold
 
-# The two roles whose target include legitimately passes
-# deployment_target_require_current_release: false, because both run before the
-# release exists rather than out of it. Every other role that includes
-# deployment_bundle's target tasks deploys from `current` and must require one.
+# Roles that run before the release exists and so pass
+# deployment_target_require_current_release: false. Every other role must pass true.
 RELEASE_OPTIONAL_ROLES = %w[deployment_bundle host_prep].freeze
 
-# The playbook-level target includes that legitimately pass the same `false`,
-# each recorded beside the reason it does. RELEASE_OPTIONAL_ROLES cannot name
-# these -- a playbook is not a role -- and a blanket "a playbook may pass false"
-# is the silence #398 is about: tests/deployment_lock_refusal_test.yml sat
-# outside playbook_paths entirely, so its `false` was neither checked nor
-# reasoned about.
-#
-# The last reason is measured rather than assumed. The lock harness builds a
-# deployment tree with no `current` symlink in it at all, and validate_target.py
-# reaches its require_current branch only through that symlink, so `true` passes
-# there by accident. That is precisely why the value is reasoned about here
-# instead of tuned until the harness goes green: what the parameter states is
-# whether the caller needs an active release, not what happens to run.
+# Playbook target includes that legitimately pass `false`, each with its reason (#398).
+# The lock harness has no `current` symlink, so `true` would pass there by accident;
+# the value states whether the caller needs an active release, not what happens to run.
 RELEASE_OPTIONAL_PLAYBOOKS = {
   "site.yml" =>
     "validates containment in pre_tasks, before deployment_bundle installs the release this " \
@@ -51,13 +35,9 @@ RELEASE_OPTIONAL_PLAYBOOKS = {
 failures = []
 
 harness = File.read(File.join(ROOT, "tests", "integration.sh"))
-# The launcher is tests/integration.sh; the program it runs in the controller
-# container is tests/integration_controller.sh. Every property below is read
-# from whichever of the two holds the code it polices.
 controller = File.read(File.join(ROOT, "tests", "integration_controller.sh"))
-# A release ID names committed controller content. Production must reject any
-# modified or untracked file in the controller checkout; only the disposable
-# integration platform may opt into the deliberately dirty pre-commit tree.
+# Production must reject a dirty controller checkout; only the disposable
+# integration platform may opt into it.
 deployment_defaults_path = File.join(ROOT, "roles", "deployment_bundle", "defaults", "main.yml")
 deployment_defaults = File.file?(deployment_defaults_path) ? YAML.safe_load_file(deployment_defaults_path) : {}
 check(failures, deployment_defaults["deployment_bundle_allow_dirty_controller"] == false,
@@ -142,12 +122,8 @@ end
 check(failures, !controller_preflight.nil?,
       "controller bundle cleanliness must be validated before target-mutating roles")
 
-# Target-side deployment paths are hostile inputs until both their lexical form
-# and existing filesystem ancestry have been checked. Validation is read-only
-# and runs once per distinct set of paths, ahead of the tasks that mutate them:
-# before preflight for the play's own paths, and before each service role writes
-# runtime configuration or consumes `current` for the extra paths it names. It is
-# not repeated beside individual mutations, which the task file explains.
+# Target paths are hostile until their lexical form and filesystem ancestry are
+# checked, once per distinct path set, ahead of the tasks that mutate them.
 target_tasks_path = File.join(ROOT, "roles", "deployment_bundle", "tasks", "target.yml")
 target_tasks_body = File.file?(target_tasks_path) ? File.read(target_tasks_path) : ""
 target_validator_path = File.join(ROOT, "roles", "deployment_bundle", "files", "validate_target.py")
@@ -176,9 +152,7 @@ check(failures, !target_validation.key?("loop") && !target_validation.key?("loop
   check(failures, target_validator_body.include?(primitive),
         "target validator must use #{primitive} for symlink-safe canonical containment")
 end
-# Deliberately source text. The subject is the wording of a comment explaining
-# why validation is not repeated beside each mutation, and YAML parsing erases
-# comments, so there is no parsed structure to read this from.
+# Source text on purpose: the subject is a comment, which YAML parsing erases.
 check(failures, target_tasks_body.include?("concurrent privileged filesystem mutation"),
       "target validator must document the race its containment check cannot close")
 target_record = Array(target_tasks).find do |task|
@@ -189,9 +163,7 @@ check(failures, !target_record.nil?,
 check(failures, target_validator_body.include?("os.path.abspath(os.sep)") &&
                 target_validator_body.include?("root_relative_parts"),
       "target validator must lstat every existing ancestor from filesystem root to nas_docker_root")
-# The leaves are read off the expression the validated task actually evaluates,
-# not off the file's text. A path named in a comment, or in a var some other task
-# owns, is not a path this command validates.
+# Leaves come from the expression the task evaluates, not from the file's text.
 target_path_expression = target_validation.dig("vars", "deployment_target_paths").to_s
 check(failures, target_path_expression.include?("nas_docker_root ~ '/.nas-platform-preflight-probe'") ||
                 target_path_expression.include?("{{ nas_docker_root }}/.nas-platform-preflight-probe"),
@@ -227,27 +199,15 @@ end
 inputs_path = File.join(ROOT, "roles", "deployment_bundle", "tasks", "inputs.yml")
 inputs_body = File.file?(inputs_path) ? File.read(inputs_path) : ""
 input_tasks = flatten_tasks(YAML.safe_load(inputs_body))
-# The inputs the role actually validates are the ones named by the expression its
-# controller_input.yml inclusions evaluate, not every path string that appears
-# somewhere in the file. Read them off the parsed tasks: a path that survives only
-# in a comment, or that is named by a task which no longer includes the validator,
-# validates nothing.
-#
-# Batched since #333 -- one inclusion validating N inputs rather than N
-# inclusions validating one each -- so this reads each inclusion's list
-# expression, exactly the way the target validator's paths are read above, rather
-# than one path per inclusion. The include filter stays first: a task carrying a
-# deployment_controller_inputs var without handing it to the validator names
-# paths nothing checks.
+# The validated inputs are those named by the controller_input.yml inclusions'
+# list expressions (batched since #333), not every path string in the file.
 validated_input_batches = input_tasks.filter_map do |task|
   next unless task["ansible.builtin.include_tasks"] == "controller_input.yml"
 
   task.dig("vars", "deployment_controller_inputs").to_s
 end
 validated_inputs = validated_input_batches.join("\n")
-# The second element of each pair is the allow_missing flag the validator has
-# always taken, so pinning it beside the path is what asserts an input is
-# required rather than optional. Only the platform overrides carry '1'.
+# The second element is allow_missing; only the platform overrides carry '1'.
 check(failures, validated_inputs.include?("playbook_dir ~ '/services/manifest.yml', '0'") &&
                 validated_inputs.include?("deployment_bundle_services") &&
                 validated_inputs.include?("playbook_dir ~ '/services/'") &&
@@ -272,9 +232,7 @@ check(failures,
       !catalog_validation_index.nil? &&
         !manifest_parse_index.nil? && catalog_validation_index < manifest_parse_index,
       "controller inputs must validate the required acquisition catalog before parsing inputs")
-# The second platform input, bundled the way the catalog is (#647).
-# roles/managed_users reads it from the DEPLOYED release, so nothing in this
-# repository proves the file a target honours unless the bundle carries it.
+# The second platform input (#647); roles/managed_users reads it from the deployed release.
 check(failures,
       validated_inputs.include?(
         "playbook_dir ~ '/config/managed-user-capabilities.yml', '0'"
@@ -360,10 +318,8 @@ check(failures,
         register_copy&.dig("changed_when") == false &&
         register_copy&.dig("when") == "not ansible_check_mode",
       "deployment bundle must stage the exact managed-user capability register with mode 0644")
-# One containment validation covers every path this role mutates, so the role
-# body must run it exactly once and must run it before the first mutation. The
-# guard is what keeps a full converge from repeating the play's own pre_task
-# validation; without it the single include silently becomes a second run.
+# One containment validation, run once and before the first mutation; its guard
+# stops a full converge repeating the play's pre_task validation.
 bundle_target_indexes = deployment_tasks.each_index.select do |index|
   deployment_tasks[index]["ansible.builtin.include_tasks"] == "target.yml"
 end
@@ -407,11 +363,8 @@ check(failures, release_compare_tasks.one? &&
         "immutable release comparison must include #{metadata}")
 end
 
-# The manifest is the authority for which service directory a role deploys, and
-# it is read defensively: policy_test.rb owns the malformed-manifest diagnostic,
-# and a parse error raised here would replace that diagnostic with a stack trace.
-# Without a parsed manifest there is nothing to check a service name against, so
-# the checks that consult it stand down rather than fail over its absence.
+# Read defensively: policy_test.rb owns the malformed-manifest diagnostic, so the
+# checks that need the manifest stand down without it.
 manifest_entries = begin
   manifest_document = YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))
   manifest_document.is_a?(Hash) ? Array(manifest_document["services"]) : []
@@ -424,19 +377,12 @@ manifest_service_directories = manifest_entries.to_h do |entry|
   [entry["role"], entry["name"]]
 end
 
-# Parsed rather than byte-offset: a task name or a variable reference occurring inside a
-# comment or a when: expression is not evidence of task ordering. The validating task's own
-# deployment_target_extra_paths necessarily name the runtime roots, so it is excluded from
-# the first-use search rather than compared against itself.
+# Parsed, not byte offsets. The validating task names the runtime roots itself, so it
+# is excluded from the first-use search.
 %w[beszel dozzle audiobookshelf komga jellyfin immich
    paperless_ngx].each do |service_name|
-  # Read through static_role_tasks, not main.yml. A role that is one stage per file
-  # keeps only an index in main.yml, and both halves of this check then read false:
-  # target_validation is nil because the deployment_bundle re-include moved into
-  # deploy.yml, runtime_use is nil because no import entry mentions a runtime path,
-  # and `!runtime_use` reports the property holding before `next unless
-  # target_validation` skips every check below. Measured on roles/audiobookshelf
-  # and roles/jellyfin, which were both passing vacuously here.
+  # Through static_role_tasks, not main.yml: a one-stage-per-file role's main.yml is an
+  # index, and reading it made this check pass vacuously.
   service_tasks = PolicySupport.static_role_tasks(
     File.join(ROOT, "roles", service_name, "tasks", "main.yml"), aliases: true
   )
@@ -453,20 +399,15 @@ end
         "#{service_name} must revalidate target paths before runtime/current use")
   next unless target_validation
 
-  # Both Compose files are derived by target.yml from the named service rather
-  # than spelled out here, so what a role can still get wrong is the name. The
-  # manifest is the authority for it: roles/paperless_ngx deploys
-  # services/paperless-ngx, and a name taken from the role would guard nothing
-  # a selective run reads.
+  # target.yml derives both Compose files from the service name, which must come from
+  # the manifest (paperless_ngx deploys services/paperless-ngx).
   named_service = (service_tasks.fetch(target_validation)["vars"] || {})["deployment_target_service"]
   check(failures, !manifest_known || named_service == manifest_service_directories[service_name],
         "#{service_name} must name the manifest service whose Compose files a selective run deploys")
 end
 
-# Two runtime failures nothing else catches, because every integration suite includes
-# deployment_bundle in its tags and so never exercises a lone --tags <service> run.
-# Resolving before activation makes a full run read the previous release's overrides;
-# losing the always tag leaves the fact undefined on a selective converge.
+# Integration suites always tag deployment_bundle, so a lone --tags <service> run is
+# never exercised: resolve before activation, and keep the always tag.
 compose_bundle_tasks = YAML.safe_load_file(
   File.join(ROOT, "roles", "deployment_bundle", "tasks", "main.yml"), aliases: true
 )
@@ -497,10 +438,8 @@ check(failures,
           .include?("always"),
       "verify.yml must resolve Compose selection before any verified role reads it")
 
-# beszel_agent_enabled reads preflight_gpu_available on every host whose agent
-# kind is not portable, and verify.yml does not run preflight. Without this the
-# fact is undefined and verification fails on the NAS while passing on the Mac,
-# where the portable branch short-circuits the expression.
+# verify.yml skips preflight, but beszel_agent_enabled reads preflight_gpu_available
+# on non-portable hosts, so the fact must be available there.
 verify_gpu = Array(verify_play["pre_tasks"]).find do |task|
   task.dig("ansible.builtin.include_role", "tasks_from") == "gpu"
 end
@@ -511,12 +450,8 @@ check(failures,
           .include?("always"),
       "verify.yml must resolve hardware acceleration before any verified role reads it")
 
-# Deliberately source text. manifest.yml.j2 is a Jinja template, not a YAML
-# document: its `{% for %}` and `{% set %}` lines are not parseable as YAML, and
-# what these checks are about is the expression the template will evaluate, which
-# only exists in the source. Rendering it needs a real Ansible run against a
-# staged bundle, which tests/verify_deployment_manifest.rb does on the rendered
-# output during the integration lanes.
+# Source text on purpose: manifest.yml.j2 is a Jinja template, not YAML. The rendered
+# output is checked by tests/verify_deployment_manifest.rb in the integration lanes.
 deployment_manifest_template = File.read(
   File.join(ROOT, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
 )
@@ -533,10 +468,7 @@ check(failures, deployment_manifest_template.include?("runtime_files:") &&
                 deployment_manifest_template.include?("runtime_file") &&
                 deployment_manifest_template.include?("hash('sha256')"),
       "deployment manifest must bind runtime helper paths, modes, and checksums")
-# Top-level key position, read off whole lines rather than byte offsets. The
-# offsets matched "services:" wherever it appeared first, including inside a
-# comment or nested under another key; a top-level mapping key is a line of its
-# own, so the line index is the ordering the rendered manifest will have.
+# Top-level key order read off whole lines, since the rendered manifest keeps it.
 manifest_template_lines = deployment_manifest_template.lines.map(&:chomp)
 platform_inputs_index = manifest_template_lines.index("platform_inputs:")
 services_index = manifest_template_lines.index("services:")
@@ -608,15 +540,8 @@ end
 check(failures, harness.include?('stale_docker_root="$sandbox/stale-root/Docker"') &&
                 controller.include?(%(test ! -e "$sandbox/volume1/Docker/nas-platform")),
       "integration must isolate stale replacement from the genuinely fresh service root")
-# tests/verify_deployment_manifest.rb carries a --self-test of its own: it stages
-# a repository and a release, proves the verifier accepts the pair, then deletes
-# the canonical Configarr image from the manifest and proves it refuses with the
-# exact diagnostic. Sixty-six lines, 29% of that file, and until #657 nothing ran
-# it -- tests/integration_controller.sh invokes the verifier three times and never
-# with that argument, so the harness proving the verifier works was itself proved
-# by nothing and would have passed with its own mutation deleted. The gate runs it
-# now, and this is the line that says so: dropping it from the manifest fails here
-# rather than silently retiring the self-test.
+# The gate must run tests/verify_deployment_manifest.rb --self-test (#657); nothing
+# else does.
 check(failures, File.readlines(File.join(ROOT, "tests", "validate-policy.sh"), chomp: true)
                     .include?("ruby tests/verify_deployment_manifest.rb --self-test"),
       "policy validation must run the deployment manifest verifier's own self-test")
@@ -648,15 +573,9 @@ check(failures, !File.exist?(File.join(ROOT, "roles", "immich", "files", "classi
       "Immich classifier must not retain a divergent role-local source")
 
 
-# Every entry point this role is re-included through is a declared contract.
-# include_role applies the argument spec named by tasks_from, so a renamed or
-# forgotten parameter fails the run instead of degrading a guard: without the
-# declaration, target.yml read deployment_target_require_current_release through
-# a default and a typo in any caller silently downgraded release containment to
-# "not required" while the run still reported success, and a typo in
-# deployment_target_extra_paths silently dropped the paths that caller declared
-# it was about to touch. Both are required rather than defaulted, so the callers
-# that genuinely have no extra paths write an empty list rather than omit one.
+# Every re-include entry point declares an argument spec, so a mistyped parameter
+# fails the run instead of silently downgrading containment. Both parameters are
+# required; callers with no extra paths pass [].
 %w[main controller inputs compose_files target].each do |entry_point|
   check(failures, deployment_spec.dig("argument_specs", entry_point).is_a?(Hash),
         "deployment bundle must declare an argument spec for its #{entry_point} entry point")
@@ -684,14 +603,8 @@ check(failures,
              .match?(/deployment_controller_input\w*\s*\|\s*default/),
       "include-entry parameters must fail loudly rather than fall back to a default")
 
-# Enumerated rather than listed: a service role added without both parameters is
-# the mistake this is here to catch, and site.yml and the deployment bundle's own
-# body reach the same task file through include_tasks, which never validates.
-# Every playbook that reaches target.yml, not only the ones a converge runs: a
-# test playbook drives the real entry point with real parameters, so one left out
-# of this list is a call site nothing below judges. The fixture list in
-# policy_mutation_support.rb names each of these, so the sandbox enumerates the
-# same sites the working tree does rather than crashing on an absent file.
+# Enumerated from every playbook and role reaching target.yml, since include_tasks never
+# validates. policy_mutation_support.rb's fixture list must name each of these files.
 target_include_sites = []
 playbook_paths = [
   File.join(ROOT, "site.yml"),
@@ -714,10 +627,8 @@ playbook_paths.each do |path|
     end
   end
 end
-# Which role deploys which service out of the installed release, collected from
-# the same sweep. This is the subject the absence check below needs: a role that
-# starts a stack from {{ platform_current_dir }} is a role that touches the five
-# paths target.yml derives, whether or not it ever said so.
+# Which role deploys which service from the release: a role starting a stack from
+# {{ platform_current_dir }} touches target.yml's five paths.
 release_deploying_services = Hash.new { |roles, role| roles[role] = Set.new }
 parametric_release_deployers = Hash.new { |roles, role| roles[role] = Set.new }
 Dir[File.join(ROOT, "roles", "*", "tasks", "*.yml")].sort.each do |path|
@@ -739,9 +650,7 @@ Dir[File.join(ROOT, "roles", "*", "tasks", "*.yml")].sort.each do |path|
     deployed = compose["project_src"].to_s[%r{\A\{\{ platform_current_dir \}\}/services/(.+)\z}, 1]
     next unless deployed
 
-    # A shared role names the service through its own parameter, so the stack it
-    # starts is its caller's, and the caller's include is what has to contain it
-    # (#836, roles/pre_upgrade_backup). Resolved below from each caller's vars.
+    # A shared role's stack is its caller's, so the caller's include must contain it (#836).
     parameter = deployed[/\A\{\{ ([a-z0-9_]+) \}\}\z/, 1]
     if parameter
       parametric_release_deployers[owning_role] << parameter
@@ -762,9 +671,8 @@ Dir[File.join(ROOT, "roles", "*", "tasks", "*.yml")].sort.each do |path|
     end
   end
 end
-# Anchored on the two call sites no service role owns rather than on a count:
-# the mutation harness replaces individual role task files, so a total would
-# report a deliberately reduced fixture as a broken enumeration.
+# Anchored on the call sites no service role owns, not a count, because mutation
+# fixtures reduce role files.
 enumerated_callers = target_include_sites.map(&:first).uniq
 check(failures,
       enumerated_callers.include?("site.yml") &&
@@ -773,15 +681,9 @@ check(failures,
       "#{enumerated_callers.join(', ')}; the callers that must declare what they touch are no " \
       "longer being inspected")
 
-# The half the enumeration above cannot see. It validates every call site that
-# exists, so a role that simply never includes target.yml is green: containment
-# is checked for the fifteen roles that ask for it and for nobody else, and a
-# sixteenth would deploy a stack having declared nothing. The subject is derived
-# from what a role does rather than from the manifest roster deliberately -- the
-# mutation harness stubs role task files, and a roster-driven requirement would
-# report a deliberately reduced fixture as a missing include, which is the same
-# objection the enumeration's own comment records against a count. A stub
-# deploys nothing, so it owes nothing here.
+# A role that never includes target.yml escapes the enumeration above. The subject is
+# derived from what roles do, not from the manifest, because the mutation harness
+# stubs role files; a stub deploys nothing and owes nothing.
 declared_services_by_role = Hash.new { |roles, role| roles[role] = Set.new }
 target_include_sites.each do |relative_path, task|
   owning_role = relative_path[%r{\Aroles/([^/]+)/tasks/}, 1]
@@ -790,14 +692,8 @@ target_include_sites.each do |relative_path, task|
   declared = (task["vars"] || {})["deployment_target_service"]
   declared_services_by_role[owning_role] << declared if declared.is_a?(String) && !declared.empty?
 end
-# Sized against the mutation sandbox rather than the working tree, the way #386
-# requires: copy_fixture carries every implemented role's statically imported
-# stage files, so the sandbox derives the same fifteen roles the repository does
-# -- measured through copy_fixture, not inferred. Ten rather than fourteen for
-# the reason check_floor's own comment gives: a floor sitting one under today's
-# count fails the first legitimate service removal, which is not the collapse it
-# is here to catch. No mutation drives this below fifteen today; every role that
-# starts a stack out of the release does so from more than one task file.
+# Sized against the mutation sandbox (#386), well under today's count so a
+# legitimate service removal does not fail it.
 check_floor(failures, release_deploying_services.length, 10,
             "roles deploying a stack out of the installed release")
 release_deploying_services.each do |role, deployed_services|
@@ -815,19 +711,9 @@ target_include_sites.each do |relative_path, task|
   check(failures, [true, false].include?(requires_current_release),
         "#{label} must state whether target validation requires an active current release")
 
-  # Stating a value is not the rule. CLAUDE.md requires a service role to pass
-  # `true` -- it deploys out of the release the bundle installed, so a run that
-  # reached it with no active `current` is converging a target that does not
-  # exist yet. Only two roles legitimately pass `false`, and both run before
-  # there is a release to require: deployment_bundle's own body, which is what
-  # installs it, and host_prep, which prepares the directories it lands in.
-  # Without this, a service role passing `false` was green.
-  #
-  # A playbook is judged against the recorded set instead. It is the same rule
-  # rather than an escape from it: a playbook may pass `false`, but only one
-  # RELEASE_OPTIONAL_PLAYBOOKS names and says why, so the next one added has to
-  # be argued for in the tree rather than inherit an exemption by being a
-  # playbook.
+  # Service roles deploy out of the release and must pass `true`; only
+  # deployment_bundle and host_prep pass `false`. A playbook may pass `false` only if
+  # RELEASE_OPTIONAL_PLAYBOOKS names it with a reason.
   caller_role = relative_path[%r{\Aroles/([^/]+)/tasks/}, 1]
   if caller_role.nil?
     recorded_reason = RELEASE_OPTIONAL_PLAYBOOKS[relative_path]
@@ -848,14 +734,9 @@ target_include_sites.each do |relative_path, task|
                   declared_extra_paths.to_s.match?(/\A\{\{.*\}\}\z/m),
         "#{label} must declare the extra paths it is about to touch, even when there are none")
 
-  # Naming a service makes target.yml derive five more paths on the caller's
-  # behalf, so the name is now part of what the caller declares it touches. A
-  # widened declaration is the failure no other check can see: the containment
-  # validator accepts a path nobody writes to, and the run still passes. So the
-  # name must resolve through services/manifest.yml to the role that owns this
-  # file, and that role must be seen to use all five - the .env it renders, the
-  # release directory it deploys from, and the Compose selection keyed by the
-  # same manifest name. Anything else is a path this caller does not touch.
+  # A named service makes target.yml derive five paths, so the name must resolve via
+  # services/manifest.yml to this role, and the role must use all five; otherwise the
+  # declaration is widened and the validator accepts paths nobody writes.
   declared_service = task_vars["deployment_target_service"]
   check(failures, declared_service.is_a?(String),
         "#{label} must name the service whose standard deployment paths it touches, " \
@@ -892,28 +773,18 @@ target_include_sites.each do |relative_path, task|
         "#{label} derives the #{declared_service} release directory and both its Compose files " \
         "but role #{owning_role} never deploys that project from them")
 end
-# The recorded exemptions are only worth reading while the sites they name still
-# take them, and a record nothing exercises is the same silence one step removed.
-# A floor rather than a per-key liveness requirement, deliberately: the mutation
-# harness removes site.yml's pre_tasks target include in a row of its own, and a
-# per-key rule would fail that row for a defect it did not plant. Two of the
-# three, so one stubbed playbook still passes and a collapse to none does not.
+# A floor, not per-key liveness: a mutation row removes site.yml's pre_tasks include.
 check_floor(failures, exercised_playbook_exemptions.length, 2,
             "recorded playbook release-containment exemptions still taken")
 
 
-# Activating a release is a command task, which check mode skips, so `current`
-# still names the previous release while target validation runs for real under
-# --check. Requiring the new release there made every --check fail on any host
-# that had ever deployed -- which no lane could see, because a fresh sandbox has
-# no stale pointer to trip over. Both directions are asserted: check mode accepts
-# a stale pointer, and a real run still refuses one.
+# Check mode skips release activation, so `current` still names the old release
+# under --check. Check mode must accept a stale pointer; a real run must refuse it.
 def probe_stale_current_pointer(check_mode)
   old_release = "b" * 40
   new_release = "c" * 40
   Dir.mktmpdir("nas-platform-deployment-target-") do |raw_directory|
-    # The validator refuses a storage-root ancestor that is a symlink, and on
-    # macOS mktmpdir hands back a path under /var, which is one.
+    # The validator refuses a symlinked storage-root ancestor; macOS mktmpdir is under /var.
     directory = File.realpath(raw_directory)
     docker_root = File.join(directory, "dock")
     media_root = File.join(directory, "media")
@@ -961,45 +832,16 @@ check(failures, check_mode_passes,
 real_run_passes, real_output = probe_stale_current_pointer(false)
 check(failures, !real_run_passes,
       "a real run must still refuse a current pointer naming a different release")
-# Asserted by its message, not merely by failing: the fixture can fail for
-# reasons that have nothing to do with release containment, and a negative test
-# that passes for the wrong reason stops guarding anything.
+# Asserted by message: the fixture can fail for unrelated reasons.
 check(failures, real_output.include?("does not resolve to"),
       "the real-run refusal must name the release the current pointer failed to reach")
 
 # CLAUDE.md: "site.yml must never depend on anything
-# install-production-auto-deploy.yml installs." The poller runs validate-vault,
-# site.yml and verify.yml against the *previously* installed poller and only then
-# reinstalls itself, so a play that needs something this revision's poller ships
-# deadlocks the upgrade on itself -- #327, which failed every five-minute tick
-# identically until a fix reached main. Ten tests name both playbooks and all of
-# them assert play order or CI wiring; this is the direction none of them assert.
-#
-# It is checked in two halves, because the rule has two halves.
-#
-# First, the paths. The distinctive literal fragments of what the poller and the
-# prune install are derived from their own defaults rather than restated, so a
-# renamed share root moves the subject with it. Every file a site.yml run can
-# reach is then swept for them, and the result is pinned: a new reference is a new
-# coupling and has to be justified by editing this list, not by editing a role.
-#
-# A DEFAULTS FILE THAT COULD NOT BE READ IS NOT A ROLE THAT INSTALLS NOTHING
-# (#596). This skipped such a file and the role's fragments silently became
-# none, which the floor below cannot see: production_auto_deploy supplies three
-# on its own, so `mv roles/image_prune/defaults/main.yml /tmp/` left the sweep
-# blind to every nas-platform-prune path and the run printed "all properties
-# hold" over a planted reference to one. The unparseable route is deliberately
-# left to crash on the unrescued safe_load_file -- that is already loud -- so
-# what is recorded here is the file that is absent, empty or not a mapping,
-# which are the three ways this derivation goes quiet without raising.
-#
-# ABSENT ROLE DIRECTORY IS THE ONE STATE THAT IS NOT A FAULT, and it is the
-# distinction the refusal rests on rather than an escape hatch: the mutation
-# sandbox carries no roles/image_prune at all -- BASE_FIXTURE_PATHS names none
-# of it, on purpose, and the floor below is sized at 3 against exactly that --
-# so a role this tree does not have contributes nothing and is entitled to. A
-# role directory that IS here and whose defaults cannot be read is the state
-# nothing else reports.
+# install-production-auto-deploy.yml installs" (#327). Checked in two halves.
+# First, the paths: fragments derived from the poller and prune defaults are swept
+# for across everything site.yml can reach, and every reference is pinned.
+# An unreadable defaults file in a present role directory is a fault (#596); an absent
+# role directory is not, because the mutation sandbox carries no roles/image_prune.
 POLLER_ROLES = %w[production_auto_deploy image_prune].freeze
 unusable_poller_defaults = []
 poller_fragments_by_role = {}
@@ -1011,9 +853,7 @@ POLLER_INSTALLED_FRAGMENTS = POLLER_ROLES.flat_map do |role|
     next []
   end
 
-  # Recorded per role as well as unioned, for the per-role floor below. A
-  # defaults file that parsed cannot have come from a role directory that is
-  # absent, so this needs no Dir.exist? of its own.
+  # Also recorded per role, for the per-role floor below.
   fragments = document.filter_map do |key, value|
     next unless key.end_with?("_root", "_path") && value.is_a?(String)
 
@@ -1031,36 +871,10 @@ check(failures, unusable_poller_defaults.empty?,
       "not be read are different states, and only the first is a reason to assert nothing. The " \
       "floor beside this does not reach it: the other poller role supplies three fragments " \
       "alone, so the count stays satisfied while half the subject is gone")
-# The same subject counted per role rather than over the union (#597). The
-# refusal above reaches only a defaults file that could not be read; two states
-# where it reads perfectly well still empty a role's contribution, in whole or
-# in part. `--- {}` is a valid mapping with no keys, so `document.is_a?(Hash)`
-# holds and the role derives nothing. A renamed key is worse, because the file
-# stays complete and plausible: `production_auto_deploy_launcher_path` becomes
-# `..._launcher_file`, the `_path` suffix stops matching, and one fragment of
-# three disappears while the other two remain.
-#
-# The union floor beneath sees neither, and the arithmetic is why. Each role
-# derives three fragments and two of them -- the share root and the config root
-# -- are common to both, so the union is 4 and EITHER ROLE ALONE satisfies a
-# floor of 3. It guards the subject list's size and not its truth, which is the
-# sentence #556, #588, #590, #593 and #596 each ended up writing about a
-# different check.
-#
-# Sized at 3 against each role's own defaults, which name exactly three
-# distinctive fragments: a share root, a config root and a launcher. That is
-# today's count with no slack, against check_floor's own advice to sit well
-# under it, and deliberately: the defect here IS a contribution shrinking by
-# one, so a floor with room to absorb that is a floor the renamed key walks
-# past. Dropping a fragment legitimately means lowering this number in the same
-# commit -- the two-place cost the shard manifest and BASE_FIXTURE_PATHS
-# already pay, and the reason a prune lands as a visible diff.
-#
-# Keyed on the roles whose defaults parsed, so a role this tree does not carry
-# is skipped exactly as the refusal above skips it. That is load-bearing rather
-# than tidy: BASE_FIXTURE_PATHS names no part of roles/image_prune, so a flat
-# per-role assertion would go red in every mutation sandbox for a reason
-# unrelated to the mutation.
+# Counted per role (#597): `--- {}` or a renamed key empties a role's contribution
+# without a read failure, and the union floor cannot see it because the roles share
+# two fragments. Sized at exactly 3 with no slack, since the defect is losing one;
+# lower it in the same commit as a legitimate drop. Keyed on roles that parsed.
 POLLER_ROLE_FRAGMENT_FLOOR = 3
 starved_poller_roles = poller_fragments_by_role
                        .select { |_role, fragments| fragments.length < POLLER_ROLE_FRAGMENT_FLOOR }
@@ -1071,16 +885,11 @@ check(failures, starved_poller_roles.empty?,
       "reference to whichever of them went missing. A valid mapping with no keys and a key " \
       "whose suffix stopped matching both read as a role that installs nothing, and neither " \
       "poller role installs nothing")
-# Retained beneath the per-role floors rather than replaced by them. They are
-# keyed on the roles that parsed, so narrowing POLLER_ROLES itself starves them
-# of subjects and they pass over an empty set; this one still fails at 0.
+# Kept beneath the per-role floors: narrowing POLLER_ROLES starves those, not this.
 check_floor(failures, POLLER_INSTALLED_FRAGMENTS.length, 3,
             "distinctive path fragments install-production-auto-deploy.yml creates")
 
-# Every file the two poller roles do not own. The poller playbook runs only those
-# two roles plus vault_contract, which site.yml runs as well and is therefore
-# swept here; everything else under roles/ is reachable from site.yml or from
-# nothing at all, and both are fine to hold to this rule.
+# Every file the two poller roles do not own (vault_contract runs in site.yml too).
 POLLER_PATH_REFERENCE_REASONS = {
   "roles/deployment_bundle/defaults/main.yml" =>
     "derives the flock path independently and tolerates its absence -- a host with no " \
@@ -1095,18 +904,9 @@ site_reachable_files = (Dir[File.join(ROOT, "roles", "**", "*")] +
                        .select { |path| File.file?(path) }
                        .map { |path| path.delete_prefix("#{ROOT}/") }
                        .reject { |path| path.start_with?("roles/production_auto_deploy/", "roles/image_prune/") }
-# Both floors are sized against the mutation sandbox rather than the working
-# tree: the sandbox carries 137 swept files and three fragments against the
-# tree's 211 and four. BASE_FIXTURE_PATHS names 24 non-poller role files plus
-# site.yml, verify.yml and the seventeen fixture roles' statically imported
-# stage files, and it omits roles/image_prune entirely, so every fragment there
-# is derived from the poller role alone -- which is why the sandbox sits exactly
-# on the fragment floor rather than above it. A tree-sized floor would fail
-# every mutation for a reason unrelated to the mutation.
+# Both floors are sized against the mutation sandbox, which omits roles/image_prune.
 check_floor(failures, site_reachable_files.length, 30, "files a site.yml run can reach")
-# Intersected with what is present for the same reason: the recorded set is there
-# to make a *new* coupling fail, and a sandbox that carries fewer files than the
-# repository has not gained one. Fixture containment is policed elsewhere.
+# Intersected with what is present: a smaller sandbox has not gained a coupling.
 expected_references = (POLLER_PATH_REFERENCE_REASONS.keys & site_reachable_files).sort
 referencing_files = site_reachable_files.select do |path|
   contents = File.read(path)
@@ -1118,12 +918,8 @@ check(failures, referencing_files == expected_references,
       "#{expected_references.join(', ')}. A new entry must tolerate the path's absence for one " \
       "deployment and say so here")
 
-# Second, the behaviour, which is what #327 actually crossed: the guard demanded a
-# record only the poller shipping in the same commit writes. What keeps it the
-# right way round is the one tolerated held lock -- a holder that recorded no
-# identity -- so the refusal must keep reading it. Both the definition and the use
-# are asserted, because hoisting the condition somewhere else would leave the
-# `that:` list looking unchanged while it stopped meaning this.
+# Second, the behaviour #327 crossed: the refusal must keep tolerating a lock holder
+# that recorded no identity. Both the definition and its use are asserted.
 lock_block = YAML.safe_load_file(File.join(ROOT, "roles", "deployment_bundle", "tasks", "target.yml"))
                  .find do |task|
   task.is_a?(Hash) && task["block"].is_a?(Array) &&

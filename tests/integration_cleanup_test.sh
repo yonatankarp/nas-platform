@@ -91,12 +91,8 @@ test_cleanup_service_registry() {
     done
   done
 
-  # Every registered project declares its Compose network keys with default
-  # among them, and every network a service's compose.yml has Compose create is
-  # declared for the project of that name, so a new one cannot land undeclared
-  # and surface only as a refused cleanup at the end of a lane. An external
-  # network is not Compose's to create -- the media-control bridge is host_prep's
-  # and cleanup owns it by its own rule -- so it is not a key.
+  # Every compose.yml-created network must be declared for its project; an
+  # external network is host_prep's, not a key.
   for registered_cleanup_project in $cleanup_sandbox_projects; do
     cleanup_sandbox_project_networks "$registered_cleanup_project" || exit 1
     case " $cleanup_project_networks " in
@@ -208,10 +204,7 @@ test_invalid_suffix_alphabet() {
   invalid_suffix_sandbox=
 }
 
-# Every Docker call cleanup makes must fail closed. The fake keys off the
-# derived namespace to tell the ownership-scoped calls apart from the remaining
-# fixed-name ones, and synthesises valid Compose identities where a mode has to
-# reach the removal calls.
+# Every Docker call cleanup makes must fail closed.
 test_docker_failure() {
   failure_mode=$1
   failure_sandbox=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-cleanup.XXXXXX")
@@ -284,8 +277,6 @@ test_docker_failure() {
     printf 'cleanup ignored docker %s failure\n' "$failure_mode" >&2
     exit 1
   fi
-  # A Docker error is not an ownership violation. Reporting one as the other
-  # would send an operator looking for a resource that never misbehaved.
   case $failure_mode in
     ownership-inspect | ownership-network-inspect)
       ! grep -q 'Refusing cleanup ownership' "$failure_diagnostic" || {
@@ -302,11 +293,9 @@ test_docker_failure() {
   failure_sandbox=
 }
 
-# A named Compose network is owned only as ${project}_${key} for a declared key,
-# carrying that project label and that key as its network label. The fake daemon
-# holds a table of networks and answers the calls cleanup makes against it; it
-# renders `network inspect` only for the exact format cleanup sends, field by
-# field in that order, so a changed format fails here instead of passing blind.
+# A named network is owned only as ${project}_${key} with both labels. The fake
+# renders `network inspect` only for cleanup's exact format, so a changed
+# format fails here.
 test_named_networks() {
   named_scenario=$1
   failure_sandbox=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-cleanup.XXXXXX")

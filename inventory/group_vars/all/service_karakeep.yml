@@ -2,48 +2,22 @@
 # karakeep: non-secret settings and the storage this service owns.
 # Cross-cutting facts live in main.yml; secrets in vault_karakeep.yml.
 
-# KARAKEEP IS ON. #551 landed the whole stack with this false and its second
-# chunk turned it on. roles/karakeep/defaults/main.yml stays false: that default
-# is the floor under this decision, not a copy of it.
-#
-# WHAT THE COMMIT THAT SET THIS TRUE DID ON THE NAS, once, within five minutes of
-# the merge: the first converge pulls three images, starts the stack with signups
-# closed, finds that the vault administrator cannot sign in and that Karakeep
-# holds no account, opens signups with the application published on 127.0.0.1
-# only, registers the administrator, and closes the door again before the role
-# yields. Every later converge signs in and skips all of that; one whose vault
-# administrator no longer signs in finds the existing account and refuses without
-# ever opening the door. Setting it back to false converges the project to
-# `state: absent`; the data root survives, so turning it on again meets the
-# existing administrator and never opens the door.
-#
-# The obligations tests/deployment_gate_coverage_test.rb holds a lit gate to were
-# paid in the same change: the integration narrowing is gone, so every lane
-# converges what this says; the karakeep lane converges the disabled path with
-# `-e karakeep_deployment_enabled=false`; and the Mac lifecycle accounts for the
-# service.
+# Karakeep is on (#551). The role default stays false as the floor under this.
+# False converges the project to `state: absent`; the data root survives.
 karakeep_deployment_enabled: true
 
-# The administrator's display name, and nothing else: the login identity is
-# vault_karakeep_admin_email and the password vault_karakeep_admin_password, both
-# in the vault like every other service's administrator. Karakeep's first
-# registered account is its administrator, and tasks/bootstrap.yml registers the
-# vault identity under this name.
+# Display name only; login identity and password are vault_karakeep_admin_*.
 karakeep_admin_name: admin
 
 nas_storage_karakeep:
-  # DATA_DIR: db.db (every bookmark, list, tag, user and API key, with bcrypt
-  # password hashes), queue.db, and the archived assets and screenshots. The only
-  # part of this stack that matters, and nothing else has a copy. The containers
-  # run as root, so the platform identity owns the directory rather than its
-  # contents.
+  # DATA_DIR: db.db (bookmarks, users, API keys, bcrypt hashes), queue.db and
+  # archived assets. Nothing else has a copy. Containers run as root.
   - path: "{{ nas_docker_root }}/karakeep/data"
     owner: "{{ nas_uid }}"
     group: "{{ nas_gid }}"
     mode: "0755"
     recovery: critical
-  # The Meilisearch index. Rebuildable from the data root above -- Karakeep
-  # reindexes from its own database -- and it will be the larger of the two.
+  # Meilisearch index; Karakeep rebuilds it from its own database.
   - path: "{{ nas_docker_root }}/karakeep/meilisearch"
     owner: "{{ nas_uid }}"
     group: "{{ nas_gid }}"

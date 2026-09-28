@@ -1,8 +1,5 @@
 ---
-# Verification is intentionally separate from site.yml. Explicit verification
-# tags select only read/assert tasks already carried by application roles; no
-# host preparation, bundle installation, Compose deployment, or reconciliation
-# task can run from this playbook.
+# Verification only: tags select read/assert tasks; nothing here can converge.
 - name: Verify the deployed platform without converging it
   hosts: platform_hosts
   gather_facts: false

@@ -16,12 +16,8 @@ include TestScaffold
 
 SERVICES = %w[immich paperless_ngx beszel].freeze
 REQUIRED_TASKS = {
-  # Immich's lifecycle is roles/managed_users too (#647), with its preference
-  # tasks spliced in where the shared role's hooks run them; see
-  # immich_contract_tasks. That is a static order, so the verify phase's
-  # preference verdict -- the before-verify hook -- precedes the exact
-  # verification, and the reconcile preference repair that follows the whole
-  # role is held separately in contract_failures.
+  # Immich runs roles/managed_users with its preference hooks spliced in (#647);
+  # the reconcile preference repair is held separately in contract_failures.
   "immich" => [
     "List complete users for managed-user reconciliation: Immich",
     "Refuse incomplete managed-user listing: Immich",
@@ -71,8 +67,6 @@ REQUIRED_TASKS = {
 PAPERLESS_SCRIPT_LOOKUP =
   %r{\A\{\{ lookup\('ansible\.builtin\.file', role_path ~ '/files/[a-z_]+\.py'\) \}\}\z}.freeze
 
-# Follow the task's own wiring to the script it loads, so an assertion about the
-# script's contents fails loudly when the task stops loading one.
 def paperless_exec_script(task)
   argv = Array(task&.dig("community.docker.docker_compose_v2_exec", "argv"))
   name = argv.last.to_s[%r{/files/([a-z_]+\.py)}, 1]
@@ -106,15 +100,9 @@ def immich_managed_user_defaults
   end
 end
 
-# Beszel reaches roles/managed_users through a shim (#647), so the task list its
-# contract is asserted against is what production actually runs: the shared role
-# with Beszel's title substituted, and every request body, id expression and the
-# binding switch followed through the shim's vars to Beszel's own defaults. A
-# body that is only a "{{ managed_users_create_body }}" reference proves nothing,
-# which is why the checks below never read the shared role's own text for one.
-# When the shim stops binding authenticated identities, the tasks and conditions
-# that switch gates are removed from the view, exactly as Ansible would skip or
-# short-circuit them, so the binding checks fail by name.
+# Beszel's view is what production runs: the shared role through the shim
+# (#647), with every body and id followed to Beszel's defaults. When the shim
+# stops binding identities, the gated tasks drop out as Ansible would skip them.
 def beszel_contract_tasks(shim_tasks = YAML.safe_load_file(BESZEL_SHIM, aliases: false),
                           defaults = beszel_managed_user_defaults)
   include = Array(shim_tasks).find { |task| task.is_a?(Hash) && task.key?("ansible.builtin.include_role") }
@@ -123,14 +111,8 @@ def beszel_contract_tasks(shim_tasks = YAML.safe_load_file(BESZEL_SHIM, aliases:
   shared_role_contract_tasks(include, defaults, "Beszel")
 end
 
-# Immich reaches roles/managed_users the same way, and keeps its preference
-# profiles in its own task files that the shared role runs through its hooks. So
-# its view is the shim's own tasks around the shared role's, with every hook
-# include replaced by the tasks of the file it names -- resolved from
-# roles/managed_users/tasks exactly as include_tasks resolves it -- and the
-# shim's own include of the preference verdicts replaced the same way. A hook
-# that names a file that is not there contributes nothing, so the checks that
-# need its tasks fail by name.
+# Immich's view: shim tasks around the shared role, each hook include replaced
+# by the file it names; a missing hook file contributes nothing.
 def immich_contract_tasks(shim_tasks = YAML.safe_load_file(IMMICH_SHIM, aliases: false),
                           defaults = immich_managed_user_defaults)
   index = Array(shim_tasks).index { |task| task.is_a?(Hash) && task.key?("ansible.builtin.include_role") }
@@ -199,18 +181,13 @@ def shared_role_contract_tasks(include, defaults, title, expand_hooks: nil)
   end
 end
 
-# A behaviour mutant of Beszel's lifecycle. The mutated task list is the shared
-# role, so the shim's include_role becomes an include_tasks of a mutated copy of
-# roles/managed_users/tasks/main.yml, carrying the shared role's defaults that
-# include_role would have loaded. Everything else the shim passes is unchanged.
+# A Beszel mutant: the shim's include_role becomes include_tasks of a mutated
+# copy of the shared role, carrying its defaults.
 def write_beszel_shared_role_mutant(directory, name, &block)
   write_shared_role_mutant(directory, name, BESZEL_SHIM, {}, &block)
 end
 
-# Immich's shim names its hook files relative to roles/managed_users/tasks,
-# which the mutated copy no longer lives in, so the mutant names them absolutely;
-# the shim's own include of its preference verdicts is made absolute for the
-# same reason.
+# The mutant lives elsewhere, so hook paths are made absolute.
 def write_immich_shared_role_mutant(directory, name, &block)
   hooks = immich_managed_user_defaults.select { |key, _value| key.end_with?("_tasks") }
                                       .transform_values do |path|
@@ -261,9 +238,7 @@ def contract_failures(service, tasks)
   initialization = tasks.find do |task|
     task_name(task) == "Initialize #{service_label} managed-user binding facts"
   end
-  # The shared role has no separate initialization: each binding task defaults
-  # the play-scoped initial map itself, and the reset at role entry must leave
-  # that map alone or verify would compare against nothing reconcile proved.
+  # Each binding task defaults the initial map itself; the entry reset must not clear it.
   if %w[beszel immich].include?(service)
     initial_fact = "managed_users_initial_authenticated_ids"
     initialization = tasks.find do |task|
@@ -345,9 +320,6 @@ def contract_failures(service, tasks)
       immich_managed_user_defaults["immich_managed_users_id_attribute"] == "id"
     failures << "Immich omits stable authenticated-ID enforcement before repair" unless
       names.include?("Require stable authenticated managed identities: Immich")
-    # The reconcile preference repair follows the account repair, after the
-    # whole role, and its read-back verdict follows it; the verify phase's
-    # verdict is the earlier occurrence REQUIRED_TASKS holds.
     preference_repair_position = names.index("Repair Immich managed user preferences")
     failures << "Immich preference repair must follow the account repair and precede its read-back verdict" unless
       preference_repair_position &&
@@ -380,9 +352,8 @@ def contract_failures(service, tasks)
     commands = tasks.filter_map { |task| task["community.docker.docker_compose_v2_exec"] }
     commands.each do |command|
       argv = Array(command["argv"])
-      # A tracked script loaded from the role's files/ directory carries no value,
-      # so it is the one interpolation allowed here. Every other Jinja expression
-      # in argv would put a resolved value on the command line.
+      # A tracked script from files/ is the one allowed interpolation; any other
+      # Jinja in argv would put a resolved value on the command line.
       offending = argv.select do |arg|
         arg.to_s.include?("{{") && !arg.to_s.match?(PAPERLESS_SCRIPT_LOOKUP)
       end
@@ -452,8 +423,7 @@ def contract_failures(service, tasks)
   failures
 end
 
-# Named the same as the shared runner it wraps, so the several dozen call sites
-# below read unchanged; the qualified call is what reaches the shared one.
+# Same name as the shared runner so the call sites read unchanged.
 def run_playbook(tasks, variables, *arguments, env: {})
   HttpFixtureSupport.run_playbook(tasks, variables, *arguments, environment: env,
                                   prefix: "nas-platform-database-managed-users-")
@@ -480,18 +450,13 @@ def managed_includes(service, extra_vars = {}, path: nil)
       File.join(ROOT, "roles", "immich", "defaults", "main.yml"), aliases: false
     )
     role_vars = defaults.select { |key, _value| key.start_with?("immich_managed_user_preference_") }
-    # As for Beszel below: the shim is included directly, so neither its account
-    # parameters nor the shared role's release input are loaded by Ansible.
     role_vars = role_vars.merge(immich_managed_user_defaults).merge("platform_current_dir" => ROOT)
   elsif service == "beszel"
-    # The shim is included directly, so Ansible loads neither Beszel's defaults
-    # nor the shared role's release input; the repository root is a release that
-    # carries config/managed-user-capabilities.yml.
+    # The shim is included directly, so Ansible loads neither its defaults nor the
+    # release input.
     role_vars = beszel_managed_user_defaults.merge("platform_current_dir" => ROOT)
   end
-  # include_tasks does not set role_path, but the production path reaches these
-  # tasks through include_role, which does. Scripts loaded from the role's files/
-  # directory resolve against it, so the fixture has to supply it.
+  # include_role sets role_path in production; include_tasks does not.
   include_vars = role_vars.merge("role_path" => File.join(ROOT, "roles", service)).merge(extra_vars)
   [
     { "name" => "Reconcile fixture #{service}", "ansible.builtin.include_tasks" => path,
@@ -508,10 +473,7 @@ def primary_beszel_user_tasks
     "Reconcile managed application user role and verification",
     "Report planned managed application user reconciliation"
   ]
-  # Read through static_role_tasks: the role is one stage per file and main.yml is
-  # an index of static imports, so these four tasks live in application_user.yml.
-  # A bare read of the index selects nothing, and the fixtures below would run an
-  # empty playbook rather than the primary-user reconciliation they assert on.
+  # main.yml is an index of static imports; these tasks live in application_user.yml.
   tasks = PolicySupport.static_role_tasks(
     File.join(ROOT, "roles", "beszel", "tasks", "main.yml"), aliases: false
   )
@@ -840,13 +802,8 @@ def exercise_immich_normalized_duplicate_refusal(failures)
       [managed_includes("immich", { "immich_managed_users_token" => "admin" }).first], vars
     )
     failures << "Immich normalized duplicate fixture unexpectedly succeeded" if status.success?
-    # Every refusal assertion in this file names the failing task's own fail_msg
-    # rather than its task name, because ansible prints "TASK [<name>]" whenever a
-    # task merely runs -- see HttpFixtureSupport.refused_with? (#419). Those
-    # anchors are tied to ansible-core 2.21.3's wording, pinned in
-    # controller-requirements.txt; a core bump that rephrases it is the one thing
-    # that breaks them, and HttpFixtureSupport::TASK_REFUSAL_PREFIX is where it is
-    # fixed.
+    # Refusals are matched on fail_msg, not "TASK [<name>]" (#419); the anchor is
+    # HttpFixtureSupport::TASK_REFUSAL_PREFIX.
     failures << "Immich normalized duplicate fixture missed ambiguity refusal" unless
       HttpFixtureSupport.refused_with?(
         stdout + stderr,
@@ -1019,10 +976,8 @@ def exercise_beszel(failures, task_path: nil, extra_vars: {})
   end
 end
 
-# The path the live NAS takes on every five-minute tick: every declared identity
-# already exists with its declared role and verified flag. Reconcile and verify
-# must send nothing but reads and credential proofs, report no change, and a
-# --check review of the same host must plan nothing.
+# The live NAS path: everything already converged, so only reads and
+# credential proofs, no change, and --check plans nothing.
 def exercise_beszel_converged(failures)
   users = [
     { "id" => "reader123456789", "email" => "reader@example.invalid", "password" => "reader-secret",
@@ -1068,8 +1023,7 @@ def exercise_beszel_converged(failures)
     failures << "Beszel converged check mode authenticated or mutated" unless
       requests.all? { |request| [request["method"], request["target"]] == read }
   end
-  # verify.yml runs the verify phase on its own, hourly, with no reconcile before
-  # it to have proved any credential: the phase must prove them itself.
+  # verify.yml runs the verify phase alone, so it must prove credentials itself.
   with_http_service(responder) do |port, requests|
     stdout, stderr, status = run_playbook(managed_includes("beszel").last(1),
                                           base.merge("beszel_api" => "http://127.0.0.1:#{port}"))
@@ -1080,9 +1034,6 @@ def exercise_beszel_converged(failures)
     failures << "Beszel verify-only fixture sent a mutation" unless
       requests.all? { |request| [read, proof].include?([request["method"], request["target"]]) }
   end
-  # And an identity absent from the listing refuses on its own verification
-  # message, which is the conditions short-circuiting before they subscript the
-  # id maps no authentication wrote for it.
   absent = [{ "email" => "absent@example.invalid", "password" => "absent-secret", "role" => "user",
               "verified" => true }]
   with_http_service(responder) do |port, requests|
@@ -1330,9 +1281,7 @@ def exercise_fail_closed_and_check_mode(failures)
                     { "email" => "reader@example.invalid", "password" => "reader-secret",
                       "role" => "admin", "verified" => true }
                   ] }
-  # The shared role reads the listing itself, where Beszel's own copy reused the
-  # one application_user.yml had read, so the stub answers that one read-only
-  # request and refuses everything else as before.
+  # The shared role reads the listing itself; the stub answers only that read.
   beszel_listing_request = ["GET", "/api/collections/users/records?perPage=500"]
   with_http_service(lambda { |request|
     [request["method"], request["target"]] == beszel_listing_request ? [200, listing] : [400, {}]
@@ -1583,8 +1532,6 @@ def exercise_identity_swap_refusal(failures, task_paths: {})
   old_beszel = { "id" => "reader123456789", "email" => "reader@example.invalid",
                  "role" => "user", "verified" => false }
   replacement_beszel = old_beszel.merge("id" => "replace123456789")
-  # The first listing names the record the credential proves; every later one
-  # names its replacement, so the swap lands between credential proof and repair.
   beszel_reads = 0
   with_http_service(lambda { |request|
     case [request["method"], request["target"]]
@@ -1627,9 +1574,7 @@ SERVICES.each do |service|
   tasks = service_contract_tasks(service)
   failures << "#{service} managed-user tasks must be a task list" unless tasks.is_a?(Array)
   failures.concat(contract_failures(service, tasks)) if tasks.is_a?(Array)
-  # An include, not a mention. The file name appears in this role's comments and
-  # in its own tags, so a substring of main.yml was satisfied by a role that had
-  # stopped including the task file at all.
+  # An include, not a mention: the file name also appears in comments and tags.
   main_tasks = YAML.safe_load_file(File.join(ROOT, "roles", service, "tasks", "main.yml"), aliases: true)
   managed_user_includes = Array(main_tasks).count do |task|
     include_argument = task.is_a?(Hash) ? task["ansible.builtin.include_tasks"] : nil
@@ -1646,10 +1591,7 @@ failures << "database managed-user self-test is not registered" unless
   policy.lines.include?("ruby tests/database_managed_users_test.rb --self-test\n")
 
 if ARGV == ["--self-test"]
-  # Every Beszel and Immich plant names itself when it is detected, and each
-  # count is held against a stated number, so a plant that stops running is a
-  # failure rather than a quieter pass. Theirs are the lifecycles #647 moved onto
-  # the shared role; Paperless still reports through survivors alone.
+  # Each plant is counted against a stated number, so a plant that stops running fails.
   beszel_detected = []
   expected_beszel_plants = 9
   immich_detected = []
@@ -1694,8 +1636,6 @@ if ARGV == ["--self-test"]
         end
       end
 
-      # The binding is one switch in the shim now; turning it off must fail the
-      # two record-id bindings and the stable-identity refusal by name.
       unbound_shim = YAML.safe_load_file(BESZEL_SHIM, aliases: false)
       unbound_shim.find { |task| task.key?("ansible.builtin.include_role") }
                   .fetch("vars")["managed_users_bind_authenticated_ids"] = false
@@ -1711,7 +1651,6 @@ if ARGV == ["--self-test"]
     end
 
     if service == "immich"
-      # The same binding switch, in Immich's shim.
       unbound_shim = YAML.safe_load_file(IMMICH_SHIM, aliases: false)
       unbound_shim.find { |task| task.key?("ansible.builtin.include_role") }
                   .fetch("vars")["managed_users_bind_authenticated_ids"] = false
@@ -1724,8 +1663,6 @@ if ARGV == ["--self-test"]
         failures << "immich unbound-identity mutant survived"
       end
 
-      # The pre-creation refusal of an administrator target lives in a hook
-      # file; a hook that stops naming it removes the refusal from the view.
       unhooked = immich_managed_user_defaults.merge("immich_managed_users_before_create_tasks" => "")
       if contract_failures(service, immich_contract_tasks(YAML.safe_load_file(IMMICH_SHIM, aliases: false), unhooked))
          .any? { |failure| failure.include?("Require non-administrator Immich managed preference targets") }
@@ -1807,8 +1744,6 @@ if ARGV == ["--self-test"]
           end
         end
 
-        # Beszel's create body is its own default now, so the mutant overrides
-        # that default rather than editing a task.
         unverified_create_body = beszel_managed_user_defaults.fetch("beszel_managed_users_create_body").dup
         raise "beszel unverified-create mutant planted nothing" unless unverified_create_body.delete("verified")
         create_mutant_failures = []
@@ -1828,9 +1763,6 @@ if ARGV == ["--self-test"]
         end
         argv = create.fetch("community.docker.docker_compose_v2_exec").fetch("argv")
         inside_atomic = false
-        # argv now carries a lookup of the tracked script, so the mutant is built
-        # from the script's own text and written back inline. The mutant task file
-        # is a throwaway, so inlining it keeps this independent of role_path.
         argv[-1] = paperless_exec_script(create).lines.filter_map do |line|
           next if line.include?("from django.db import transaction")
           if line.strip == "with transaction.atomic():"
@@ -1892,11 +1824,7 @@ if ARGV == ["--self-test"]
   end
 elsif ARGV.empty?
   if ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).any? { |directory| File.executable?(File.join(directory, "ansible-playbook")) }
-    # Each probe stands up its own stub service on an OS-assigned port and runs
-    # its own ansible-playbook in its own temporary directory, so they share
-    # nothing but the failure list and spend nearly all of their wall time
-    # waiting on that subprocess. Named as callables they go through the pool
-    # and are still reported in the order written here.
+    # Each probe owns its stub service and temp directory, so they pool safely.
     probes = [
       ->(collected) { exercise_immich(collected) },
       ->(collected) { exercise_immich_normalized_duplicate_refusal(collected) },

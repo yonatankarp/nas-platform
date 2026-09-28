@@ -1,25 +1,9 @@
 ---
-# The HTTP managed-user skeleton, hoisted out of roles/komga (#647). Every
-# service-specific value arrives as a parameter; nothing here names a service.
-#
-# Two kinds of caller-supplied condition live in this file and they are written
-# differently, because each form is forced by where it is used rather than
-# chosen:
-#
-#   * managed_users_repair_condition is a BRACED template string. It is consumed
-#     by `when:`, which ansible-lint --strict (no-jinja-when) refuses to let
-#     carry Jinja braces, so the braces live in the parameter's VALUE and the
-#     role resolves them once into a boolean fact the `when:` then reads.
-#   * managed_users_verify_conditions is a list of BRACE-FREE expressions. They
-#     are consumed by `assert: that:`, which evaluates its conditions in order
-#     and stops at the first false. Resolving them to booleans first would
-#     finalize every one of them as a task argument -- which is the same hazard
-#     the fail_msg note below describes -- and would lose that short-circuit.
-#
-# No fail_msg in this file indexes a match list or subscripts a key that the
-# task before it did not already prove present. Ansible finalizes a task's
-# arguments BEFORE deciding whether the assertion holds, so such a message dies
-# on the PASSING path, after every earlier assertion passed.
+# The HTTP managed-user skeleton hoisted out of roles/komga (#647); nothing here
+# names a service. managed_users_repair_condition is braced (no-jinja-when) and
+# resolved to a fact; managed_users_verify_conditions stay brace-free so
+# `assert` short-circuits. No fail_msg subscripts anything its task did not
+# prove present: fail_msg is rendered on the passing path too.
 - name: Validate the managed-user phase
   ansible.builtin.assert:
     that:
@@ -29,17 +13,9 @@
       implement. The tasks in this file are gated on managed_users_phase, so an
       unrecognised phase silently skips them.
 
-# meta/argument_specs.yml cannot declare six of the parameters this role takes,
-# because
-# Ansible templates every declared option at role entry and each of these is a
-# template over a per-identity `item` or over the task-scoped
-# managed_users_match. That leaves them unchecked, so what can be checked at
-# role entry is checked here: that each was supplied at all. q('varnames')
-# matches variable NAMES and never resolves a value, which is the whole reason
-# it can ask this question when `is defined` cannot -- `is defined` would
-# template the value and fail on the undefined `item` exactly as the argument
-# spec does. A missing one otherwise surfaces as an undefined-variable trace
-# midway through the reconciliation, after requests have already been sent.
+# These parameters template over `item` or managed_users_match, so the argument
+# spec cannot declare them; q('varnames') checks presence without resolving
+# them, which `is defined` cannot.
 - name: Require every deferred managed-user parameter
   ansible.builtin.assert:
     that:
@@ -53,9 +29,7 @@
       meta/argument_specs.yml cannot declare these, so their absence is caught
       here rather than by Ansible.
   vars:
-    # The seventh, managed_users_authenticate_body, is deliberately absent: it
-    # is the one deferred parameter this role defaults, so it is always in
-    # scope and a row for it would assert nothing.
+    # managed_users_authenticate_body is absent because this role defaults it.
     managed_users_deferred_parameters:
       - managed_users_list_json
       - managed_users_authenticate_identity
@@ -71,50 +45,27 @@
     managed_users_supplied_parameters: >-
       {{ q('varnames', '^' ~ (managed_users_required_parameters | join('$|^')) ~ '$') }}
 
-# The accumulators below are accumulated across a loop, so they are reset
-# rather than merely defaulted. A role called twice in one play -- reconcile
-# then verify, which is exactly how site.yml and verify.yml reach it -- would
-# otherwise carry the first call's keys into the second, and once a second
-# service adopts this role it would carry that service's identities too.
-#
-# managed_users_initial_authenticated_ids is deliberately NOT reset: it is the
-# first id each identity's credential proved in this play, and the verify
-# phase compares against the one reconcile proved. It is keyed by service for
-# the reason the reset exists -- two services may declare the same email.
+# Reset, not defaulted: reconcile then verify call this role twice in one play.
+# managed_users_initial_authenticated_ids is kept on purpose for verify to
+# compare.
 - name: Reset resolved managed-user decisions
   ansible.builtin.set_fact:
     managed_users_matches: {}
     managed_users_repairs: {}
     managed_users_authenticated_ids: {}
 
-# config/managed-user-capabilities.yml is the platform's declaration of what
-# each service's managed-user contract is, and this role implements exactly one
-# shape of it: an HTTP API that refuses password rotation and forbids updating
-# an existing identity's password. Reading the register here is what stops a
-# service whose register row says django_cli, declarative_file,
-# declarative_environment, single_identity_settings or user_owned from being
-# routed through this skeleton by a caller that simply passed the parameters.
-#
-# The register is committed plaintext -- it names endpoints and policies, never
-# a credential -- so unlike roles/arr/tasks/configarr.yml, which reads a file
-# the deployed service resolves its secrets against, nothing in this chain
-# carries no_log. The refusals below have to be readable, and the review branch
-# has to print.
+# This role implements only the HTTP-API shape of the register; reading the row
+# stops a differently shaped service being routed here. The register is
+# plaintext, so nothing in this chain needs no_log.
 - name: Stat the deployed managed-user capability register
   ansible.builtin.stat:
     path: "{{ managed_users_register_path }}"
   register: managed_users_register_stat
   changed_when: false
-  # A read, and one that has to really happen under --check: the whole point of
-  # the branch below is to report what is actually on the deployed release.
   check_mode: false
 
-# Under --check on an already-converged host, deployment_bundle stages and
-# activates nothing (`when: not ansible_check_mode`), so platform_current_dir
-# still names the PREVIOUS release -- which, the first time this ships, predates
-# the register. That is the documented shape for anything a check-mode review
-# cannot simulate: say so as an explicit debug rather than refusing a review
-# that was always going to be reviewing the old tree.
+# Under --check `current` still names the previous release, which may predate
+# the register, so report instead of refusing the review.
 - name: Report a managed-user capability register the deployed release predates
   ansible.builtin.debug:
     msg: >-
@@ -149,10 +100,7 @@
   check_mode: false
   when: managed_users_register_stat.stat.exists
 
-# Two assertions rather than one, and the split is the fail_msg rule above: the
-# second names the row, so the first has to prove the row is there. Membership
-# is tested with `in` rather than by subscripting, because subscripting an
-# absent key raises instead of evaluating to undefined.
+# Split so the row-naming message only renders once the row is proved present.
 - name: Require a managed-user capability register row for this service
   ansible.builtin.assert:
     that:
@@ -192,10 +140,8 @@
           from_yaml).services[managed_users_service] }}
   when: managed_users_register_stat.stat.exists
 
-# existing_identity_password_update is `forbidden` for every service in the
-# register, and the repair body is the one request in this file that could
-# quietly break it. The body is a caller-supplied mapping, so the refusal reads
-# its keys rather than trusting the review that admitted it.
+# Password updates are forbidden for every service, so the refusal reads the
+# caller-supplied body's keys rather than trusting review.
 - name: Refuse a managed-user repair body carrying a credential
   ansible.builtin.assert:
     that:
@@ -207,12 +153,8 @@
       carries a credential-shaped key. Repairing an existing identity must never
       update its password; the capability register declares that update
       forbidden.
-  # Deliberately NOT binding managed_users_match: this refusal runs before the
-  # listing, so there are no matches to bind, and a body that reached for one
-  # here would subscript an empty mapping. Reading the body's KEYS needs neither
-  # -- a mapping literal's keys are its own, whatever its values interpolate --
-  # and running before the first request is what makes this a refusal rather
-  # than a report.
+  # Runs before the listing, so it binds no managed_users_match; the body's keys
+  # are readable without one.
   loop: "{{ managed_users_declared }}"
   loop_control:
     label: "{{ managed_users_service }}-managed-user"
@@ -232,10 +174,7 @@
   check_mode: false
   no_log: true
 
-# managed_users_list_json is expressed against managed_users_listing, so the
-# single parameter covers both the first listing and the post-creation one: the
-# role rebinds the name, the caller states the extraction once. beszel and
-# audiobookshelf wrap the list in a key, komga does not.
+# Expressed against managed_users_listing so it covers the re-read listing too.
 - name: "Resolve the complete managed-user listing: {{ managed_users_title }}"
   ansible.builtin.set_fact:
     managed_users_listing: "{{ managed_users_listing_response }}"
@@ -261,11 +200,8 @@
     label: "{{ managed_users_service }}-managed-user"
   no_log: true
 
-# The two conditions this replaces are the one decision all six HTTP-driven
-# managed-user roles share; filter_plugins/managed_user_identity.py explains why
-# they are also the only one, and carries them for every service. The errors it
-# returns name an API attribute and a count, never an identity, so they are safe
-# to print from a task running under no_log.
+# The shared decision lives in filter_plugins/managed_user_identity.py; its
+# errors never name an identity, so they are safe under no_log.
 - name: "Refuse ambiguous normalized managed identities: {{ managed_users_title }}"
   ansible.builtin.assert:
     that:
@@ -302,18 +238,10 @@
     label: "{{ managed_users_service }}-managed-user"
   no_log: true
 
-# item.password, literally, in both authenticate tasks. The declared user's own
-# vault password is the one value this role must not route through an
-# indirection: a parameter would make the check that proves the vault password
-# reaches this request a check on a name rather than on a value.
-#
-# That holds for a basic-auth probe. A service that proves the credential in a
-# request body instead (audiobookshelf) sets managed_users_authenticate_basic
-# false, which omits url_username and url_password entirely -- the request its
-# own file sent carried neither -- and its body reads the password from
-# managed_users_authenticating_user, bound below to the same declared user. What
-# proves that value reaches the body is behavioural: the audiobookshelf probes
-# in tests/media_probes_services.rb assert the exact login body the stub saw.
+# item.password literally: a parameter would make the vault-password check a
+# check on a name. Body-authenticating services (audiobookshelf) bind the same
+# user as managed_users_authenticating_user; tests/media_probes_services.rb
+# proves it.
 - name: "Authenticate existing managed users: {{ managed_users_title }}"
   ansible.builtin.uri:
     url: "{{ managed_users_api }}/{{ managed_users_authenticate_path }}"
@@ -330,11 +258,8 @@
   vars:
     managed_users_authenticating_user: "{{ item }}"
   register: managed_users_authentication
-  # A credential-bound service re-proves every credential in the verify phase
-  # too, because its verification compares the listed record against the id
-  # the credential authenticates as now, not only against the one reconcile saw.
-  # preflight (jellyfin) proves every existing credential before the service's
-  # role mutates anything else, and stops before creation.
+  # Bound services re-prove credentials in verify; preflight stops before
+  # creation.
   when:
     - managed_users_phase in ['preflight', 'reconcile'] or managed_users_bind_authenticated_ids | bool
     - not ansible_check_mode
@@ -356,8 +281,6 @@
         (managed_users_authenticate_identity_normalized | bool and
          managed_users_authenticate_identity | trim | lower ==
          item.item[managed_users_identity_attribute] | trim | lower)
-      # The authentication ran only for an identity with exactly one match, so
-      # the subscript below is always in range.
       - >-
         not managed_users_bind_authenticated_ids | bool or
         managed_users_authenticated_id ==
@@ -376,9 +299,8 @@
     - not ansible_check_mode
   no_log: true
 
-# Both id maps are written from the authenticate result only after the assert
-# above proved it names the listed record. The initial map keeps the first id
-# an identity proved in this play; the other always holds the latest.
+# Written only after the assert above; the initial map keeps the first id this
+# play proved.
 - name: "Bind authenticated existing managed-user identifiers: {{ managed_users_title }}"
   ansible.builtin.set_fact:
     managed_users_initial_authenticated_ids: >-
@@ -404,10 +326,6 @@
     - not ansible_check_mode
   no_log: true
 
-# A caller's own refusals that must hold before anything is created: they read
-# the matches this role resolved and the credentials it proved, and a shim can
-# only put tasks before or after the role. Gated here on the phases whose tasks
-# surround it, so the caller's file gates on nothing but its own subject.
 - name: "Run the caller's refusals before managed-user creation: {{ managed_users_title }}"
   ansible.builtin.include_tasks: "{{ managed_users_before_create_tasks }}"
   when:
@@ -473,10 +391,6 @@
     - not ansible_check_mode
   no_log: true
 
-# A caller's own refusals over the listing re-read after creation, run as soon
-# as that listing is bound and before this role reads anything out of it, so a
-# caller's refusal of a malformed re-read is the one an operator sees. Gated
-# exactly as the re-list is.
 - name: "Run the caller's refusals after managed-user creation: {{ managed_users_title }}"
   ansible.builtin.include_tasks: "{{ managed_users_after_creation_tasks }}"
   when:
@@ -491,9 +405,8 @@
       {{ managed_users_title }} did not return one exact safe newly created
       managed identity; reconciliation refuses any subsequent repair.
   vars:
-    # The re-read listing has to be as complete as the first before its
-    # identities mean anything, so the caller's listing conditions come first
-    # and the whole list short-circuits in order.
+    # Listing conditions first, so the list short-circuits on an incomplete
+    # re-read.
     managed_users_new_identity_conditions:
       - managed_users_identity_matches | length == 1
       - >-
@@ -553,8 +466,6 @@
         (managed_users_authenticate_identity_normalized | bool and
          managed_users_authenticate_identity | trim | lower ==
          item.item.item[managed_users_identity_attribute] | trim | lower)
-      # managed_users_listing is the re-read listing here, and the task before
-      # the authentication proved it holds exactly one such record.
       - >-
         not managed_users_bind_authenticated_ids | bool or
         managed_users_authenticated_id ==
@@ -601,13 +512,8 @@
     - not ansible_check_mode
   no_log: true
 
-# A credential-bound service, or one that asks (jellyfin), repairs against the
-# listing re-read after creation, so an identity created without its declared
-# properties is repaired in this run rather than the next one. For a bound
-# service the stable-identity refusal below is what makes that safe: a record
-# that changed between the two listings is refused, not repaired. Under --check
-# nothing was created or re-read, so the first listing stands, and the plan
-# below reports against it.
+# Repairs against the re-read listing so a record created without its properties
+# is fixed this run; the stable-identity refusal guards bound services.
 - name: "Re-resolve managed identities after creation: {{ managed_users_title }}"
   ansible.builtin.set_fact:
     managed_users_matches: >-
@@ -625,11 +531,8 @@
     - not ansible_check_mode
   no_log: true
 
-# The caller's repair condition, resolved once per declared identity into a
-# boolean the two tasks below read from `when:`. The inline conditional is what
-# makes it total: a caller's condition may index the single match, which does
-# not exist for an identity with none, and Jinja evaluates neither branch it did
-# not take.
+# The inline conditional keeps it total: a caller's condition may index a match
+# that does not exist.
 - name: "Resolve managed-user repair decisions: {{ managed_users_title }}"
   ansible.builtin.set_fact:
     managed_users_repairs: >-
@@ -660,9 +563,7 @@
     label: "{{ managed_users_service }}-managed-user"
   changed_when: true
 
-# Every declared identity, not only those about to be repaired: the old
-# per-service copies refused a replaced record whether or not it had drifted.
-# No fail_msg subscript, per the rule at the top of this file.
+# Every declared identity, not only those about to be repaired.
 - name: "Require stable authenticated managed identities: {{ managed_users_title }}"
   ansible.builtin.assert:
     that:
@@ -686,11 +587,8 @@
     - not ansible_check_mode
   no_log: true
 
-# A caller's own reads and refusals over the identities about to be repaired, run
-# after the stable-identity refusal and before the repair, so nothing it refuses
-# is ever patched. It runs in verify too, where no repair follows, because the
-# final verification is what it then feeds; --check included, like the reads a
-# review has to make. Its tasks see the matches the repair will use.
+# Runs in verify too, feeding the final verification; its tasks see the repair's
+# matches.
 - name: "Run the caller's refusals before managed-user repair: {{ managed_users_title }}"
   ansible.builtin.include_tasks: "{{ managed_users_before_repair_tasks }}"
   when:
@@ -722,9 +620,6 @@
   changed_when: true
   no_log: true
 
-# A caller's own verifications, run in the verify phase immediately before this
-# role's, so a caller whose verification covers more than the listed record keeps
-# its verdicts ahead of the exact-record one.
 - name: "Run the caller's verifications before exact managed-user verification: {{ managed_users_title }}"
   ansible.builtin.include_tasks: "{{ managed_users_before_verify_tasks }}"
   when:

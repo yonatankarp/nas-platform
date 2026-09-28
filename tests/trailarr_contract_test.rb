@@ -1,25 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 #
-# Behaviour of the Trailarr service contract's two Ruby programs.
-#
-# Until #147 both lived in `<<'RUBY'` heredocs inside tests/contracts/trailarr.sh.
-# `sh -n` reads a quoted heredoc as opaque text, so the static half was only
-# ever executed by `tests/contracts/trailarr.sh static` and the runtime half only
-# by an integration lane with Docker, a converged Trailarr and a real vault.
-# tests/contracts/trailarr-static.rb and tests/contracts/trailarr-runtime.rb are
-# files now, so both are reachable here.
-#
-# Three layers -- static, runtime and wrapper -- for the same reasons
-# tests/seerr_contract_test.rb states, and structured the same way. The
-# duplication between the two files is deliberate for the length of #147: a
-# shared helper is named by no wrapper, so policy_mutation_support.rb's
-# derivation cannot reach it and it would need an explicit BASE_FIXTURE_PATHS
-# entry -- a change to the mutation harness's contract that does not belong
-# inside a contract extraction. It also cannot be derived honestly from two
-# examples when the remaining contracts are known to diverge. The consolidation
-# lands as its own PR after the last contract.
-#
+# Behaviour of the Trailarr service contract's two Ruby programs and its wrapper,
+# in three layers like tests/seerr_contract_test.rb (#147).
 # Run with --self-test to plant a regression in each program and in the wrapper.
 
 require "fileutils"
@@ -49,20 +32,9 @@ RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "trailarr-runtime.rb")
 SUCCESS_LINE = "trailarr static contract: declared trailer writer ownership holds"
 MODE_REFUSAL = "trailarr contract accepts only static or run"
 
-# Exactly what the static program reads, plus the shared flatten_tasks it
-# requires through PLATFORM_CONTRACT_REPO_DIR. Two things about this list are
-# findings rather than bookkeeping:
-#
-#   * roles/arr/defaults/main.yml is a CROSS-ROLE read (trailarr-static.rb:133)
-#     that the program's own `required` list never checks, so an absent Arr
-#     defaults file is a crash rather than a diagnostic. Found empirically --
-#     the fixture without it failed every row with a Psych sysopen trace, not by
-#     reading the program. Recorded, not fixed: this change moves code.
-#   * trailarr-static.rb:207 reads the role's task files through a glob
-#     (`Dir[roles/trailarr/tasks/*.yml]`) rather than a stated list, so a task
-#     file added to the role enters scope without an edit. That is the good
-#     shape, and it happens to hold exactly the five files `required` names
-#     today -- checked, so the fixture is not quietly narrower than production.
+# Exactly what the static program reads, plus the shared flatten_tasks. Note
+# roles/arr/defaults/main.yml is a cross-role read the program's `required` list
+# never checks, so omitting it crashes every row rather than failing one.
 FIXTURE_FILES = %w[
   roles/trailarr/defaults/main.yml
   roles/trailarr/meta/argument_specs.yml
@@ -175,10 +147,7 @@ STATIC_ROWS = [
     expects: "Trailarr must probe its unauthenticated status route with curl"
   },
   {
-    # The relation the contract exists to hold, planted on the arr's side so
-    # only the mount-to-root-folder comparison can see it: the Compose mount
-    # still reads as declared, and Radarr's root folder has moved out from
-    # under it.
+    # Planted on the arr's side so only the mount-to-root-folder comparison sees it.
     name: "an arr root folder the Trailarr mount no longer matches",
     break: lambda { |root|
       mutate_text(root, "roles/arr/defaults/main.yml",
@@ -217,10 +186,8 @@ def static_failures(program, rows = STATIC_ROWS)
 end
 
 # --- runtime layer ---------------------------------------------------------
-#
-# The runtime half takes NO arguments: every input arrives in the environment.
-# So the sandbox is environment plus PATH stubs plus one HTTP fixture plus the
-# application's own /config/.env, and each row moves exactly one of them.
+# The runtime half takes no arguments: each row moves one of environment, PATH
+# stubs, the HTTP fixture or the application's /config/.env.
 
 API_KEY = "trailarr-contract-api-key-0000000"
 USERNAME = "nasadmin"
@@ -539,10 +506,8 @@ def stdin_failures(wrapper_source: File.read(CONTRACT))
   end
 end
 
-# The runtime half is reached by `exec`, so its redirect needs its own probe.
-# The probing shell's own status is `cat`'s, not the probe's, so it says nothing
-# here: the probe's marker appearing IS the proof the exec was reached, and the
-# static success line must be absent or run mode exited at the mode gate.
+# The runtime half is reached by `exec`; the probe's marker appearing is the proof,
+# and the static success line must be absent.
 def runtime_stdin_failures(wrapper_source: File.read(CONTRACT))
   with_contract_copy(runtime: STDIN_PROBE, wrapper: wrapper_source) do |contract, copy_root|
     environment = {
@@ -560,37 +525,17 @@ def runtime_stdin_failures(wrapper_source: File.read(CONTRACT))
   end
 end
 
-# Each name is refused with the WRAPPER'S OWN message, and that is what is
-# asserted -- never the shell's own wording, which differs between bash
-# ("parameter null or not set") and dash ("parameter not set or null"), and never
-# the line number, which any edit to the wrapper moves.
+# Asserts the wrapper's own refusal message, never the shell's wording (bash and
+# dash differ) or a line number.
 REQUIRED_RUN_ENV = %w[
   PLATFORM_CONTRACT_VAULT_FILE
   PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
   PLATFORM_DOCKER_ROOT
 ].freeze
 
-# Stands in for the runtime half throughout this helper, because every
-# invocation here must end in a refusal by the wrapper *before* the exec that
-# would reach it. Against an intact wrapper the stub is therefore never run, and
-# substituting it changes nothing this helper observes: the wrapper's `:?` checks
-# sit between the static program and the exec, so the real static half still runs
-# unchanged on every row.
-#
-# A planted regression that drops one of the `:?` requirements is what makes the
-# exec reachable, and against the shipped runtime program that meant a wait: no
-# Trailarr is listening on the port, so it spent its whole readiness budget --
-# 120 seconds, twice over -- proving what the row already knew. That was the
-# entire floor of this file's self-test, 247s of it unmoved by widening the case
-# pool, because concurrency overlaps waits without shortening them. #328 cut the
-# budget to ten seconds for these rows; the stub deletes the wait instead, which
-# is what the row is entitled to: reaching the runtime half at all is already the
-# regression.
-#
-# It exits 0 deliberately, so a mutant that reaches it trips BOTH assertions
-# below -- the wrapper accepted an environment it must refuse, and it did so
-# without its own message -- and warns first, so the failure text says which
-# happened rather than showing an empty capture.
+# Stands in for the runtime half: an intact wrapper refuses before the exec, so it
+# never runs, and a mutant that reaches it skips a pointless readiness wait (#328).
+# It exits 0 and warns, so such a mutant trips both assertions with a clear message.
 RUNTIME_REFUSAL_STUB = <<~'STUB'
   warn "runtime stub reached: the wrapper did not refuse this environment"
   exit 0
@@ -617,9 +562,7 @@ def run_env_failures(wrapper_source: File.read(CONTRACT))
                   "#{output.strip.inspect}" unless output.include?("#{name} is required")
     end
 
-    # The Mac fallback branch, which nothing else in the suite reaches:
-    # tests/mac/run.sh exports PLATFORM_MAC_VAULT_FILE, and the `:=` pair above
-    # the `:?` pair is what lets it stand in for the contract names.
+    # The Mac fallback branch: the `:=` pair lets PLATFORM_MAC_VAULT_FILE stand in.
     stdout, stderr, status = Open3.capture3(
       full.merge("PLATFORM_CONTRACT_VAULT_FILE" => nil,
                  "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => nil,
@@ -675,9 +618,8 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
       (stdout + stderr).include?("missing services/trailarr/compose.mac.yml")
   end
 
-  # The branch every deployment actually takes: PLATFORM_CONTRACT_REPO_DIR unset,
-  # so the programs and the inspected tree both come from the script's own
-  # checkout. That is the only path in production.
+  # The production path: PLATFORM_CONTRACT_REPO_DIR unset, everything from the
+  # script's own checkout.
   with_contract_copy do |contract, copy_root|
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => nil }, contract, "static"
@@ -699,10 +641,8 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures
 end
 
-# The two-roots property, stated as an OUTCOME rather than as the wrapper's
-# text. These are the invariant rows: a before/after capture diff can only show
-# differences, so a property that must stay identical is invisible in it. They
-# are asserted here instead, and they are what would have caught #251's defect.
+# The two-roots property as an outcome: invariant rows a capture diff cannot
+# show (#251).
 def two_roots_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   with_contract_copy(wrapper: wrapper_source) do |contract|
@@ -771,11 +711,7 @@ PROGRAM_MUTATIONS = [
     rows: ["a container user overriding the image's own"]
   },
   {
-    # The whole statement, because `service.dig("environment", name) == expected`
-    # appears three times in this program -- the identity pair, the required
-    # credentials and the pinned-off switches all share that shape. The
-    # occurrence count caught it; a bare `sub` would have planted in whichever
-    # came first.
+    # The whole statement: that `dig ... == expected` shape appears three times.
     label: "the platform identity environment check",
     program: :static,
     from: 'failures << "Trailarr must take the platform identity as #{name}" unless
@@ -866,9 +802,8 @@ PROGRAM_MUTATIONS = [
     from: "File.file?(APPLICATION_ENV)",
     to: "true",
     rows: ["no application environment written at all"],
-    # Without the file the read below it raises rather than reporting, so the
-    # row still refuses and now says why in a stack trace. That is the
-    # regression, and pinning the trace would freeze it.
+    # Without the file the read raises a stack trace; pinning the trace would freeze
+    # that regression.
     detects: "refused for the wrong reason"
   },
   {
@@ -993,11 +928,8 @@ WRAPPER_MUTATIONS = [
 if ARGV.include?("--self-test")
   mismatches = []
 
-  # Every plant is prepared on the main thread, before the pool. `plant` and
-  # `rows_named` abort with a sentence naming what they could not find, and an
-  # abort inside a worker raises SystemExit there: the thread dies without
-  # recording its result and the pool's own `collected.fetch` then reports a
-  # KeyError instead of that sentence.
+  # Plants are prepared on the main thread: an abort inside a worker dies silently
+  # and surfaces as a KeyError instead of its sentence.
   program_cases = PROGRAM_MUTATIONS.map do |mutation|
     canonical = mutation.fetch(:program) == :static ? STATIC_PROGRAM : RUNTIME_PROGRAM
     rows = mutation.fetch(:program) == :static ? STATIC_ROWS : RUNTIME_ROWS

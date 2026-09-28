@@ -27,11 +27,8 @@
       production deployment poller first: the prune is installed from, and
       scheduled beside, that account's controller checkout.
 
-# The prune holds the poller's deployment lock for its whole run, so the
-# directory that lock lives in has to be the poller's own. Stated here rather
-# than created, because a prune that invented its own lock directory would
-# serialise against nothing and could remove an image between a deployment's
-# pull and the container that references it.
+# The poller's own lock directory: a prune with its own could remove an image
+# between a deployment's pull and its container start.
 - name: Require the deployment lock directory the prune serialises against
   ansible.builtin.stat:
     path: "{{ image_prune_deployment_lock | dirname }}"
@@ -47,10 +44,7 @@
       has no deployment to serialise against. Install the production deployment
       poller first.
 
-# The prune runs from cron with a deliberately narrow PATH, so it cannot rely on
-# the operator's login environment. NAS firmwares scatter binaries across
-# /usr/local, /usr/builtin and /opt, so discover them here instead of assuming
-# /usr/bin, and record the result in the prune's configuration.
+# Cron has a narrow PATH and NAS firmwares scatter binaries, so discover them.
 - name: Locate the tools the prune must run
   ansible.builtin.shell:
     cmd: command -v {{ item | quote }}
@@ -59,9 +53,7 @@
   loop: [docker, curl]
   changed_when: false
   failed_when: false
-  # A read that must really happen: skipped under --check, the assertion below
-  # would consume a result that does not exist and the review would fail with a
-  # template error instead of reporting what the install would do.
+  # Must run under --check, or the assertion below reads a result that does not exist.
   check_mode: false
 
 - name: Require every tool the prune depends on
@@ -90,11 +82,8 @@
       {{ (image_prune_tools.values() | map('dirname') | list
           + ['/usr/bin', '/bin']) | unique | join(':') }}
 
-# Some NAS firmwares ship BusyBox crontab without the setuid bit and keep the
-# spool root-owned, so an unprivileged account cannot schedule anything. Probe
-# here rather than discovering it at the final task, after everything else has
-# already been installed. An empty crontab is a success: the implementations
-# differ on exit status but say so on stderr.
+# Some firmwares ship a non-setuid BusyBox crontab. An empty crontab is a
+# success: implementations differ on exit status but say so on stderr.
 - name: Check whether this account can manage its own crontab
   ansible.builtin.command:
     argv: [crontab, -l]
@@ -151,8 +140,7 @@
     dest: "{{ image_prune_launcher_path }}"
     mode: "0700"
 
-# Before the configuration that names them, so a configuration never points at
-# a curl config that was not rendered. Each carries one application's token.
+# Before the configuration that names them.
 - name: Render the protected Pushover publisher configurations
   ansible.builtin.template:
     src: pushover.curl.j2
@@ -189,9 +177,7 @@
   tags:
     - image_prune_cron
 
-# Reads the installed configuration through the installed script, so a prune
-# that could not start is a failed installation rather than a silence discovered
-# a week later. --status touches no image and takes no lock.
+# --status touches no image and takes no lock.
 - name: Verify the installed prune reads its own configuration
   ansible.builtin.command:
     argv: ["{{ image_prune_launcher_path }}", "--status"]

@@ -1,8 +1,4 @@
 ---
-# The managed libraries. Renames adopted libraries and waits for their
-# replacement identities, creates absent ones, removes unmanaged extra paths,
-# repairs owned options, and refreshes the server once if anything changed.
-
 - name: Report planned Jellyfin managed library renames
   ansible.builtin.debug:
     msg: "JELLYFIN_PLAN_LIBRARY_RENAME {{ item.desired.name }}"
@@ -36,10 +32,8 @@
   changed_when: true
   no_log: true
 
-# Measured on 10.11, which can return from a virtual-folder rename before the
-# replacement CollectionFolder (and its path-derived ItemId) is visible. Do not
-# carry the pre-rename identity into an ItemId-scoped mutation. Unre-measured on
-# 12.1; the wait is a read-back poll, so it costs one request if 12 fixed it.
+# A rename can return before the replacement CollectionFolder (and its ItemId)
+# is visible, so never carry the pre-rename identity into an ItemId mutation.
 - name: Wait for renamed Jellyfin managed library identities
   ansible.builtin.uri:
     url: "{{ jellyfin_api }}/Library/VirtualFolders"

@@ -1,27 +1,9 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# The untagged idempotence-check lane is decomposed into shards, and this is what
-# holds the decomposition together.
-#
-# docs/ci-performance-history.md records why a guard has to exist before the partition does:
-# sharding
-# is an unusually efficient way to manufacture the defect this repository keeps
-# closing. Drop a tag from the split and nothing converges it, every shard passes,
-# and the gate goes green *faster* than it did before. The static gate answered
-# that with tests/gate_manifest_coverage_test.rb, which declares the manifest as
-# literal lists and refuses any drift in either direction. This is the same shape
-# for a different partition, with one difference that matters: the universe here
-# is *derived* from site.yml rather than restated. A restated list would have to
-# be edited when a service is added, and adding a service already touches 59
-# files -- the sixtieth would be the one nobody edits, and its symptom would be
-# silence.
-#
-# What is deliberately *not* asserted is exclusivity. The static shards refuse a
-# check claimed twice because running it twice is waste; here a prerequisite has
-# to repeat -- bindery reads the arr APIs, seerr reads arr and jellyfin -- so the
-# same tag legitimately converges in several shards. Duplication costs time,
-# omission costs coverage, and only one of those is silent.
+# Every site.yml tag must be converged by some idempotence shard: a dropped tag makes
+# the gate greener and faster. The universe is derived from site.yml, because a restated
+# list is the one nobody edits. A tag in several shards is fine; omission is not.
 #
 # Run alone:  ruby tests/idempotence_shard_partition_test.rb
 # Self-test:  ruby tests/idempotence_shard_partition_test.rb --self-test
@@ -32,33 +14,23 @@ REPO_ROOT = File.expand_path("..", __dir__)
 SITE_PATH = File.join(REPO_ROOT, "site.yml")
 SUITES_PATH = File.join(REPO_ROOT, "tests/ci/suites.conf")
 
-# Tags every shard converges because every service role needs them, plus the ones
-# a shard never has to name. `preflight` carries `always`, so it runs under any
-# --tags whatsoever and belongs to no shard; the shared prerequisites are named
-# because they are the shards' floor rather than their content.
+# `preflight` carries `always`, so it runs under any --tags and belongs to no shard.
 ALWAYS_TAGS = %w[always preflight].freeze
 SHARED_PREREQUISITE_TAGS = %w[host_prep deployment_bundle].freeze
-# A stated number, for the reason tests/gate_manifest_coverage_test.rb states one:
-# a partition that should hold every shard below and holds one satisfies every
-# non-emptiness test there is. This constant is the only restatement of the
-# count, which is why it is a constant and not a comment.
+# Stated, not derived: a partition collapsed into one shard passes every other test.
 EXPECTED_SHARD_COUNT = 6
 
 def site_tag_universe(site_source)
   play = YAML.safe_load(site_source, aliases: true).first
   tags = []
-  # A role's own tag is the first one it declares; the rest are aliases naming a
-  # group (media, monitoring, documents, media_acquisition_phase2) that a shard
-  # has no reason to converge by name.
+  # A role's own tag is its first; the rest are group aliases.
   play.fetch("roles").each do |entry|
     declared = Array(entry["tags"])
     next if (declared & ALWAYS_TAGS).any?
 
     tags << declared.first
   end
-  # post_tasks are the half a roles-only sweep misses, and deployment_summary is
-  # the only one: it is tagged rather than `always`, so an untagged run reaches it
-  # and a sharded run reaches it only if some shard names it.
+  # deployment_summary is a tagged post_task, reached by a sharded run only if named.
   Array(play["post_tasks"]).each do |task|
     declared = Array(task["tags"])
     next if (declared & ALWAYS_TAGS).any?
@@ -123,17 +95,8 @@ site_source = File.read(SITE_PATH)
 suites_source = File.read(SUITES_PATH)
 
 if ARGV.include?("--self-test")
-  # Each row plants a defect the checker must catch. The first is the one the
-  # whole file exists for -- a shard silently losing a tag -- and it is planted by
-  # deleting a tag from a shard rather than by editing the universe, because that
-  # is the direction a rebalance actually goes wrong in.
-  # Anchored to the shard rows by name. The first three plants were written as
-  # bare substring edits -- ",immich\n", ",komga\n" and one on the beszel row -- and every
-  # one of them landed on the *service* row of the same name, which appears
-  # earlier in the file, so `sub` mangled a row this checker does not read and the
-  # self-test reported three defects undetected. That is the failure this
-  # repository calls a vacuous pass, caught here only because the self-test ran
-  # before the checker was trusted.
+  # Plants are anchored to shard rows by name: bare substring edits landed on the
+  # earlier service row of the same name and were silently undetected.
   edit_shard = lambda do |source, suite, &change|
     source.sub(/^(#{Regexp.escape(suite)}\s+untagged\s+)(\S+)$/) do
       "#{Regexp.last_match(1)}#{change.call(Regexp.last_match(2))}"

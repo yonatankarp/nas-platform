@@ -8,10 +8,7 @@
     deployment_target_require_current_release: true
     deployment_target_extra_paths: []
 
-# Redacted: the conditions name the Seerr API key, the Jellyfin administrator
-# pair and the arrs' keys. Compose reads the rendered .env line by
-# line, so a value carrying a newline would silently truncate the credential
-# rather than fail.
+# Redacted. A newline in a value would silently truncate it in the .env.
 - name: Require env-safe Seerr credentials
   ansible.builtin.assert:
     that:
@@ -36,13 +33,7 @@
     mode: "0600"
   no_log: true
 
-# The block exists for one thing the rescue does with the failure: it hands the
-# deployment's own message to roles/container_health, which either explains it in
-# terms of the container state Docker reports or re-raises it unchanged.
-# Compose's `--wait` fails a crash-looping container with "container ... is
-# unhealthy", which says nothing about why. roles/bindery/tasks/main.yml carries
-# the long form of this argument; #509 built the mechanism and #537 wired the
-# remaining eleven single-`up` roles into it.
+# The rescue hands the failure to roles/container_health to explain or re-raise.
 - name: Deploy Seerr, catching a container that runs but never serves
   block:
     - name: Deploy Seerr
@@ -64,16 +55,7 @@
           {{ ansible_failed_result.msg
              | default('the Seerr deployment failed and reported no message') }}
 
-# Immediately after the deployment and before everything that trusts it. A
-# container in `Restarting` still appears in `docker container ls --quiet`, so
-# the CPU verification below would sail straight past one and the readiness probe
-# after it would fail on a timeout that names nothing (#510).
-#
-# Detect without refusing, one bounded force-recreate of only what Docker says is
-# stuck, then the verdict. roles/container_health/tasks/recover.yml is the one
-# copy of that sequence and carries the argument for each of its three properties;
-# the deployment above stays here because it is what declares the release this
-# repairs (#646).
+# Before anything that trusts the deployment (#510, #646).
 - name: Recover Seerr from a container that runs but never serves
   ansible.builtin.include_role:
     name: container_health
@@ -93,11 +75,7 @@
     tasks_from: report
   vars:
     deployment_report_service: Seerr
-    # Both Compose results, because a force-recreate that repaired a wedged
-    # container changed the deployment as surely as the deploy above did, and a
-    # report gated on the deploy alone would say nothing on the one converge an
-    # operator most wants to hear about. It is registered even when skipped, and
-    # `default({})` covers the paths that never reach it at all.
+    # A repairing force-recreate is a change too.
     deployment_report_changed: >-
       {{ (seerr_deploy is changed)
          or ((container_health_wedged_recreate | default({})) is changed) }}
@@ -109,10 +87,7 @@
     container_cpu_service_name: seerr
     container_cpu_project_name: "{{ seerr_compose_project_name }}"
 
-# The image ships no HEALTHCHECK of its own, so the Compose file supplies one
-# and this loop is the second half of the same guard: docker_compose_v2 returns
-# as soon as the container is running, and Seerr takes several seconds after
-# that to answer HTTP.
+# Seerr answers HTTP several seconds after the container is running.
 - name: Wait for Seerr application health
   ansible.builtin.uri:
     url: "{{ seerr_status_url }}"
@@ -165,11 +140,7 @@
   ansible.builtin.include_tasks: reconcile_users.yml
   when: seerr_configured | bool
 
-# Seerr is the most exposed service in the set if it is ever published beyond
-# the LAN, so verification reads what an anonymous caller can see as well as
-# what the key can. /api/v1/settings/public answers without a credential both
-# before and after the bootstrap, and it carries exactly the three sign-in
-# switches the design's clause about newly discovered users rests on.
+# Verification also reads what an anonymous caller sees, incl. the sign-in switches.
 - name: Verify the Seerr service endpoint
   tags: [platform_verify_seerr]
   ansible.builtin.uri:
@@ -249,9 +220,7 @@
   check_mode: false
   no_log: true
 
-# Redacted: vault_managed_jellyfin_users carries every managed user's plaintext password
-# alongside the usernames this reads. The assertion below stays readable, which
-# is why the names are resolved into a fact here instead of inside it.
+# Redacted: the list carries plaintext passwords; resolved here so the assert stays readable.
 - name: Resolve the declared Seerr household identities
   tags: [platform_verify_seerr]
   ansible.builtin.set_fact:
@@ -266,29 +235,21 @@
       - seerr_verify_status.json.version | default('') | length > 0
       - seerr_verify_anonymous.status | default(0) | int == 401
       - seerr_verify_authenticated.status | default(0) | int == 200
-      # The takeover window is closed exactly when a user row with id 1 exists:
-      # without it a correct key resolves to a user that is not there and the
-      # request above would answer 403 rather than 200.
+      # User id 1 existing is what closes the takeover window.
       - >-
         seerr_verify_users.json.results | default([])
         | selectattr('id', 'equalto', 1) | map(attribute='permissions') | list
         == [seerr_owner_permissions]
       - not seerr_verify_public.json.localLogin | default(true) | bool
       - not seerr_verify_public.json.newPlexLogin | default(true) | bool
-      # Not a typo and not an oversight. mediaServerLogin is the switch that
-      # enables Jellyfin sign-in at all, not the one that auto-creates users:
-      # with it false the application answers every caller 500 "Jellyfin login
-      # is disabled", the two imported household identities included, and with
-      # localLogin false as well nobody could reach the service.
+      # Must be true: false disables Jellyfin sign-in entirely.
       - seerr_verify_public.json.mediaServerLogin | default(false) | bool
       - seerr_verify_public.json.mediaServerType | default(0) | int == seerr_media_server_type
       - seerr_verify_public.json.initialized | default(false) | bool
       - seerr_verify_authenticated.json.defaultPermissions | default(-1) | int == 0
       - seerr_verify_jellyfin.json.ip | default('') == seerr_jellyfin_hostname
       - seerr_verify_jellyfin.json.port | default(0) | int == seerr_jellyfin_port
-      # Every declared household identity is present and holds exactly REQUEST
-      # plus AUTO_APPROVE. Written as an emptiness test rather than a lookup so
-      # a missing row reports rather than raising.
+      # Emptiness test rather than a lookup, so a missing row reports instead of raising.
       - >-
         seerr_verify_users.json.results | default([])
         | selectattr('jellyfinUsername', 'defined')

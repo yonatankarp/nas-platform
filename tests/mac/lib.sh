@@ -122,116 +122,15 @@ mac_validate_integration_callback() {
   ' "$mac_gateway" 2>/dev/null || mac_die 'integration Docker host address is invalid'
 }
 
-# Every play this harness launches, on either proof platform, converges from the
-# disposable-lane Compose overrides -- and every one of those replaces a list
-# with Compose's own `!override` tag, which landed in Compose 2.24.4.
-#
-# nas_compose_minimum is 2.18.0: the floor community.docker.docker_compose_v2
-# documents, asserted by roles/preflight on every host. That is the right floor
-# for the NAS, whose canonical compose.yml files carry no tag at all, and the
-# wrong one here. A Mac at 2.18.0 passed preflight and then died at the first
-# service it converged, not the one anybody was changing, on a Compose that
-# cannot parse that service's compose.mac.yml.
-#
-# It is requested by the lane rather than written into
-# inventory/group_vars/mac_hosts/main.yml for two reasons, and the first is
-# mechanical: tests/policy_platform_test.rb refuses any variable in a host group
-# that is not a machine fact or a PLATFORM_* port lookup, so the line would not
-# survive the gate. The second is that this is not a fact about the machine at
-# all -- it is a property of the Compose files this lane selects, which is
-# exactly the shape of state #295 says a lane must request for itself.
-#
-# nextcloud_deployment_enabled is the second, and it is here rather than in
-# inventory for the same two reasons. #500 landed Nextcloud gated off, so a lane
-# that did not ask for it would deploy nothing, verify nothing, and report a full
-# pass over the other services while this one was never started.
-# tests/integration_controller.sh asked for it per suite for exactly that reason;
-# this lane has no suites, so it asks once, here.
-#
-# Its platform default has since flipped true, so this request stays correct and
-# is now redundant -- and nothing had to come back to this line to make it so,
-# which is the property that made requesting it here right in the first place.
-# The controller's per-suite version had the opposite property and #564 deleted
-# it: an override that says `false` where inventory says `true` is not redundant
-# but wrong, and it kept Nextcloud out of smoke and idempotence-check for three
-# days. A lane requesting the state it converges is right; a lane withholding a
-# state production runs is not.
-#
-# Deleting it now would be loud rather than quiet, because #500 landed the hooks
-# in the same change as the gate: verify/30-services.sh runs the Nextcloud
-# contract unconditionally, and its census fails on four containers that were
-# never created. The hooks are what make a missing stack visible. This line is
-# what makes the stack exist, and it is worth keeping for that alone.
-#
-# Seafile carried the same request until #501 removed the service. The reasoning
-# above is its inheritance, and docs/dossier-seafile.md is where the rest of it
-# lives.
-#
-# adguard_deployment_enabled was the third of these until #577 removed the
-# service. What it bought is worth keeping in mind for the next gated stack:
-# written here rather than inherited, the lane went on converging what it
-# claimed to converge on the day the platform switch was flipped back off.
-#
-# Vaultwarden needs two of its own, and neither is about this lane's opinion of
-# the service.
-#
-# vaultwarden_domain, because the role DERIVES it from platform_public_host and
-# refuses a bare IPv4 literal -- WebAuthn's relying-party identifier has to be a
-# domain, so a key enrols against an address and then never authenticates.
-# inventory/mac.yml sets platform_public_host to 127.0.0.1, which is exactly that
-# literal, so without this the role fails at the first task of its enabled path.
-# Measured against the role's own assertion: 127.0.0.1 fails, a name passes.
-# `.invalid` is reserved and can never resolve, which is the point -- the lane
-# reaches the service on 127.0.0.1 like every other, and this is only the origin
-# the server declares.
-#
-# An EMPTY Tailscale candidate list, because the default one starts at
-# /usr/local/bin/tailscale, and on a Mac that path is not hypothetical: it is
-# where an Intel Homebrew puts its binaries, and where Tailscale's own macOS
-# instructions have the operator symlink the CLI out of the app bundle. It was
-# ABSENT on the Apple Silicon Mac this was measured on, whose Homebrew lives at
-# /opt/homebrew -- which is the reason to state the guard rather than to test it
-# here: the laptop it has to hold on is the one that does have that path. On such
-# a laptop this would make the disposable lane run
-# `tailscale serve --bg` against their REAL tailnet, pointing a public HTTPS front
-# at a sandbox port that disappears when the lane cleans up, and then fail the run
-# when the sandbox's own `.invalid` origin did not answer through it. The sandbox
-# is disposable and the tailnet is not. An empty list takes the role's absent
-# path, which is a reporting skip it already takes on every CI lane. roles/dozzle
-# reads a list of its own for the alert relay's tailnet TCP forward, emptied here
-# for the same reason: it would otherwise forward a port on the operator's real
-# tailnet to a sandbox that is about to disappear.
-#
-# dozzle_pushover_api_url for the reason tests/integration_controller_lib.sh
-# records at length: the alert relay POSTs to it on every container event Dozzle
-# reports, and both Dozzle health rules carry cooldown: 0 against every
-# container, so the role default would page the household's real devices off
-# this proof's own disposable containers. The port is
-# tests/contracts/dozzle.sh's PLATFORM_DOZZLE_PUSHOVER_PORT, where the notify
-# mode's recorder listens; tests/dozzle_contract_test.rb refuses the two
-# disagreeing.
-#
-# deployment_pushover_api_url for the same account reached a second way:
-# every recreated service's deployment report. This lane
-# runs with the operator's REAL vault, so without it every converge here would
-# push to the household's devices. A port nothing listens on, because nothing
-# here asserts those notifications; tests/deployment_summary_test.rb refuses
-# this function losing the line.
-#
-# seerr_pushover_access_token and seerr_pushover_user_key for the same account
-# reached a third way, and the one that cannot be redirected: Seerr's Pushover
-# agent posts to an address hardcoded in the application. Nothing automated here
-# raises a request, but tests/mac/manual-review.md asks the operator to, and an
-# auto-approved request is one of the events the agent sends. Seerr sends nothing
-# through an agent with either value empty, so blanking both closes it and keeps
-# the real pair out of the sandbox's mode-0644 settings.json.
-# tests/seerr_contract_test.rb refuses this function losing the line.
-#
-# karakeep_deployment_enabled for the reason nextcloud's is here: the lane
-# requests the state its hooks account for rather than inheriting it, so turning
-# the platform switch back off does not quietly drop the service from a lane that
-# still names it. Karakeep needs nothing else: inventory/mac.yml's 127.0.0.1 is a
-# valid NEXTAUTH_URL host, and its port comes from the roster below.
+# Lane-requested state, not inventory (tests/policy_platform_test.rb refuses it there):
+# - nas_compose_minimum: the mac/integration overrides use `!override` (Compose 2.24.4).
+# - *_deployment_enabled: the lane requests the stacks its hooks account for.
+# - vaultwarden_domain: the role refuses an IPv4 literal (WebAuthn needs a domain).
+# - empty Tailscale candidates (Vaultwarden and Dozzle): otherwise a Mac with
+#   /usr/local/bin/tailscale would run `tailscale serve` against the REAL tailnet.
+# - *_pushover_*: this lane uses the REAL vault; never page the household's devices.
+#   Dozzle's port is tests/contracts/dozzle.sh's recorder; the dozzle_contract,
+#   deployment_summary and seerr_contract tests refuse losing these lines.
 mac_ansible_playbook() {
   set -- "$@" -e nas_compose_minimum=2.24.4 -e nextcloud_deployment_enabled=true \
     -e vaultwarden_deployment_enabled=true \
@@ -278,9 +177,7 @@ mac_compose_files() {
   printf '%s\n' "$@"
 }
 
-# Both disposable lanes deploy through a Compose project namespace and name
-# every container after it, so one roster serves the Mac and integration proof
-# platforms alike. Only production keeps the canonical Compose names.
+# Both disposable lanes name every container after the Compose project.
 mac_target_container_names() {
   mac_project=$1
   case ${PLATFORM_PROOF_PLATFORM:-mac} in
@@ -305,61 +202,29 @@ mac_target_container_names() {
   esac
 }
 
-# Every service the disposable lanes publish a host port for, in the one order
-# everything derived from this roster uses: ports are allocated in this order,
-# handed to report.rb in this order, exported in this order, reserved in this
-# order, and read back from the resume state in this order.
-#
-# tests/mac/run.sh used to spell the roster out ten times, and -- worse -- in two
-# divergent hand-written orders: the positional integration handoff listed the
-# original eight services alphabetically and appended the rest, while allocation
-# and the exports used the order the services were added. Nothing enforced that
-# the two agreed, and a mismatch does not fail: the positional unpack would just
-# bind every service to another service's port in silence. One order removes
-# that failure mode rather than documenting it. It is safe to have exactly one
-# because the positional handoff is internal to read_integration_ports and its
-# single consumer, and the on-disk integration ports file is keyed by name, so
-# no caller outside that function can observe an order at all.
-# An entry is a PORT NAME rather than a service, and five of them are: radarr,
-# sonarr, prowlarr and bazarr are containers inside the `arr` manifest service
-# and sabnzbd is one inside `downloaders`.
-#
-# A SECOND PORT OF A SERVICE ALREADY ON THE ROSTER takes a second entry, spelled
-# with an underscore -- `adguard_dns` was the only one the platform has had, and
-# #577 removed it with the service. The derivations below still support it and
-# the rule is kept rather than narrowed back: they turn such an entry into
-# `<name>_port`, the variable the role itself reads, and PLATFORM_<NAME>_PORT,
-# which is what tests/mac/run-contract.sh hands the contract, so any other
-# spelling would need a translation somewhere and a translation is a second
-# authority on where the service listens. tests/policy_mac_test.rb holds the
-# roster, report.rb's validated field list and report.rb's option parser to that
-# one transformation, and holds it whether or not an entry currently uses it.
+# Every service with a published host port, in the one order allocation, report.rb,
+# exports and the resume state all use. Entries are port names (radarr..sabnzbd are
+# containers in arr/downloaders); a second port of a service takes `<name>_<suffix>`,
+# which tests/policy_mac_test.rb holds report.rb to.
 MAC_SERVICE_PORT_ORDER='beszel dozzle audiobookshelf komga jellyfin immich
 paperless radarr sonarr prowlarr bazarr sabnzbd pinchflat kapowarr bindery
 trailarr seerr nextcloud vaultwarden karakeep'
 
-# How many services the roster holds, for callers validating a list length
-# against it. Resetting the positional parameters inside a function does not
-# touch the caller's.
+# How many services the roster holds.
 mac_service_port_count() {
   # shellcheck disable=SC2086
   set -- $MAC_SERVICE_PORT_ORDER
   printf '%s\n' "$#"
 }
 
-# The resolved host port of every roster service, one per line, in roster order.
-# Reads the "<service>_port" shell variables the runner has already resolved; a
-# service on the roster with no resolved port aborts by name instead of
-# contributing an empty field to a docker filter or a port reservation.
+# The resolved port of every roster service, one per line; a missing one aborts by name.
 mac_service_ports() {
   for mac_port_service in $MAC_SERVICE_PORT_ORDER; do
     eval "printf '%s\\n' \"\${${mac_port_service}_port:?${mac_port_service}_port is required}\""
   done
 }
 
-# Export PLATFORM_<SERVICE>_PORT for every roster service from the same
-# "<service>_port" variables. This replaces fifteen hand-written export lines
-# whose only guard was that a human kept them in step with the roster.
+# Export PLATFORM_<SERVICE>_PORT for every roster service.
 mac_export_service_ports() {
   for mac_port_service in $MAC_SERVICE_PORT_ORDER; do
     mac_port_variable=PLATFORM_$(printf '%s' "$mac_port_service" |
@@ -368,10 +233,7 @@ mac_export_service_ports() {
   done
 }
 
-# The container identity for one Compose service. Both disposable lanes prefix
-# the isolated Compose project, so the identity no longer forks by proof
-# platform. Every wrapper used to carry its own copy of that case statement, so
-# a new service either repeated it or quietly used the wrong lane's identity.
+# The container identity for one Compose service; both lanes prefix the project.
 mac_container_name() {
   mac_container_base=$1
   case ${PLATFORM_PROOF_PLATFORM:-mac} in
@@ -382,43 +244,20 @@ mac_container_name() {
   esac
 }
 
-# The Mac lane covers one service the contract registry does not. Coverage
-# accounting keyed only to the registry would report a clean full pass while
-# silently skipping a service the lane deploys, so the addition is named.
-# Vaultwarden is that service: it HAS no contract to register, because it holds
-# no credential a contract could sign in with. Master passwords are user-owned by construction and the server never
-# learns them, which is the entire reason to run it, so what there is to prove is
-# the door -- and roles/vaultwarden/tasks/verify.yml proves it by knocking, which
-# tests/mac/verify.sh runs here through platform_verify_vaultwarden like every
-# other tag. Naming it here is what puts it on the coverage rosters, so the four
-# collapsed hooks have to account for it rather than pass over it in silence.
-# Karakeep is the second, for Vaultwarden's route with a different reason: its
-# vault identity is an administrator the converge registers through the API, and
-# roles/karakeep/tasks/verify.yml already signs in as it and requires the search
-# index and browser connected and the signup door closed. A contract would repeat
-# that verification, so tests/mac/verify.sh runs platform_verify_karakeep instead.
+# Services the Mac lane covers that the contract registry does not: Vaultwarden
+# holds no credential to sign in with and Karakeep's verify.yml already signs in,
+# so verify.sh runs their platform_verify_<name> tags instead.
 MAC_UNREGISTERED_SERVICES='vaultwarden karakeep'
 
-# Verification keeps three infrastructure-specific hooks ahead of the shared
-# contract runner. This is the one canonical roster used both by verify.sh for
-# dispatch and by 30-services.sh for exact coverage accounting. The foundation
-# hook verifies infrastructure rather than a registered service, so it is named
-# separately as coverage-neutral instead of being disguised as an exemption.
+# Infrastructure hooks run ahead of the shared contract runner; the foundation hook
+# covers no registered service, so it is coverage-neutral.
 MAC_VERIFY_INFRASTRUCTURE_HOOKS='10-beszel.sh
 15-media-acquisition-foundation.sh
 20-dozzle.sh'
 MAC_VERIFY_COVERAGE_NEUTRAL_HOOKS='15-media-acquisition-foundation.sh'
 
-# The Mac aliases of every service in tests/contracts/registry.yml. The registry
-# is the platform's authoritative roster, and it is deliberately not extended
-# with Mac-lane data: its entries are constrained to exactly a service and a path
-# by both tests/policy_test.rb and tests/run_contracts.rb, and coupling the
-# integration contract registry to Mac scaffolding would be the wrong trade. The
-# per-service Mac data lives in the tables in run-contract.sh and in the hooks;
-# the registry is what those tables are held to.
-#
-# Like mac_run_hooks, this and mac_registry_contract_path need the caller to have
-# set mac_script_dir to tests/mac: the registry is resolved relative to it.
+# Mac aliases of every service in tests/contracts/registry.yml. The registry is
+# deliberately not extended with Mac data. Needs mac_script_dir set to tests/mac.
 mac_registry_services() {
   ruby -ryaml -e '
     registry = YAML.safe_load_file(ARGV.fetch(0), aliases: false)
@@ -440,9 +279,7 @@ mac_registry_services() {
   ' "$mac_script_dir/../contracts/registry.yml"
 }
 
-# The canonical contract path for one Mac service alias, read from the registry
-# so the runner never carries a second copy of the service-to-script mapping.
-# An alias the registry does not know is refused here rather than dispatched.
+# The contract path for one Mac alias, read from the registry; unknown aliases are refused.
 mac_registry_contract_path() {
   ruby -ryaml -e '
     registry = YAML.safe_load_file(ARGV.fetch(0), aliases: false)
@@ -463,26 +300,9 @@ mac_registry_contract_path() {
   ' "$mac_script_dir/../contracts/registry.yml" "$1"
 }
 
-# Collapsing a group of per-service hook files into one table-driven hook removes
-# the only thing that used to make a dropped service visible: mac_run_hooks
-# refuses a group with no files at all, but a collapsed group satisfies it with a
-# single file no matter how few services that file actually ran. Every collapsed
-# hook therefore accounts for itself here, against the registry rather than
-# against the table that produced its work, and prints how many services it
-# covered in the same "N of M" form tests/validate-policy.sh uses.
-#
-#   group   the hook group, which is also its directory name
-#   self    this hook's own basename, excluded from the sibling scan
-#   ran     the services this hook executed, one per line
-#   exempt  service=reason lines for services this group deliberately skips
-#   infrastructure  optional exact sibling-hook basename roster, which a group
-#                   that never collapsed declares in full rather than only for
-#                   the hooks that sort ahead of a table
-#   coverage-neutral optional infrastructure hooks that do not represent a service
-#
-# Services still handled by their own NN-service.sh file in the same group are
-# credited automatically from the sibling filenames, so delegating one service
-# back out to its own hook needs no bookkeeping here.
+# Collapsed table-driven hooks account for themselves against the registry, so a
+# dropped service stays visible. Args: group self ran exempt [infrastructure]
+# [coverage-neutral]. Sibling NN-service.sh hooks are credited automatically.
 mac_assert_service_coverage() {
   mac_coverage_group=$1
   mac_coverage_self=$2

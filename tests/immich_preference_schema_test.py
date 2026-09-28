@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
 """Contract tests for the Immich managed-user preference schema filter.
 
-Every rejection case here corresponds to a condition the two Immich `assert`
-tasks in `roles/vault_contract/tasks/main.yml` carried before the schema moved
-into `filter_plugins/immich_preference_schema.py`.
-
-The redaction tests are the ones that matter most. The collections are keyed by
-managed-user email and their profile names come from the vault, so a message that
-echoed a key would disclose credential material through a task that runs under
-`no_log` precisely to avoid that. `tests/managed_users_vault_test.rb` asserts the
-same property end to end; these tests fail faster and name the field.
+Refusals must never echo a vault key or value: they run under `no_log`.
 """
 
 import copy
@@ -79,12 +71,7 @@ class ImmichPreferenceSchemaTest(unittest.TestCase):
         self.assertEqual(errors(overrides={EMAIL: {"ratings": {"enabled": True}}}), [])
 
     def test_every_field_of_every_scope_has_a_type_guard(self):
-        """Exhaustive replacement for the per-field Jinja conditions.
-
-        Generated from `SCOPES` rather than hand-listed, so a field that loses its
-        constraint fails here instead of passing unnoticed. The floor catches the
-        opposite mistake: a scope or field deleted from the table.
-        """
+        """Every field of every scope has a type guard, generated from `SCOPES`, with a floor."""
         incompatible = {
             BOOLEAN: ["x", 1, None],
             POSITIVE_INTEGER: [0, -1, True, "1", None],
@@ -195,14 +182,7 @@ class ImmichPreferenceSchemaTest(unittest.TestCase):
                                  f"the diagnostic disclosed a key or value: {joined}")
 
     def test_an_unknown_field_kind_is_refused_rather_than_unchecked(self):
-        """A kind the dispatch does not implement validated nothing, silently.
-
-        The kinds are module-level string literals, so CPython interning made the
-        `is` comparisons work and the missing `else` never bit — but a table entry
-        naming an unimplemented kind passed every value through unread (#648). The
-        refusal names the path and the kind, both module-owned, never a vault key
-        or value.
-        """
+        """A kind the dispatch does not implement is refused, not passed unread (#648)."""
         from ansible.errors import AnsibleFilterError
         import immich_preference_schema as schema
 

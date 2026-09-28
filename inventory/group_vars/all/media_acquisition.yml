@@ -1,18 +1,9 @@
 ---
-# Media acquisition staging. Shared for the same reason as the library roots:
-# downloaders writes these trees and arr reads them. They are recovery: cache and
-# regenerable, which is the whole distinction from media_libraries.yml: the
-# recovery class drives the disaster-recovery documentation, so one file holding
-# both would mix what can be rebuilt with what cannot.
+# Media acquisition staging (recovery: cache), shared by downloaders and arr.
 
 nas_storage_media_acquisition:
-  # The two acquisition tree roots are declared ahead of their leaves so their
-  # mode is owned rather than inherited. `ansible.builtin.file` applies the
-  # declared mode to intermediate parents only at the moment it creates them,
-  # so a root left undeclared keeps whatever the first converge produced and no
-  # later change to a leaf ever revisits it. Declared, they are re-asserted
-  # every run. They are not `media_acquisition_writer`: download clients write
-  # into `<transport>/<category>`, never into the root.
+  # Roots declared so their mode is re-asserted (file sets a parent's mode only
+  # on creation). Not writers: clients write into `<transport>/<category>`.
   - path: "{{ nas_media_root }}/Media/.acquisition"
     mode: "0755"
     recovery: cache

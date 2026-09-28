@@ -1,42 +1,7 @@
 #!/usr/bin/env ruby
-# Focused mutation checks for the migration manifest policy.
-#
-# The sandbox harness and the fixture list live in policy_mutation_support.rb.
-#
-# Every row names the policy scripts that actually detect its planted defect, so
-# its sandbox runs one or two of them rather than all eight. Those sets were
-# derived by measurement, not by reading the scripts, and how far the narrowing
-# actually gets is derived too: every run ends with a "policy mutation census"
-# line counting how many mutations there are, how many declare a single script,
-# and how many declare tests/policy_integration_test.rb, the one that dominates
-# a sandbox's cost because it boots Ansible twice to render role defaults. Read
-# that line. Those three figures stood here as prose and went stale twice; the
-# second time a wrong baseline was quoted widely enough that a correct
-# measurement read as a discrepancy and someone went looking for a cause (#435).
-#
-# The census reports mutations and call sites separately because they differ: a
-# loop is one declaration covering several mutations, and it can still be one
-# script per iteration, which is exactly what the validate-policy.sh row removal
-# below is. `--audit` runs all eight again and fails on any call site whose
-# declared set has drifted from what the scripts now do -- run it after adding a
-# check to a policy script.
-#
-# `--audit` reaches a row only through expect_failure, so the rows written any
-# other way -- the acquisition lambda below, the ad-hoc run_policy assertions,
-# expect_success, the foundation wrapper, and two shapes in the support file --
-# declare no set and are outside the re-derivation entirely. That is safe, and it
-# is narrower than "the audit came back clean" sounds, so the audit now prints
-# how many assertions it did not re-derive alongside how many it did (#439).
-# Both figures are counted by the run rather than stated.
-#
-# What is stated is a floor under the census, POLICY_MUTATION_CENSUS_BASELINE in
-# the support file, and only a floor: a run at or above it passes whatever the
-# real figures are, and a run below it fails and says what to write there (#725).
-# Without it a refactor that stopped rows registering would re-derive fewer of
-# them, find no drift among the ones it still saw, print a clean verdict and
-# finish faster -- the fastest green there is, and indistinguishable from a real
-# pass. The floor moves with a prune and not with an addition, which is the
-# direction this file actually moves in.
+# Focused mutation checks for the migration manifest policy; the sandbox harness
+# lives in policy_mutation_support.rb. Each row declares the policy scripts that
+# detect it; run `--audit` after adding a check to a policy script (#435, #725).
 
 require_relative "policy_mutation_support"
 
@@ -64,11 +29,8 @@ end
   failures << "#{label}: missing #{diagnostic.inspect}" unless problems.any? { |problem| problem.include?(diagnostic) }
 end
 
-# The empty vault list used to be exercised against whichever service was still
-# planned, and the catalog no longer has one: every rostered service ships a
-# contract. So the subject is built rather than borrowed -- a scratch root whose
-# expectation files are the real ones with a single service's list emptied --
-# which also lets both branches of the rule be checked, not just the rejection.
+# The subject is built, not borrowed: real expectation files with one service's
+# vault list emptied, so both branches of the rule are checked.
 emptied_vault_root = lambda do |service_name, &block|
   Dir.mktmpdir("nas-platform-expectations-") do |root|
     expectations = File.join(root, "tests", "expected")
@@ -87,8 +49,7 @@ emptied_vault_root.call("seerr") do |root|
   failures << "implemented service with an emptied vault contract: missing #{diagnostic.inspect}" unless
     problems.any? { |problem| problem.include?(diagnostic) }
 
-  # The other branch, which nothing else exercises now that the planned set is
-  # empty: a planned service is allowed to declare no credential at all.
+  # A planned service may declare no credential at all.
   _expectations, planned_problems = pinned_service_expectations(
     root, valid_statuses.merge("seerr" => "planned")
   )
@@ -121,10 +82,7 @@ end
 output, succeeded = run_policy(["tests/media_acquisition_foundation_test.rb"]) do |root|
   mutate_manifest(root) { |document| document.fetch("services").reverse! }
 end
-# Reported through the helper rather than `output.lines.first`: that construct is
-# only honest here because the script list is a single explicit element, and
-# widening it -- or changing run_policy's default back -- would reintroduce the
-# defect of #438 silently, since this branch runs only when the check fails.
+# Reported through the helper, not `output.lines.first` (#438).
 unless succeeded
   failures << "manifest reorder changed acquisition publication policy: #{policy_failure_diagnostic(output)}"
 end
@@ -136,11 +94,7 @@ expect_acquisition_failure = lambda do |label, diagnostic, &mutation|
   failures << "#{label}: emitted a Ruby stack trace" if output.match?(/\.rb:\d+:in [`']/)
 end
 
-# The storage inventory is composed from one nas_storage_<contributor> variable
-# per file, so planting a defect in it means finding the file that owns the path
-# rather than editing one list. Routing by path keeps each row below stating the
-# path it is about and nothing else; a row that named a file would have to be
-# re-read every time a path moved between contributors.
+# nas_storage is composed per file, so route a planted path to the file that owns it.
 storage_file_for = lambda do |root, path|
   Dir.glob(File.join(root, "inventory", "group_vars", "all", "*.yml")).sort.each do |file|
     next if File.basename(file) == "vault.yml"
@@ -234,8 +188,7 @@ expect_acquisition_failure.call(
   end
 end
 
-# Flipped away from its expected value, in whichever direction that is: an
-# inert transport switched on, and the NAS's accepted Usenet switched off.
+# Each flipped away from its expected value.
 { "nas_hosts" => { "media_usenet_enabled" => true, "media_torrent_enabled" => false },
   "mac_hosts" => { "media_usenet_enabled" => false, "media_torrent_enabled" => false } }
   .each do |host_group, flags|
@@ -417,9 +370,7 @@ end
   end
 end
 
-# The pre-upgrade copy rule in tests/policy_test.rb is the only guard on the
-# shared rescue Vaultwarden reaches (#836), so each of its three sentences is
-# planted there.
+# The pre-upgrade copy rule is the only guard on the shared rescue (#836).
 expect_failure(failures, "shared pre-upgrade rescue that leaves the service stopped",
                "role pre_upgrade_backup: a failed pre-upgrade copy must start the stopped container again, " \
                "on its old image",
@@ -509,10 +460,7 @@ expect_failure(failures, "Vaultwarden deployment report that ignores the shared 
   File.write(path, planted)
 end
 
-# The shared copy starts the stack its caller names, so the caller's own target
-# include is what contains it; a caller naming a service it never declared is
-# the uncontained start tests/policy_deployment_test.rb resolves through the
-# include (#836).
+# A caller naming a service it never declared is an uncontained start (#836).
 expect_failure(failures, "shared pre-upgrade copy naming a service its caller never contained",
                "role vaultwarden starts komga out of the installed release",
                detected_by: %i[deployment policy]) do |root|
@@ -525,9 +473,7 @@ expect_failure(failures, "shared pre-upgrade copy naming a service its caller ne
   File.write(path, planted)
 end
 
-# Vaultwarden's call site is the platform's one credential-bearing copy, and the
-# shared role takes whatever it is given, so each argument policy_test.rb holds
-# there is planted once (#836).
+# Vaultwarden's call site: each argument policy_test.rb holds is planted once.
 [
   ["    pre_upgrade_backup_extra_patterns: [rsa_key*]\n", "    pre_upgrade_backup_extra_patterns: []\n",
    "role vaultwarden: the pre-upgrade copy must carry rsa_key*"],
@@ -564,9 +510,7 @@ expect_failure(failures, "Karakeep deployment report that ignores the shared pre
   File.write(path, planted)
 end
 
-# Karakeep's call site, held in policy_test.rb argument by argument (#826), and
-# its position: after the application's guard, so a downgrade is refused before
-# the copy stops anything.
+# Karakeep's call site (#826), and its position after the application's guard.
 [
   ["    pre_upgrade_backup_compose_service: karakeep\n", "    pre_upgrade_backup_compose_service: web\n",
    "role karakeep: the pre-upgrade copy must be given pre_upgrade_backup_compose_service"],
@@ -594,10 +538,7 @@ end
   end
 end
 
-# Replaces #826's row that swapped the two guards: since #858 the copy reads its
-# own pin, so which guard runs last is no longer a property, while the copy
-# running ahead of the application's guard still is -- it would stop Karakeep
-# for a downgraded pin the guard then refuses.
+# The copy must not run ahead of the application's guard (#858).
 expect_failure(failures, "Karakeep pre-upgrade copy ahead of the application guard",
                "role karakeep: the pre-upgrade copy must follow the application's image_downgrade_guard",
                detected_by: %i[policy]) do |root|
@@ -610,8 +551,6 @@ expect_failure(failures, "Karakeep pre-upgrade copy ahead of the application gua
   end
 end
 
-# A tag on the application's guard alone skips it in a converge the copy still
-# runs in, so a downgraded pin is copied for and stopped before anything refuses.
 expect_failure(failures, "Karakeep application guard tagged apart from the pre-upgrade copy",
                "role karakeep: the pre-upgrade copy must follow the application's image_downgrade_guard",
                detected_by: %i[policy]) do |root|
@@ -623,8 +562,7 @@ expect_failure(failures, "Karakeep application guard tagged apart from the pre-u
   end
 end
 
-# A caller handing the shared copy a pin again (#858): the include parameter
-# outranks the pin the role reads from the service's own Compose file.
+# The include parameter would outrank the pin the role reads itself (#858).
 expect_failure(failures, "shared pre-upgrade copy handed a pin by its caller",
                "hands roles/pre_upgrade_backup a pre_upgrade_backup_pinned_image",
                detected_by: %i[policy]) do |root|
@@ -648,9 +586,7 @@ expect_failure(failures, "Karakeep pre-upgrade copy after its deployment",
   end
 end
 
-# The pg_dump entry Nextcloud and Paperless-ngx take (#826): its own clause in
-# tests/policy_test.rb, the stop floor that clause's subjects are held to, and
-# the two call sites argument by argument and by position.
+# The pg_dump entry Nextcloud and Paperless-ngx take (#826).
 PG_DUMP_SHAPE = "role pre_upgrade_backup: tasks/pg_dump.yml must dump the database after stopping the application"
 expect_failure(failures, "pre-upgrade dump taken before the application stops", PG_DUMP_SHAPE,
                detected_by: %i[policy]) do |root|
@@ -684,7 +620,6 @@ expect_failure(failures, "pre-upgrade dump rescue that lets the upgrade proceed"
   end
 end
 
-# The code archive's own shape (#884).
 PG_CODE_ARCHIVE = "role pre_upgrade_backup: tasks/pg_dump.yml must archive the code tree after the dump"
 code_archive = ->(task) { Array(task.dig("ansible.builtin.command", "argv"))[0, 2] == %w[docker run] }
 expect_failure(failures, "pre-upgrade code archive outside the block its rescue covers", PG_CODE_ARCHIVE,
@@ -734,9 +669,7 @@ end
    "    pre_upgrade_backup_compose_service: db\n", "pre_upgrade_backup_compose_service"],
   ["paperless_ngx", "    pre_upgrade_backup_project_name: \"{{ paperless_compose_project_name }}\"\n",
    "    pre_upgrade_backup_project_name: \"{{ nextcloud_compose_project_name }}\"\n", "pre_upgrade_backup_project_name"],
-  # #884: the code archive's two arguments -- one dropped is a rollback with
-  # the dump and no code, one moved inside the data root is an archive the next
-  # upgrade's rsync --delete removes.
+  # #884: a dropped code root, or one inside the data root that rsync --delete removes.
   ["nextcloud", "    pre_upgrade_backup_code_root: \"{{ nextcloud_data_host_path }}\"\n", "",
    "pre_upgrade_backup_code_root"],
   ["nextcloud", "    pre_upgrade_backup_code_archive_dir: \"{{ nextcloud_postgres_host_path }}/pre-upgrade-backup\"\n",
@@ -763,7 +696,6 @@ end
       anchor = tasks.index { |task| task["register"] == register }
       raise "#{role} order plant found no dump or #{register}" unless dump && anchor
 
-      # Ahead of the data services, or behind the application's deployment.
       tasks.insert(anchor, tasks.delete_at(dump))
     end
   end
@@ -796,9 +728,7 @@ end
   end
 end
 
-# The platform fragments are copied per stack because Compose resolves an anchor
-# only inside its own file, so the property that matters is that the copies agree.
-# Each mutation below diverges one stack's copy from the eleven others.
+# Compose resolves anchors per file, so the copied fragments must agree.
 expect_failure(failures, "divergent logging fragment",
                "komga: x-logging must hold the values every stack's copy of it shares",
                detected_by: %i[policy]) do |root|
@@ -816,10 +746,7 @@ expect_failure(failures, "divergent health-check timing fragment",
   end
 end
 
-# The timing policy in inventory/group_vars/all/main.yml has one owner only while
-# a task cannot type its own number. Each row plants one way of doing that on
-# Komga's claim wait; the quoted and templated rows are the ones an integer test
-# let through until #844.
+# Each row types a number into a task that the timing policy owns (#844).
 [
   ['retries: "{{ komga_claim_retries }}"', "retries: 20", "retries: 20 as a literal"],
   ['retries: "{{ komga_claim_retries }}"', 'retries: "20"', 'retries: "20" as a literal'],
@@ -865,12 +792,8 @@ expect_failure(failures, "container-local logging variant",
   end
 end
 
-# Tika is the only container on a self-sizing image today, and nothing in the
-# tree declares a heap at all, so these four rows are the whole proof that the
-# memory-limit checks work. The two heap rows exist separately on purpose: a
-# check that skipped its relation whenever mem_limit was absent would pass the
-# second row while failing to guard anything, and one that never fired without a
-# heap would pass the first. Neither row alone distinguishes those.
+# The only proof the memory-limit checks work; the two heap rows catch a check that
+# skips its relation when mem_limit is absent, and one that never fires without a heap.
 expect_failure(failures, "self-sizing image without a memory limit",
                "paperless-ngx/tika: an image that sizes its own memory from what it can see " \
                "must declare mem_limit",
@@ -908,12 +831,8 @@ expect_failure(failures, "declared heap above half its memory limit",
   end
 end
 
-# The two halves of the release-mount label rule, which is what #810 was: a
-# container mounting a file out of the `current` symlink and carrying no label
-# keyed on that file's content runs an older release's copy for as long as
-# Compose has no reason to recreate it. The first row plants that state; the
-# second takes the mount away instead, which is the refactor that would empty
-# the derived subject set and leave the check green over nothing.
+# Release-mount label rule (#810): a missing label, and a removed mount that would
+# empty the derived subject set.
 expect_failure(failures, "release-mounted file with no content label",
                "downloaders/sabnzbd: a file bind-mounted out of the release pointer must be " \
                "labelled with its own sha256",
@@ -942,12 +861,7 @@ expect_failure(failures, "release mount hidden in a platform override",
   end
 end
 
-# Who can reach a Docker socket proxy (#829). Each row plants one way a proxy
-# that serves every container's environment gains a reader or loses its stated
-# one: the hub or the relay moved onto the proxy's network, a proxy that dropped
-# its networks key and so fell back onto default, a consumer dropped (the map is
-# closed both ways), a shared network no longer internal, a port added or
-# widened, an override rewiring membership, and a proxy the map no longer finds.
+# Who can reach a Docker socket proxy (#829).
 {
   "hub joined to the Beszel socket proxy network" =>
     ["services/beszel/compose.yml", "beszel/socket-proxy: shares a network with",
@@ -1099,8 +1013,7 @@ expect_success(failures, "ignored bytecode containing retired token") do |root|
   File.binwrite(File.join(cache, "retired-policy.pyc"), retired_token)
 end
 
-# The harness's own guards come first: if the fixture builder can be talked into
-# reading or writing outside the sandbox, nothing below proves anything.
+# The harness's own guards first: a fixture builder escaping the sandbox proves nothing.
 expect_fixture_identity_rejection(
   failures, "traversal service name",
   { "name" => "../../source-sentinel", "role" => "beszel", "status" => "implemented" }
@@ -1118,12 +1031,8 @@ expect_failure(failures, "reintroduced legacy source",
   end
 end
 
-# vault detects this one too, and the reason is worth stating rather than
-# leaving to the audit to rediscover: a service's manifest `role` is what names
-# both inventory/group_vars/all/vault_<role>.yml and service_<role>.yml, and
-# policy_vault_test.rb derives its rosters from that field in both directions --
-# so renaming beszel's role moves the service out from under the derived checks
-# while leaving the files it owns naming a role the manifest no longer has.
+# vault detects this too: the manifest `role` names both vault_<role>.yml and
+# service_<role>.yml, which policy_vault_test.rb derives from.
 {
   "role" => "wrong_role"
 }.each do |field, value|
@@ -1289,12 +1198,8 @@ expect_failure(failures, "acquisition daemon claims Dozzle exemption",
   File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
 end
 
-# The manifest and the pinned catalog contract have to agree on every project's
-# status, in both directions. Demotion is the direction left to exercise: the
-# acquisition catalog is fully implemented, so no project can be promoted
-# prematurely any more, and the premature-tree guard proves itself against a
-# synthetic project inside media_acquisition_foundation_test.rb rather than
-# against whichever real project happened to still be planned.
+# Manifest and catalog contract must agree on status; demotion is the direction
+# left to exercise.
 expect_acquisition_failure.call(
   "implemented acquisition project demoted in the manifest",
   "seerr must be implemented in the service manifest"
@@ -1302,15 +1207,7 @@ expect_acquisition_failure.call(
   mutate_manifest(root) { |document| service(document, "seerr")["status"] = "planned" }
 end
 
-# The foundation wrapper mutations stood here: five rows planting a renamed
-# tests/contracts/arr-foundation.sh, a project removed from its case list, a
-# non-static invocation mode, and a mode-0644 file, each proving the wrapper
-# refused. #639 deleted all seven wrappers, so there is nothing left to plant
-# into -- the one reachable caller ran `ruby tests/media_acquisition_foundation_test.rb
-# --project seerr`, which is the check the gate already runs bare plus a branch
-# whose only remaining work was verifying the wrapper's own bytes and mode.
-# The strict-CLI row below replaces the one that asserted the old --project
-# usage line, because that program now takes no arguments at all and says so.
+# The strict-CLI check: the foundation test takes no arguments (#639).
 stdout, stderr, status = capture3_without_git_routing(
   RbConfig.ruby, "tests/media_acquisition_foundation_test.rb", "--project", "arr",
   chdir: ROOT
@@ -1371,8 +1268,7 @@ expect_failure(failures, "missing Mac inventory", "inventory/mac.yml is missing"
   FileUtils.rm(File.join(root, "inventory", "mac.yml"))
 end
 
-# #388. A bare lookup is not an empty value: Ansible replaces it with the
-# inventory hostname, so the remote play SSHes a machine literally named `nas`.
+# #388. A bare lookup falls back to the inventory hostname, not an empty value.
 expect_failure(failures, "unguarded remote transport address",
                "inventory/remote.yml must define ansible_host and fail on an " \
                "unset environment value with undef()",
@@ -1383,8 +1279,6 @@ expect_failure(failures, "unguarded remote transport address",
   end
 end
 
-# Deleting the keyword reaches the same fallback the guard refuses, so presence
-# is required and not merely tolerated.
 expect_failure(failures, "dropped remote transport account",
                "inventory/remote.yml must define ansible_user and fail on an " \
                "unset environment value with undef()",
@@ -1394,14 +1288,8 @@ expect_failure(failures, "dropped remote transport account",
   end
 end
 
-# #410. The two rows above only exercise the ssh branch. The branch for a local
-# connection was demonstrated by the live tree passing, which shows nothing about
-# what it does when the tree is wrong: a coordinate copied into local.yml or
-# mac.yml states a transport that connection does not use, and the copy looks
-# correct in isolation -- it is the same guarded expression remote.yml carries.
-# Both inventories are planted rather than one, because the branch is reached
-# through a loop over the inventory roster and a row for local.yml alone cannot
-# tell a working guard from a roster that stopped visiting mac.yml.
+# #410. The local-connection branch, planted in both inventories so a roster that
+# stopped visiting mac.yml is caught too.
 guarded_coordinate = lambda do |variable, hint|
   "{{ lookup('env', '#{variable}') | default(undef(hint='#{variable} is unset: #{hint}'), true) }}"
 end
@@ -1424,10 +1312,7 @@ expect_failure(failures, "transport account on the Mac inventory",
   end
 end
 
-# The three shapes an undef() can take while meaning nothing. Each keeps the
-# refusal -- the run still stops before the first packet -- and each sends the
-# operator to a variable that will not lift it, which is a slower version of the
-# silent fallback the guard was written to refuse.
+# The three shapes an undef() can take while pointing at the wrong variable.
 expect_failure(failures, "remote transport address hinting the wrong variable",
                "inventory/remote.yml ansible_host must read PLATFORM_NAS_ADDRESS and name " \
                "that same variable in its undef() hint",
@@ -1490,11 +1375,7 @@ expect_failure(failures, "restored default inventory",
               "[defaults]\ninventory = inventory/remote.yml\n")
 end
 
-# Three detectors rather than one: a config whose keys sit outside any section
-# stops registering library/ and filter_plugins/, so the two scripts that boot
-# Ansible against the sandbox reject it as well. Declared rather than narrowed
-# away, because a row that runs fewer scripts than reject it is coverage that
-# has quietly stopped running.
+# Keys outside any section also break the two scripts that boot Ansible.
 expect_failure(failures, "unreadable ansible.cfg section",
                "ansible.cfg must carry a [defaults] section for its keys to be read",
                detected_by: %i[ci deployment integration]) do |root|
@@ -1508,13 +1389,8 @@ expect_failure(failures, "untracked ANSIBLE_HOME",
   mutate_text(root, ".gitignore", /^\.ansible\/\n/, "")
 end
 
-# The regression this plants is the one #641 found and is the reason the line is
-# a pattern: a literal ignores the single filename generate-secrets.yml emits
-# today and nothing else, so renaming that output -- to the per-service
-# vault_<role>-plain.yml shape #641 weighed -- makes plaintext credentials
-# committable, and `git status` simply offers them. The mutant is exactly the
-# line the repository carried before, so the plant is the historical defect
-# rather than a manufactured one.
+# The historical defect (#641): a literal ignore lets a renamed plaintext output
+# be committed.
 expect_failure(failures, "literal ignore for the generator's plaintext output",
                "a literal line covers only the one name the generator writes today",
                detected_by: %i[vault]) do |root|
@@ -1578,15 +1454,8 @@ expect_failure(failures, "removed NAS mount guard",
   end
 end
 
-# The two halves of #530's promoted scanner, planted separately because they are
-# separate subjects: the role half is what the nextcloud-scoped original covered,
-# and the playbook half is what it could not reach, so a role-only row would
-# leave the extension green before and after.
-#
-# THE PLANTED VALUE IS TWO CHARACTERS in both rows, which is the whole trick: a
-# Ruby "\n" here would plant a real newline, Psych would dump a real newline, the
-# scanner would see nothing and both rows would be vacuous while reading as
-# correct. Single quotes are load-bearing.
+# Role and playbook halves of #530's scanner. The planted value is TWO characters:
+# single quotes are load-bearing, a Ruby "\n" would make both rows vacuous.
 expect_failure(failures, "a whitespace escape inside a role's Jinja expression",
                "contains a whitespace backslash escape, which Ansible will not process",
                detected_by: %i[policy]) do |root|
@@ -1773,12 +1642,7 @@ expect_failure(failures, "missing Beszel system ownership guard",
   File.write(path, body)
 end
 
-# tests/contracts/beszel-runtime.rb, not the wrapper. #147 moved the contract's
-# runtime body out of a `<<'RUBY'` heredoc into that file, and URI.encode_www_form
-# went with it -- twice. Left pointing at the 54-line wrapper this gsub matches
-# nothing, plants nothing, and the row reports the mutation as accepted. Found by
-# the indirection pass of the reader sweep, not by the filename pass: the path is
-# built with File.join, so `grep contracts/beszel` never sees it.
+# The runtime body lives in tests/contracts/beszel-runtime.rb, not the wrapper (#147).
 expect_failure(failures, "unencoded Beszel contract filters",
                "Beszel contract must use complete encoded identity filters and enforce system ownership",
                detected_by: %i[beszel]) do |root|
@@ -1816,10 +1680,7 @@ expect_failure(failures, "CI bypasses policy entrypoint", "CI must run tests/val
   File.write(path, File.read(path).sub("tests/validate-policy.sh", "ruby tests/policy_test.rb"))
 end
 
-# This harness left the policy gate to stop being its floor, which means the gate
-# no longer registers it and only ci.yml does. A check that is in neither place
-# runs nowhere while every test still passes, so dropping its job is planted here
-# the same way dropping a manifest line is.
+# The harness runs only from ci.yml, so dropping its job is planted here.
 expect_failure(failures, "CI drops the policy mutation job",
                "CI must run ruby tests/policy_manifest_test.rb",
                detected_by: %i[ci]) do |root|
@@ -1827,8 +1688,7 @@ expect_failure(failures, "CI drops the policy mutation job",
   File.write(path, File.read(path).sub("ruby tests/policy_manifest_test.rb", "true"))
 end
 
-# The nightly falling back to the narrow form still passes and still prints the
-# census, and re-derives nothing: the invisibility #727 closed.
+# The nightly narrowed back re-derives nothing (#727).
 expect_failure(failures, "CI drops the nightly mutation audit",
                "CI must run ruby tests/policy_manifest_test.rb --audit on the nightly",
                detected_by: %i[ci]) do |root|
@@ -1846,11 +1706,7 @@ end
 expect_failure(failures, "controller pasted back into an argument",
                "must not paste the controller back into an sh -c argument",
                detected_by: %i[policy integration]) do |root|
-  # The escaped-argument form is what made the controller unreachable by sh -n
-  # and shellcheck, and it cost a truncated `docker run` once: an unescaped
-  # quote closed the argument and the `;` after it ended the whole command, so
-  # the container started with no operands. Plant the shape, not the quoting
-  # bug -- with the program in a file of its own the bug has nowhere to live.
+  # Plant the escaped-argument shape; the quoting bug it caused has nowhere to live now.
   path = File.join(root, "tests", "integration.sh")
   body = File.read(path)
   broken = body.sub(
@@ -2030,11 +1886,8 @@ expect_success(failures, "registered variable contract") do |root|
     probe
   SH
   register_contract(root, "vaultwarden")
-  # A registered contract owes the Mac runner a per-service arm, which
-  # tests/policy_mac_test.rb requires of every registry entry. The service this
-  # row borrows has none in the real tree, so the arm is planted beside the
-  # registration rather than exempted there: an expect_success row must pass all
-  # eight scripts, and an exemption would outlive the sandbox.
+  # A registered contract owes tests/mac/run-contract.sh an arm, so plant it beside
+  # the registration rather than exempting it.
   mutate_text(root, "tests/mac/run-contract.sh", "case $mac_service in\n",
               "case $mac_service in\n  vaultwarden)\n    ;;\n")
 end
@@ -2045,34 +1898,8 @@ expect_failure(failures, "unregistered contract", "vaultwarden: implemented serv
   write_contract(root, "vaultwarden", "#!/bin/sh\nendpoint=/vaultwarden/health\ncurl --fail \"$endpoint\"\n")
 end
 
-# A contract counts as verification only when tests/contracts/registry.yml
-# names it: contract_has_verification? in tests/policy_support.rb takes the
-# registry entries and asks whether they contain {service, path} exactly, so a
-# line that merely spells the contract's path somewhere the harness reads is not
-# registration. These rows plant that line in the shapes a careless grep would
-# accept -- a shell assignment, an echoed argument, a YAML value -- and require
-# the service to still be reported as unverified.
-#
-# The controller row is here because the file that invokes contracts moved.
-# Contract execution lived in tests/integration.sh until 7ae023c gave the
-# controller a file of its own, so the central case of this table -- a mention
-# inside the program that actually runs contracts -- was being planted in a file
-# that no longer runs any. The property is placement-blind by construction and
-# the row proves it rather than asserting it: registration is a registry entry,
-# wherever the spoof is written.
-#
-# detected_by is %i[policy] and not %i[policy integration], which is what issue
-# #314 came from. tests/policy_integration_test.rb never detected a spoofed
-# registration; it detected an appended line. Until 7ae023c it walked the quoting
-# of the `sh -eu -c "..."` argument in tests/integration.sh and exempted only the
-# regions on the file's final line, which is where the operands
-# `integration-run "$playbook" "$@"` sat. Appending anything at all moved the
-# final line, so those operands became a non-final region containing whitespace
-# and the check failed -- naming `integration-run`, never the contract path.
-# Measured on the 5316b03 tree where the declaration was derived: appending this
-# row's own line reports "controller script escapes its quoted argument at line
-# 2359". That walker went away with the argument it policed, and the declaration
-# it had made true outlived it, visible only to `--audit`.
+# Registration is a registry entry: a mention of the contract path anywhere the
+# harness reads (shell, echo, YAML, the controller) must not count (#314).
 {
   "assignment registration spoof" => ["tests/integration.sh", "contract=tests/contracts/vaultwarden.sh\n"],
   "echo registration spoof" => ["tests/integration.sh", "echo tests/contracts/vaultwarden.sh\n"],
@@ -2085,10 +1912,7 @@ end
     File.write(File.join(root, "roles", "vaultwarden", "tasks", "main.yml"), provisioning_task)
     write_contract(root, "vaultwarden", "#!/bin/sh\ntrue\n")
     harness = File.join(root, relative_harness)
-    # Appending to a path that has moved would create the file rather than raise,
-    # planting the spoof somewhere nothing reads while the row still passed --
-    # the silent no-op mutate_text was introduced to stop for the substituting
-    # rows. Appending cannot use mutate_text, so state the same requirement here.
+    # Appending to a moved path would create it silently; require it to exist.
     raise "#{label}: #{relative_harness} is not a file to append to" unless File.file?(harness)
 
     File.open(harness, "a") { |file| file.write(registration) }
@@ -2125,13 +1949,8 @@ expect_success(failures, "paperless contract alias") do |root|
   register_contract(root, "paperless")
 end
 
-# integration detects this one too, by a route the row is not aiming at:
-# register_contract drops the entry whose `service` is paperless-ngx before
-# adding its own, so registering tests/contracts/paperless-ngx.sh *displaces*
-# paperless from the registry rather than joining it. policy_integration_test.rb
-# derives its static-half universe from that registry (#667) and partitions it
-# against STATIC_HALF_RUN_BY_EVERY_MODE, whose `paperless` key then names a
-# contract the registry no longer holds, so the partition stops matching.
+# integration detects this too: registering paperless-ngx.sh displaces paperless
+# from the registry, breaking the static-half partition (#667).
 expect_failure(failures, "paperless service-name contract", "paperless-ngx: implemented service has no automated verification",
                detected_by: %i[policy integration]) do |root|
   implement_paperless(root)
@@ -2150,15 +1969,8 @@ expect_failure(failures, "symlink compose", "trailarr: compose.yml must be a reg
   File.symlink("../beszel/compose.yml", path)
 end
 
-# vault detects this one too, and for a reason worth stating rather than
-# leaving to the audit to rediscover: replacing roles/trailarr with a symlink to
-# beszel keeps the env.j2 glob's count -- trailarr's slot resolves through the
-# link -- while the file it now yields carries no bcrypt material. So trailarr
-# drops out of policy_vault_test.rb's Compose-escaping sweep and that property
-# starts passing vacuously for it, which is exactly what the sweep's named-roles
-# floor exists to catch. The service #558 removed hosted these rows for the same
-# reason. It is a rename-shaped defect reached by a different road, not
-# an incidental overlap.
+# vault detects this too: the symlink keeps the env.j2 glob count while trailarr
+# drops out of the Compose-escaping sweep.
 expect_failure(failures, "symlink role directory", "trailarr: role must be a real directory within roles",
                detected_by: %i[policy deployment vault]) do |root|
   path = File.join(root, "roles", "trailarr")
@@ -2180,68 +1992,17 @@ expect_failure(failures, "symlink role tasks", "trailarr: tasks/main.yml must be
   File.symlink("../../beszel/tasks/main.yml", path)
 end
 
-# Five properties over the roles/* globs, in six rows -- "declares no options"
-# takes two, for the reason stated at that pair. Every one of them is asserted
-# per role or per task file, so none fails when its subject list goes quiet: the
-# loop iterates zero times and reports success, which is indistinguishable from
-# compliance. #556 read that silence as roles/image_downgrade_guard being absent
-# from the fixture, which is true but buys nothing -- the globs are role-agnostic
-# and iterate 22 roles inside a sandbox, so a plant in any present role proves
-# the same check bites. policy_test.rb now floors the two subject lists that
-# carried no floor at all; these rows are the other half, proving the properties
-# still bite rather than merely still having subjects.
-#
-# Four of the five were planted by nothing. The fifth -- missing
-# meta/argument_specs.yml -- already had coverage, and the first draft of this
-# comment claimed otherwise on an unmeasured count. "recreated retired role"
-# above writes roles/<retired>/tasks/main.yml into a directory with no meta/ at
-# all, so it emits two diagnostics and the second is
-# "role <retired>: missing meta/argument_specs.yml".
-#
-# Its row is kept anyway, and the reason is the shape rather than the count.
-# That coverage is incidental: it is a side effect of a plant aimed at the
-# retired-role property, on a role that exists in order to be absent. Anyone
-# narrowing that row, or retiring the token it is built on, would take this
-# property's only coverage with it and nothing would say so -- which is the
-# silent-loss shape this repository keeps closing. A row that names the property
-# it proves costs one sandbox and makes that impossible.
-#
-# kapowarr hosts all six. Two criteria had to hold and they narrow seventeen
-# service roles to three. It has to be a role every sandbox carries *complete*
-# -- defaults, argument_specs, tasks/main.yml and templates/env.j2 all derived
-# from services/manifest.yml, so no row reads a file the fixture left behind --
-# which admits only kapowarr, nextcloud, pinchflat and vaultwarden; and it has
-# to be mutated by no other row, so no plant here can collide with one, which
-# drops nextcloud and vaultwarden and leaves two. vaultwarden, trailarr, beszel,
-# deployment_bundle, host_prep, komga, vault_contract and preflight are all
-# already subjects above, several repeatedly -- vaultwarden since #558 moved the
-# verification rows onto it from the role that removal deleted.
-#
-# Between those two the choice is arbitrary, and saying so is more honest than
-# inventing a discriminator: kapowarr and pinchflat each declare two registered
-# Compose deployments and one deployment report include, measured, and each
-# carries a single task file, so the structure the last two rows need does not
-# separate them and the shell-out row appends to the only file either role has.
-#
-# None of the six can breach the two floors policy_test.rb gained in #556.
-# Those count role *directories* and role *templates*, and no plant here removes
-# either; the phase row adds a task file, which moves a floor's subject count up
-# rather than down. Measured rather than reasoned: each plant below was run
-# against all eight scripts, and the only diagnostics reported are its own.
+# Per-role properties over the roles/* globs (#556): a loop over nothing passes,
+# so each property is planted directly. kapowarr hosts all six rows because every
+# sandbox carries it complete and no other row mutates it.
 
 expect_failure(failures, "role interface absent", "role kapowarr: missing meta/argument_specs.yml",
                detected_by: %i[policy]) do |root|
   File.delete(File.join(root, "roles", "kapowarr", "meta", "argument_specs.yml"))
 end
 
-# Two rows, because "declares no options" has two routes and only one of them
-# used to be refused. Removing the key leaves dig returning nil, which fails the
-# shape test; emptying the map leaves `{}`, which *is* a Hash and passed all
-# eight scripts until the non-empty term landed beside this loop's floor. The
-# second row is what makes that term hold: without it the tightening is
-# unproven, and without the tightening the row cannot be detected. Measured on
-# roles/bindery first -- 34 options erased, every script green -- so the defect
-# was a live vacuous pass rather than a hypothetical one.
+# Two rows: a removed options key and an empty `{}` map, which passed until the
+# non-empty term landed.
 expect_failure(failures, "role interface options key removed",
                "role kapowarr: argument_specs declares no options",
                detected_by: %i[policy]) do |root|
@@ -2258,10 +2019,7 @@ expect_failure(failures, "role interface options emptied",
   end
 end
 
-# Appended rather than grown out of an existing task on purpose: rewriting one of
-# kapowarr's two docker_compose_v2 deployments into a shell-out would remove a
-# registered deployment at the same time and trip the deployment-report rows
-# below, so the row would plant two defects and prove neither cleanly.
+# Appended, not rewritten from a deployment, so only one defect is planted.
 expect_failure(failures, "role shells out to Compose",
                "roles/kapowarr/tasks/main.yml: shells out to Compose; " \
                "use community.docker.docker_compose_v2",
@@ -2272,28 +2030,8 @@ expect_failure(failures, "role shells out to Compose",
                    "  changed_when: false\n")
 end
 
-# The phase gate is the one of the five whose subject no sandbox holds at all,
-# so this row writes the subject instead of breaking one. All ten phase-gated
-# files in the tree -- eight managed_users.yml, immich's configured_password.yml
-# and user_onboarding.yml, jellyfin's settings.yml -- are reached by
-# include_tasks, which fixture_paths deliberately does not follow, so the gate
-# loop runs over 72 task files and every one of them falls out at
-# `next if gated_variables.empty?`. Writing the file is what exercises the
-# property at all.
-#
-# Leaving the opening assert off plants two diagnostics, not one, and an earlier
-# draft of this comment said one without having counted. Both come from this
-# same block: the row's own "does not open with an unconditional assert", and
-# "opening assert does not name the phases kapowarr_reconcile_phase implements",
-# because declarations is empty so the gated variable is not among them. The row
-# asserts the first, which is the defect it means to plant.
-#
-# What the empty declarations map does buy is silence from the *caller* half --
-# "declares X phases ... but its callers pass none" -- because declared_phases
-# records nothing for a file that declared nothing. That half is what broke four
-# expect_success rows when managed_users.yml was once added to the fixture, and
-# it is measurably quiet here: give this same file a correct opening assert and
-# it becomes the only diagnostic the file produces.
+# No sandbox holds a phase-gated file (all are include_tasks), so this row writes
+# one. Omitting the assert yields two diagnostics; the row asserts the first.
 expect_failure(failures, "role phase gate opens without an assert",
                "roles/kapowarr/tasks/reconcile_stage.yml: gates tasks on " \
                "kapowarr_reconcile_phase but does not open with an unconditional assert",
@@ -2303,14 +2041,8 @@ expect_failure(failures, "role phase gate opens without an assert",
              "    msg: reconciling\n  when: kapowarr_reconcile_phase == 'provision'\n")
 end
 
-# The caller half of the same gate, which until #647 no row exercised: the
-# comment above records that a correctly-asserted phase-gated file produces
-# exactly this one diagnostic, so writing it that way plants the caller defect
-# alone. It is worth a row of its own now, because that half acquired a second
-# route -- a file reached by include_role is validated by its role's own
-# argument spec, which include_tasks never applies -- and the subject here is a
-# file reached by NEITHER, in a role whose argument spec declares no such option.
-# A re-anchor that accidentally admitted every file would pass without this.
+# The caller half of the gate (#647): a file reached by neither include_role nor
+# include_tasks.
 expect_failure(failures, "role phase gate has no caller",
                "roles/kapowarr/tasks/reconcile_stage.yml: declares kapowarr_reconcile_phase " \
                "phases provision but its callers pass none",
@@ -2334,13 +2066,7 @@ expect_failure(failures, "role deploys without reporting it",
   end
 end
 
-# docker_compose_v2_exec sets check_rc only when `detach` is true, so a task
-# without failed_when reports success on any exit code (#521). The reset is
-# picked as the subject because it is the one the issue was filed on and because
-# it is reached by import_tasks, so the sandbox has it -- qsv_probe.yml and
-# paperless_ngx/tasks/managed_users.yml carry six more of these tasks between
-# them and are both reached by include_tasks, which the fixture deliberately does
-# not follow.
+# docker_compose_v2_exec sets check_rc only when detached (#521).
 expect_failure(failures, "Compose exec exit code left unchecked",
                "runs docker_compose_v2_exec without failed_when",
                detected_by: %i[policy]) do |root|
@@ -2354,11 +2080,7 @@ expect_failure(failures, "Compose exec exit code left unchecked",
   File.write(path, YAML.dump(tasks))
 end
 
-# The other half of that check, and the half a passing sweep cannot report on
-# its own: the subject list is discovered from the tree, so a module key that
-# stopped matching empties it and every task in the repository satisfies the
-# rule by not being looked at. Renaming the key is the cheapest way to produce
-# exactly that, and the floor is what turns it back into a failure.
+# A renamed module key empties the discovered subject list; the floor catches it.
 expect_failure(failures, "Compose exec subjects renamed out of the sweep",
                "docker_compose_v2_exec tasks the exit-code policy inspected",
                detected_by: %i[policy]) do |root|
@@ -2410,31 +2132,9 @@ expect_failure(failures, "dirty refusal made run once",
   File.write(path, tasks)
 end
 
-# The poller sweep's own subject going quiet (#596). policy_deployment_test.rb
-# derives the distinctive path fragments install-production-auto-deploy.yml
-# creates from the two poller roles' defaults, and skipping a role it could not
-# read left the sweep blind to every path that role installs while
-# check_floor(..., 3) stayed satisfied on the other role's three.
-#
-# EMPTIED RATHER THAN DELETED, and that is the pin: both states take the same
-# `unless document.is_a?(Hash)` branch, so one row proves the refusal -- but a
-# later narrowing back to the `File.file?` test the fix replaced would still
-# pass a deleted file and fail here. production_auto_deploy rather than
-# image_prune because the sandbox carries no roles/image_prune at all, by the
-# decision policy_mutation_support.rb states, and the refusal deliberately
-# exempts a role directory this tree does not have.
-#
-# WHICH MAKES THE MESSAGE THE BINDING ASSERTION HERE, not the exit status, and
-# the row would be a vacuous pass if it were read the other way. Emptying THIS
-# role's defaults is loud by a second and accidental route: `nas-platform-deploy`
-# is named by all three POLLER_PATH_REFERENCE_REASONS files, so losing the
-# fragment also breaks the pinned reference set one check further down, and
-# policy_deployment_test.rb exits nonzero either way. `nas-platform-prune` is
-# named by none of them, which is why image_prune was silent and is the site the
-# issue was filed on. Measured: with the refusal, the manifest holds; with only
-# the refusal reverted, this row fails with `missing failure message` while the
-# mutation is still detected -- so what the row pins is the refusal's own
-# sentence, which nothing else in the suite emits.
+# Poller sweep subject going quiet (#596). The failure MESSAGE is the binding
+# assertion: this plant also breaks a neighbouring check, so exit status alone
+# would pass vacuously.
 expect_failure(failures, "poller role defaults emptied",
                "is missing, empty or not a mapping, so the poller paths that role installs " \
                "were derived from nothing",
@@ -2442,32 +2142,8 @@ expect_failure(failures, "poller role defaults emptied",
   File.write(File.join(root, "roles", "production_auto_deploy", "defaults", "main.yml"), "")
 end
 
-# The half of the same subject that a readable, valid, plausible defaults file
-# still empties (#597). #599's refusal reaches only `document.is_a?(Hash)`; here
-# the file parses to a complete mapping and one key's suffix simply stops
-# matching, so `production_auto_deploy_launcher_path` contributes nothing and
-# the role derives two fragments where it declares three.
-#
-# THE RENAMED KEY RATHER THAN `--- {}`, and only one row for both. The per-role
-# floor is a count, so the state that leaves 2 of 3 is strictly harder than the
-# state that leaves 0 of 3: a floor that catches this one catches the empty
-# mapping by construction, and a second row would buy a mutation's worth of
-# gate time to re-prove the same comparison. The empty mapping is measured in
-# the commit that added the floor rather than pinned here.
-#
-# THE MESSAGE IS THE BINDING ASSERTION, for the reason the row above records and
-# for one more of its own. Losing `nas-platform-deploy` also shrinks
-# `referencing_files`, so the pinned-reference equality check further down fails
-# too and the exit status alone would be satisfied by a neighbour. Measured,
-# because that is the difference between this row and a vacuous one: with only
-# the floor reverted and this plant applied, policy_deployment_test.rb exits 1
-# and prints `site.yml must not depend on ...` while `derived fewer than 3`
-# appears zero times -- so the row fails with `missing failure message` rather
-# than passing on the neighbour's refusal. With the floor restored the sentence
-# is back and the exit is unchanged. It is pinned on the prose and not
-# on the interpolated `{"production_auto_deploy" => 2}`, because Hash#inspect
-# gained spaces around `=>` in Ruby 3.4 and the row must not depend on which
-# interpreter the sandbox got.
+# A valid defaults file with one renamed key (#597); floors a count, so it also
+# covers `--- {}`. Pinned on the prose: Hash#inspect changed in Ruby 3.4.
 expect_failure(failures, "poller role defaults renamed a contributing key",
                "derived fewer than 3 distinctive path fragments from defaults that parsed",
                detected_by: %i[deployment]) do |root|
@@ -2531,10 +2207,7 @@ expect_failure(failures, "acquisition catalog controller validation moved after 
                detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "inputs.yml")
   tasks = YAML.safe_load_file(path)
-  # The catalog is one entry of a batch since #333, so the task that carries it
-  # is found by the expression it hands the validator rather than by a var of its
-  # own. Moving that whole batch past the parse is the same defect: the manifest
-  # the parse reads, and the catalog, are both unvalidated when it runs.
+  # The catalog is found by the expression it hands the validator (#333).
   validation_index = tasks.index do |task|
     task["ansible.builtin.include_tasks"] == "controller_input.yml" &&
       task.dig("vars", "deployment_controller_inputs").to_s
@@ -2719,10 +2392,7 @@ expect_failure(failures, "play-level containment validation repeated",
   File.write(path, YAML.dump(tasks))
 end
 
-# The guardrail from the issue that removed the adjacent revalidations: hoisting
-# the check out of the roles would leave this policy passing over nothing. Both
-# Compose files are now derived from the named service, so the way to leave them
-# unguarded is to misname it.
+# Hoisting the check out of the roles would leave this policy passing over nothing.
 expect_failure(failures, "service Compose override left unguarded",
                "komga must name the manifest service whose Compose files a selective run deploys",
                detected_by: %i[deployment]) do |root|
@@ -2736,9 +2406,7 @@ expect_failure(failures, "service Compose override left unguarded",
   File.write(path, YAML.dump(tasks))
 end
 
-# A derivation that names a service the role does not deploy widens what the
-# caller declares it touches, and the containment validator would accept the
-# extra paths in silence.
+# The containment validator would silently accept the widened paths.
 expect_failure(failures, "derived deployment paths widened past the role",
                "names service \"jellyfin\", which is not the manifest service directory " \
                "deployed by role \"komga\"",
@@ -2883,9 +2551,7 @@ expect_failure(failures, "NAS coordinate leaked into vault",
   File.write(path, File.read(path) + "vault_nas_address: 192.0.2.1\n")
 end
 
-# Encrypted on purpose, so the encryption check beside it stays satisfied and the
-# only thing wrong is that the file is tracked. Written and not staged, the same
-# file is what the secrets guide's single-file install produces, and is allowed.
+# Encrypted on purpose so only tracking is wrong; unstaged, the same file is allowed.
 expect_failure(failures, "retired single-file vault committed",
                "inventory/group_vars/all/vault.yml is committed",
                detected_by: %i[vault]) do |root|
@@ -2913,14 +2579,8 @@ expect_failure(failures, "credential-bearing read left unredacted",
                    ))
 end
 
-# The library-listing guard is the shape the rule refuses to see redacted: an
-# unlooped assertion whose conditions read a Komga response and name no
-# credential. That the task is still that shape is read off the parsed role
-# rather than assumed, so the fixture reports a drifted target instead of
-# planting redaction on a task the rule would have excused anyway. Only the
-# insertion itself is textual, because the mutation has to produce a file, and it
-# is anchored on the task's own name and module rather than on the wording of a
-# message.
+# The target's shape is read off the parsed role, so a drifted target is reported
+# rather than planting on a task the rule would excuse anyway.
 REDACTED_ASSERTION_TARGET = "Require a complete Komga library listing"
 expect_failure(failures, "credential-free assertion redacted",
                "assertions that can render no credential must not set no_log",
@@ -2941,10 +2601,8 @@ expect_failure(failures, "credential-free assertion redacted",
                                 "  ansible.builtin.assert:\n"))
 end
 
-# The exception is pinned by task name, so renaming the task drops the exemption
-# and the assertion falls back to the rule it was excused from. The companion
-# check that a pinned entry still names a real task is deliberately skipped on a
-# partial tree, which this sandbox is, so the message asserted here is the rule's.
+# The companion name check is skipped on a partial tree, so this asserts the rule's
+# message.
 expect_failure(failures, "pinned redaction exception no longer covers a renamed task",
                "tasks that render a credential must set no_log",
                detected_by: %i[vault]) do |root|
@@ -2964,11 +2622,7 @@ expect_failure(failures, "vault validation disclosure",
   File.write(path, YAML.dump(tasks))
 end
 
-# The shape rules moved into filter_plugins/vault_credential_schema.py, so what a
-# credential can now lose is its entry in the mapping the role passes to the
-# filter rather than a Jinja condition. Dropping the entry is the mutation that
-# corresponds to dropping the old condition: the key stops being inspected, and
-# nothing else in the role names it.
+# Dropping a key from the filter's mapping means it is no longer inspected.
 expect_failure(failures, "vault shape validation omitted",
                "vault contract shape validation must inspect vault_immich_db_password",
                detected_by: %i[vault]) do |root|
@@ -2981,11 +2635,7 @@ expect_failure(failures, "vault shape validation omitted",
                    ))
 end
 
-# Selection is the header test now: find takes only files whose first line is the
-# vault header, so nothing is ever a candidate to hash before it is known to be
-# encrypted. The ordering that still matters is select -> floor -> hash, and the
-# two rows here plant the two ways of losing the property: hashing before the
-# floor has run, and selecting without the header at all.
+# Order must be select -> floor -> hash; the two rows plant the two ways to lose it.
 VAULT_CONTRACT_SELECTION_MESSAGE =
   "vault contract must select on the encryption header, floor the selection, then compute SHA-256"
 expect_failure(failures, "vault checksum moved before the selection floor",
@@ -3091,12 +2741,8 @@ expect_failure(failures, "ephemeral self-test removed from CI",
   File.write(path, File.read(path).gsub("tests/generate-ephemeral-vault.sh --self-test", "true"))
 end
 
-# Planted in the manifest rather than in ci.yml since #653, which is where that
-# check now runs: it was a step of the three-shard `static` job, so it ran three
-# times for a verdict that cannot vary by shard. The line is removed rather than
-# rewritten, because a rewrite would leave the gate dispatching a command that
-# does not exist and the plant would be caught by the gate failing rather than
-# by the policy script objecting.
+# Planted in the manifest since #653; removed, not rewritten, so the policy script
+# objects rather than the gate crashing.
 expect_failure(failures, "generator redaction test removed from the policy gate",
                "CI must execute the generated-secret redaction test",
                detected_by: %i[ci vault]) do |root|
@@ -3105,9 +2751,7 @@ expect_failure(failures, "generator redaction test removed from the policy gate"
   File.write(path, File.read(path).lines.reject { |line| line.strip == command }.join)
 end
 
-# The other two checks #653 moved out of the static job's steps and into the
-# manifest, planted the same way. Detected by the CI policy alone: nothing else
-# requires either line, which is the point of requiring them from there.
+# The other two checks #653 moved into the manifest; only the CI policy requires them.
 {
   "integration sandbox cleanup test" => "tests/integration_cleanup_test.sh",
   "Immich probe status rendering test" =>
@@ -3150,10 +2794,7 @@ expect_failure(failures, "integration lock made non-atomic",
   File.write(path, File.read(path).sub('mkdir "$lock_candidate"', "true"))
 end
 
-# The three play bindings are spelled as plain shell in the launcher library,
-# and the contract ABI in the controller's own dispatch -- also plain shell now
-# that the controller is a file. Each mutation deletes the binding where it
-# lives.
+# Each mutation deletes a play binding or contract ABI line where it lives.
 {
   "vault password file" => ["tests/integration_controller_lib.sh",
                             '--vault-password-file "$vault_password_file"'],
@@ -3311,14 +2952,8 @@ end
   end
 end
 
-# The six Mac gate checks #315 found in tests/validate-policy.sh that no policy
-# script required. Their own call site rather than the hash above, because that
-# hash's declared union is %i[policy ci mac] while every one of these is
-# detected by tests/policy_mac_test.rb alone -- measured by running all eight
-# against each mutation, not assumed -- and a row folded into the hash would pay
-# for two subprocesses that prove nothing. The audit keys declarations by call
-# site and takes their union, so a set that is right for these six is only
-# expressible as a site of their own.
+# The six Mac gate checks (#315), detected by policy_mac_test.rb alone, so they
+# need a call site of their own for the audit.
 {
   "Mac configuration isolation regression" => "tests/mac/config-isolation.sh",
   "Mac phase status regression" => "tests/mac/run-phase-status-test.sh",
@@ -3381,10 +3016,7 @@ expect_failure(failures, "Mac raw log body retained",
   File.write(path, File.read(path).sub('"message" => REDACTION', "\"message\" => #{leaked_body}"))
 end
 
-# The per-service expectations moved out of policy_test.rb into one file each, so the
-# properties that used to be protected by Ruby's own load-time errors now need stating:
-# a deleted file must not read as a service with nothing to check, and a value that
-# drifts from the Compose file must still be caught from its new home.
+# A deleted expectations file must not read as nothing to check.
 expect_failure(failures, "pinned service expectations deleted",
                "pinned service expectations are missing: tests/expected/komga.yml",
                detected_by: %i[policy vault]) do |root|
@@ -3412,11 +3044,7 @@ expect_failure(failures, "pinned CPU ceiling drifts from Compose",
   end
 end
 
-# The ceilings are oversubscribed against a shared cpuset on purpose, so their
-# sum proves nothing; a single ceiling wider than that cpuset is what the budget
-# relation catches. Raising one past the budget must fail by name rather than
-# only as Compose drift, which is why this mutation is separate from the one
-# above.
+# A single ceiling wider than the cpuset must fail by name, not only as Compose drift.
 expect_failure(failures, "pinned CPU ceiling exceeds the container CPU budget",
                "jellyfin/jellyfin: CPU ceiling 4.0 exceeds the 3-CPU cpuset it shares",
                detected_by: %i[policy]) do |root|
@@ -3433,12 +3061,7 @@ expect_failure(failures, "pinned CPU ceiling is not a number",
   end
 end
 
-# config/media-acquisition.yml is shipped into the release, so it restates the
-# acquisition ceilings and cannot simply stop holding them. The value planted
-# here is in range and correctly shaped, so neither the budget relation nor the
-# numeric check can catch it: only the catalog-to-tests/expected equality can,
-# and it must name the catalog so a passing run cannot be credited to the Compose
-# drift check that shares the phrase "CPU ceiling".
+# In range and well shaped, so only the catalog-to-expected equality catches it.
 expect_failure(failures, "deployed acquisition catalog ceiling drifts from the pinned home",
                "arr/radarr: config/media-acquisition.yml cpus 2.0 must equal the 1.0 pinned in " \
                "tests/expected/arr.yml",
@@ -3448,9 +3071,7 @@ expect_failure(failures, "deployed acquisition catalog ceiling drifts from the p
   end
 end
 
-# The other half of that relation. A dropped container makes a per-key value loop
-# go quiet exactly where it mattered, so the container sets are compared in both
-# directions and this proves that comparison is live.
+# Container sets are compared both ways; this proves that comparison is live.
 expect_failure(failures, "deployed acquisition catalog drops a pinned container",
                "downloaders: config/media-acquisition.yml must declare a cpus ceiling for exactly " \
                "the containers pinned in tests/expected/downloaders.yml",
@@ -3482,11 +3103,8 @@ expect_failure(failures, "pinned expectations gain an unknown field",
   mutate_yaml_file(root, "tests/expected/komga.yml") { |e| e["unexpected"] = true }
 end
 
-# The nas_storage_* prefix rule had no mutation at all, which is how its subject
-# came to include trees Ansible never reads. The pair below is what makes the
-# sweep's subject a stated thing rather than whatever Find walked into: one
-# definition outside inventory/group_vars/all must be refused, and the same
-# definition inside a nested checkout must not be.
+# A nas_storage_* definition outside group_vars/all is refused; inside a nested
+# checkout it is not.
 expect_failure(failures, "storage contributor outside group_vars/all",
                "roles/dozzle/defaults/planted.yml: nas_storage_planted",
                detected_by: %i[policy]) do |root|
@@ -3494,17 +3112,8 @@ expect_failure(failures, "storage contributor outside group_vars/all",
              YAML.dump("nas_storage_planted" => [{ "path" => "/tmp/planted" }]))
 end
 
-# A nested checkout is a different tree and none of its files is in scope for a
-# run of this one. .gitignore anticipates agent worktrees under
-# .claude/worktrees/ and git honours it; the sweep walks the filesystem and did
-# not, so a single `git worktree add` put a second copy of all nineteen
-# contributors into its subject and failed the check naming every one -- 133
-# paths at seven worktrees, none of them a definition Ansible would ever read
-# (#665). The sandbox is no git repository, so this plants the shape rather than
-# a real worktree: a directory holding a `.git` *file* is exactly what a worktree
-# is on disk, and it is what the sweep prunes on. Planting the shape rather than
-# the path name is the point -- a row that created `.claude/worktrees/` and
-# nothing else would pass against a check that merely special-cased that name.
+# A directory holding a `.git` file is a worktree on disk, which the sweep prunes
+# on (#665). Planting the shape, not the path name, is the point.
 expect_success(failures, "storage contributor inside a nested checkout") do |root|
   checkout = File.join(root, ".claude", "worktrees", "agent-0000")
   contributors = File.join(checkout, "inventory", "group_vars", "all")
@@ -3514,11 +3123,8 @@ expect_success(failures, "storage contributor inside a nested checkout") do |roo
              YAML.dump("nas_storage_planted" => [{ "path" => "/tmp/planted" }]))
 end
 
-# The media library path is written once in a service template and once in
-# nas_storage, and Compose passes the template's copy through as a bind source.
-# Nothing used to compare the two, so these mutations are what keep the new
-# comparison honest: a rename on either side has to be reported, and the one
-# relaxation the comparison makes has to be earned rather than blanket.
+# Library mounts are compared against nas_storage; a rename on either side must be
+# reported and the parent-mount relaxation earned.
 expect_failure(failures, "service template mounts an undeclared library",
                "roles/komga/templates/env.j2: {{ nas_media_root }}/Comics is not declared in nas_storage",
                detected_by: %i[policy]) do |root|
@@ -3529,27 +3135,13 @@ expect_failure(failures, "service template mounts an undeclared library",
   ))
 end
 
-# Jellyfin mounts the media tree itself, which nas_storage never declares as an
-# entry of its own: it is accepted only because the libraries beneath it are
-# declared and host_prep creates it as their parent. Removing those leaves must
-# therefore stop the parent mount being accepted, or the relaxation would be a
-# blanket pass for any path with a declared entry somewhere below it.
+# Jellyfin's parent mount is accepted only because its leaves are declared.
 expect_failure(failures, "media library leaves removed from storage",
                "roles/jellyfin/templates/env.j2: {{ nas_media_root }}/Media is not declared in nas_storage",
                detected_by: %i[policy]) do |root|
-  # Every contributor, not one file. The Media/ subtree is split between the
-  # library roots and the acquisition staging tree, and jellyfin's mount of
-  # {{ nas_media_root }}/Media is accounted for by anything sitting under it --
-  # so emptying only media_libraries.yml leaves the staging paths covering the
-  # mount and the plant stops biting.
+  # Every contributor: staging paths under Media/ would otherwise still cover the mount.
   Dir.glob(File.join(root, "inventory", "group_vars", "all", "*.yml")).sort.each do |file|
-    # Every vault artifact, not the one filename this used to name. #611/#612
-    # split vault.yml into one vault_<role>.yml per service, and #636 put all
-    # eighteen of them into BASE_FIXTURE_PATHS because policy_vault_test.rb now
-    # requires them to exist. They are encrypted, so they parse to a String
-    # rather than a mapping, and the block below would call `each` on it with
-    # two parameters. The name-based skip was correct for as long as the sandbox
-    # carried no vault file at all, which is what hid it.
+    # Encrypted vault files parse to a String, not a mapping.
     next if File.basename(file).match?(/\Avault(?:_[a-z0-9_]+)?\.yml\z/)
 
     relative = File.join("inventory", "group_vars", "all", File.basename(file))
@@ -3572,10 +3164,8 @@ expect_failure(failures, "media Compose bind source undeclared",
 end
 
 
-# The two scripts are installed as single files and cannot share a module, so
-# _write_private is duplicated on purpose and held identical by comparison
-# instead. These two rows are the halves of that: the copies drifting apart, and
-# a copy going back to truncating the target in place.
+# _write_private is duplicated on purpose: the copies drifting, and a copy
+# truncating in place.
 expect_failure(failures, "private write copies diverged",
                "every script must define _write_private identically",
                detected_by: %i[policy]) do |root|
@@ -3606,14 +3196,7 @@ expect_failure(failures, "private write truncates in place again",
 end
 
 
-# The same comparison, extended past the one helper that had already broken.
-# markdown_escape, _timestamp and _record_lock_holder were duplicated with
-# identical executable bodies for as long as the guard existed and were watched
-# by nothing (#423), so this row drifts one of them by a single docstring word:
-# the divergence a docstring-stripping comparison would have waved through, and
-# the reason the definitions are held identical as raw text instead. Drifted on
-# html_escape since #558 stage 3 retired markdown_escape, which this row used to
-# drift: the same one-word docstring change, on the escape that replaced it.
+# Held identical as raw text, so a one-word docstring drift must fail (#423).
 expect_failure(failures, "duplicated helper docstring diverged",
                "every script must define html_escape identically",
                detected_by: %i[policy]) do |root|
@@ -3624,10 +3207,7 @@ expect_failure(failures, "duplicated helper docstring diverged",
   ))
 end
 
-# A retired helper kept by one script. Neither derived stanza can see it -- one
-# needs both scripts to define the name, the other a byte-identical pair -- so
-# policy_test.rb refuses the retired names outright, and this row is the leftover
-# they exist for: markdown_escape restored to the prune alone.
+# A retired helper kept by one script is refused by name.
 expect_failure(failures, "retired markdown_escape left behind in one script",
                "scripts/image_prune.py still defines [\"markdown_escape\"]",
                detected_by: %i[policy]) do |root|
@@ -3636,11 +3216,7 @@ expect_failure(failures, "retired markdown_escape left behind in one script",
                    "    return value[:maximum]\n")
 end
 
-# Which helpers must match is stated, and a stated list fails open -- that is
-# exactly how three of them went unwatched. The derived half closes it: a name
-# both scripts define whose bodies already agree byte for byte is a copy made
-# just now, and it must be named in the list before anyone edits one side. This
-# row makes that copy.
+# A byte-identical fresh copy must be listed before anyone edits one side.
 expect_failure(failures, "fresh duplicate helper left unlisted",
                "are defined identically in every scripts/*.py program but are not listed",
                detected_by: %i[policy]) do |root|
@@ -3651,12 +3227,7 @@ expect_failure(failures, "fresh duplicate helper left unlisted",
   File.write(path, "#{File.read(path)}\n\n#{source[opening...closing].rstrip}\n")
 end
 
-# The same rule one level down, on the pinned function's own input. #515's own
-# probe was MARKDOWN_PATTERN cut from fifteen metacharacters to three with both
-# markdown_escape bodies left byte-identical; since #558 stage 3 the pinned input
-# is html_escape's result bound, so the plant raises it in one script with both
-# html_escape bodies untouched -- a prune message that can overrun Pushover's cap
-# while the identity guard on the consumer says the copies agree.
+# The pinned function's input bound drifting while both bodies stay identical (#515).
 expect_failure(failures, "escaped field bound diverged",
                "every copy site must spell MAX_ESCAPED_FIELD_CHARACTERS identically",
                detected_by: %i[policy]) do |root|
@@ -3664,24 +3235,14 @@ expect_failure(failures, "escaped field bound diverged",
               /^MAX_ESCAPED_FIELD_CHARACTERS = .*$/, "MAX_ESCAPED_FIELD_CHARACTERS = 768")
 end
 
-# The other direction on the same table: a copy site that stops carrying the
-# constant at all. The site list is exact rather than a floor because a copy that
-# disappears changes the contract as much as one that diverges, and a floor of
-# two would let a site drop it in silence.
-#
-# Planted on MAX_TITLE_CHARACTERS in image_prune.py since #558 stage 3 retired
-# MARKDOWN_PATTERN, the constant this row used to drop: the cap is a site of all
-# three copy programs now, and this row plants the disappearance of one of them.
+# The site list is exact, so a copy dropping the constant fails.
 expect_failure(failures, "Pushover title cap dropped by a copy site",
                "A copy that disappeared is as much a change to this contract as one that diverged",
                detected_by: %i[policy]) do |root|
   mutate_text(root, "scripts/image_prune.py", /^MAX_TITLE_CHARACTERS = .*\n/, "")
 end
 
-# The hole the reduce(:&) tripwire above could not reach: it needs BOTH
-# scripts/*.py programs to define a name, so a verbatim copy shared by the relay
-# and exactly one script was pinned by nothing. #515 planted this and the policy
-# set stayed green.
+# A verbatim copy shared by the relay and one script (#515).
 expect_failure(failures, "fresh duplicate shared with the relay left unlisted",
                "are spelled byte-identically in two or more of",
                detected_by: %i[policy]) do |root|
@@ -3697,10 +3258,7 @@ expect_failure(failures, "fresh duplicate shared with the relay left unlisted",
   end
 end
 
-# The relay's verbatim copies of the message helpers (#558). duplicated_helper_floors
-# compares scripts/*.py only, and the pairwise stanza skips a name that table
-# lists, so the relay's fit_message drifting by one docstring word was pinned by
-# nothing until RELAY_VERBATIM_HELPERS; this row is that drift.
+# The relay's verbatim copies of the message helpers (#558).
 expect_failure(failures, "relay message helper diverged from the scripts",
                "must define fit_message identically to scripts/production_auto_deploy.py",
                detected_by: %i[policy]) do |root|

@@ -1,13 +1,4 @@
-"""Emit every Paperless user as sorted JSON on stdout.
-
-Run inside the Paperless webserver container by `manage.py shell -c`, so Django
-is already configured and the imports resolve against the app's environment.
-
-The listing is read twice per converge, before and after managed-user
-reconciliation, and both callers parse the last stdout line as JSON. Keys are
-sorted so an unchanged user set produces byte-identical output and the play stays
-idempotent.
-"""
+"""Emit every Paperless user as sorted JSON, byte-stable for idempotence."""
 
 import json
 

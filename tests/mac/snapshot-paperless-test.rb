@@ -1,21 +1,6 @@
 #!/usr/bin/env ruby
-# Offline proof of the coordinated manifest logic tests/mac/snapshot-paperless.rb
-# uses to decide whether a snapshot is intact.
-#
-# usage: snapshot-paperless-test.rb   (no arguments, no Docker, no network)
-#
-# It builds a throwaway directory of the four members a snapshot holds, takes a
-# manifest of them, and then checks that the manifest verifies what it should and
-# refuses tampering, an absent member and an unknown schema. The logic is a
-# duplicate of the snapshot program's on purpose: this half must be provable
-# without a deployment, and the contract holds the two halves to each other.
-#
-# tests/mac/snapshot-paperless.sh --self-test runs it, which is how the policy
-# gate reaches it. It ran from a `<<'RUBY'` heredoc in that wrapper until #315,
-# opened as a bare `ruby -` with no `-r` preloads, where sh -n, ruby -c and a
-# reader could reach none of it -- and the gate did not run it at all until the
-# commit before this one. The body below is byte-identical to what that heredoc
-# rendered, its own requires included.
+# Offline proof of snapshot-paperless.rb's manifest logic (tamper, absent member,
+# unknown schema). Deliberately a duplicate; run by snapshot-paperless.sh --self-test.
 require "digest"
 require "json"
 require "pathname"

@@ -10,12 +10,8 @@
       - "{{ trailarr_config_host_path }}"
       - "{{ trailarr_config_host_path }}/.env"
 
-# Redacted: the conditions name the administrator identity and the API key.
-# Compose reads the rendered .env line by line, so a value carrying a newline
-# would silently truncate the credential rather than fail. The hash shape is
-# pinned as well, because WEBUI_PASSWORD is compared with bcrypt.checkpw
-# directly and nothing hashes it: a plaintext there does not fail loudly, it
-# makes login permanently impossible.
+# Redacted. WEBUI_PASSWORD is checked with bcrypt.checkpw and never hashed, so a
+# plaintext there makes login permanently impossible.
 - name: Require env-safe Trailarr administrator credentials
   ansible.builtin.assert:
     that:
@@ -30,8 +26,7 @@
       plaintext password in place of the hash makes login impossible.
   no_log: true
 
-# Redacted: this is where the API key and the administrator hash enter the
-# target filesystem.
+# Redacted: the API key and admin hash enter the target here.
 - name: Render the private Trailarr environment
   ansible.builtin.template:
     src: env.j2
@@ -39,13 +34,7 @@
     mode: "0600"
   no_log: true
 
-# The block exists for one thing the rescue does with the failure: it hands the
-# deployment's own message to roles/container_health, which either explains it in
-# terms of the container state Docker reports or re-raises it unchanged.
-# Compose's `--wait` fails a crash-looping container with "container ... is
-# unhealthy", which says nothing about why. roles/bindery/tasks/main.yml carries
-# the long form of this argument; #509 built the mechanism and #537 wired the
-# remaining eleven single-`up` roles into it.
+# The rescue hands Compose's opaque "unhealthy" to roles/container_health (#509, #537).
 - name: Deploy Trailarr, catching a container that runs but never serves
   block:
     - name: Deploy Trailarr
@@ -59,24 +48,15 @@
         wait_timeout: "{{ platform_compose_wait_timeout }}"
       register: trailarr_deploy
   rescue:
-    # First, and before anything else can rebind it: ansible_failed_result
-    # belongs to whichever rescue is running.
+    # First: ansible_failed_result belongs to whichever rescue is running.
     - name: Record the failed Trailarr deployment
       ansible.builtin.set_fact:
         trailarr_deploy_failure_message: >-
           {{ ansible_failed_result.msg
              | default('the Trailarr deployment failed and reported no message') }}
 
-# Immediately after the deployment and before everything that trusts it. A
-# container in `Restarting` still appears in `docker container ls --quiet`, so
-# the CPU verification below would sail straight past one and the readiness probe
-# after it would fail on a timeout that names nothing (#510).
-#
-# Detect without refusing, one bounded force-recreate of only what Docker says is
-# stuck, then the verdict. roles/container_health/tasks/recover.yml is the one
-# copy of that sequence and carries the argument for each of its three properties;
-# the deployment above stays here because it is what declares the release this
-# repairs (#646).
+# Right after deploy: a `Restarting` container passes the CPU check and the probe
+# would time out naming nothing (#510, #646).
 - name: Recover Trailarr from a container that runs but never serves
   ansible.builtin.include_role:
     name: container_health
@@ -90,26 +70,13 @@
     container_health_deploy_failure_message: >-
       {{ trailarr_deploy_failure_message | default('') }}
 
-# The application's own /config/.env beats the container environment, and it is
-# reconciled after Compose rather than before it because the application is what
-# writes it: on a first converge the file does not exist until the deployment
-# above has started the container once. Reconciling first meant the first run
-# could only report "nothing to reconcile" and the second run performed the
-# first repair, so the pair could never agree — which is exactly what an
-# idempotence check compares. The restart below is what makes a late repair take
-# effect, so ordering it this way costs nothing a converge did not already pay.
+# After Compose because the app writes the file on first start; before it, run 2
+# would do run 1's repair and fail idempotence.
 - name: Reconcile the platform-owned Trailarr application environment
   ansible.builtin.include_tasks: reconcile_env.yml
 
-# /config/.env lives under a bind mount rather than in the Compose spec, so
-# docker_compose_v2 does not recreate the container when it changes and the
-# running process keeps the values it read at start. Without this the repair
-# above silently does not take effect until some unrelated recreation.
-#
-# Not a handler: handlers run at the end of the play, but the readiness probe
-# and every reconciliation below read the live settings, which are os.getenv
-# reads in the running process. Deferring the restart would run all of them
-# against the values the old process loaded.
+# A bind-mounted file change does not recreate the container. Not a handler: the
+# probe and reconciliations below read the live process environment.
 - name: Restart Trailarr onto the repaired application environment # noqa: no-handler
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/trailarr"
@@ -127,11 +94,6 @@
     tasks_from: report
   vars:
     deployment_report_service: Trailarr
-    # All three Compose-affecting results. A force-recreate that repaired a wedged
-    # container changed the deployment as surely as the deploy did, and a report
-    # gated on the deploy alone would say nothing on the one converge an operator
-    # most wants to hear about. It is registered even when skipped, and
-    # `default({})` covers the paths that never reach it at all.
     deployment_report_changed: >-
       {{ trailarr_deploy is changed or trailarr_config_env_repair is changed
          or ((container_health_wedged_recreate | default({})) is changed) }}
@@ -143,12 +105,8 @@
     container_cpu_service_name: trailarr
     container_cpu_project_name: "{{ trailarr_compose_project_name }}"
 
-# Two failures wear the same costume here and neither is a network problem.
-# When the hourly nvidia probe fails, /status raises 404 rather than 503, so the
-# status list below accepts it and the assertion names it. And when an alembic
-# migration fails the start script restores its backup and then sleeps forever
-# instead of exiting, so the container stays up, `restart: unless-stopped` never
-# fires, and nothing is ever listening.
+# A failed nvidia probe makes /status 404; a failed alembic migration sleeps forever
+# with nothing listening.
 - name: Wait for Trailarr application health
   ansible.builtin.uri:
     url: "{{ trailarr_status_url }}"
@@ -176,20 +134,9 @@
       up with nothing listening is a failed alembic migration sleeping forever
       after restoring its own backup.
 
-# The application writes /config/.env itself, and entrypoint.sh recreates it
-# through a grep and a move on every start, so the replacement lands at the
-# image's default 0644 — measured against the pinned image, not assumed. Nothing
-# else undoes that: python-dotenv, which the application uses for its own later
-# writes, reads the destination's mode and restores it.
-#
-# The permission is enforced here, behind the readiness gate, and not beside the
-# restart above. `docker compose restart --wait` returns while the entrypoint is
-# still running, so a chmod issued there is overtaken by the entrypoint's own
-# move a moment later and the next run finds 0644 again. Waiting for the
-# application to answer /status is what proves the file it wrote is the final
-# one. Enforcing it outside the repair also matters: a permission bit must not
-# mark the repair changed, because that restarts the container and recreates the
-# 0644 it just fixed.
+# entrypoint.sh recreates /config/.env at 0644 on every start. Enforced after the
+# readiness gate (restart --wait returns before the entrypoint's move) and outside
+# the repair, so the chmod never marks it changed and triggers another restart.
 - name: Look for the Trailarr application environment after start
   ansible.builtin.stat:
     path: "{{ trailarr_config_host_path }}/.env"
@@ -212,12 +159,8 @@
   ansible.builtin.include_tasks: reconcile_connections.yml
   when: media_usenet_enabled | bool
 
-# Runs under the same gate as the connections above, because without a
-# connection there is no synced media and the reconcile has nothing to address.
-# It is deliberately *not* gated on trailarr_monitoring_enabled: monitoring an
-# item states which titles the platform intends to have a trailer, while that
-# flag states whether fetching is permitted, and the useful staging position is
-# the first without the second.
+# Gated on connections (no synced media otherwise), not on monitoring_enabled:
+# monitoring is intent, that flag is permission.
 - name: Reconcile the Trailarr per-item monitoring
   ansible.builtin.include_tasks: reconcile_monitoring.yml
   when:
@@ -244,14 +187,8 @@
   changed_when: false
   check_mode: false
 
-# The web interface is the writer: the same session can download a trailer,
-# delete one, rename a file and declare a new connection, over the same Movies
-# and Series trees Radarr and Sonarr own. These three reads prove the
-# vault-authored identity is the one Trailarr accepts, that it refuses an
-# anonymous caller, and that the published default administrator — admin /
-# trailarr, whose hash is a literal in the application's own settings module —
-# is no longer accepted.
-# Redacted: the credential is the request.
+# Proves the vault identity works, anonymous is refused, and the published default
+# admin/trailarr is refused. Redacted: the credential is the request.
 - name: Verify Trailarr accepts the vault-authored API key
   tags: [platform_verify_trailarr]
   ansible.builtin.uri:
@@ -293,13 +230,8 @@
   changed_when: false
   check_mode: false
 
-# The settings read is also the drift probe, because every global setting is a
-# live os.getenv rather than database state: if /config/.env has reacquired a
-# platform-owned key, the value the application reports here is the drifted one.
-# PUT /api/v1/settings/update is deliberately never called anywhere in this
-# role: it reports failure with HTTP 200 and prose in the body, so a task
-# asserting status_code 200 would pass on every failure, and every call writes
-# to /config/.env, which is the drift mechanism itself.
+# The settings read doubles as the drift probe (settings are live os.getenv). Never
+# call PUT /settings/update: it fails with HTTP 200 and writes /config/.env.
 - name: Require the exact Trailarr verification results
   tags: [platform_verify_trailarr]
   ansible.builtin.assert:

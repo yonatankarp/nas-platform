@@ -1,18 +1,8 @@
 #!/usr/bin/env ruby
-# The runtime half of the Paperless service contract: everything that needs a
-# served Paperless, a vault and a Docker host.
-#
-# usage: ruby paperless-runtime.rb MODE [ARGUMENT...]
-#
-# No -r preloads, because the heredoc this came from had none: the requires
-# below are the program's own. Its whole input beyond MODE is the PLATFORM_*
-# environment the wrapper exports, and PLATFORM_CONTRACT_REPO_DIR is the tree
-# being inspected rather than the checkout this file lives in.
-#
-# The wrapper reads this file's text for three constants it cannot observe by
-# running the static half -- DOCUMENT_INDEX_TIMEOUT_SECONDS,
-# MAIL_PROBE_READ_TIMEOUT and its use at the mail-account probe -- so moving
-# or renaming any of them is a contract change, not a refactor.
+# Runtime half of the Paperless contract (served Paperless, vault, Docker host).
+# usage: ruby paperless-runtime.rb MODE [ARGUMENT...]; inputs are the PLATFORM_*
+# environment the wrapper exports. The wrapper reads DOCUMENT_INDEX_TIMEOUT_SECONDS
+# and MAIL_PROBE_READ_TIMEOUT from this file's text: renaming them is a contract change.
 require "digest"
 require "json"
 require "net/http"
@@ -161,11 +151,8 @@ def seed_document_fixtures
     CONSUME_ROOT.join("task-13-contract.pdf"),
     pdf_bytes("Paperless PDF #{PDF_MARKER}")
   )
-  # Base64 because a PNG in the tree is a binary blob every diff and every
-  # fixture copy has to carry verbatim. What it says is legible in
-  # tests/fixtures/paperless-ocr.svg beside it, which is also what it was
-  # rendered from and how to render it again; the OCR assertions below are held
-  # against that file by tests/paperless_contract_test.rb.
+  # Rendered from tests/fixtures/paperless-ocr.svg, which
+  # tests/paperless_contract_test.rb holds the OCR assertions against.
   write_fixture(
     CONSUME_ROOT.join("task-13-contract.png"),
     REPO_ROOT.join("tests/fixtures/paperless-ocr.png.base64").read.delete("\n").unpack1("m0")
@@ -292,9 +279,7 @@ export_passphrase = Digest::SHA256.hexdigest(
 vault_yaml.replace("\0" * vault_yaml.bytesize)
 vault_error.replace("\0" * vault_error.bytesize)
 
-# The two mail object names are not credentials and are not in the vault: they
-# are operator policy in the shared inventory, read here from the tree under
-# inspection rather than from the checkout this program lives in (#353).
+# Mail object names are operator policy in the inspected tree's inventory (#353).
 shared_inventory = YAML.safe_load_file(
   REPO_ROOT.join("inventory", "group_vars", "all", "service_paperless_ngx.yml")
 )

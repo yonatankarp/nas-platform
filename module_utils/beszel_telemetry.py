@@ -118,19 +118,8 @@ def poll_telemetry(
 ):
     """Poll both collections until ready or one monotonic deadline expires.
 
-    Every return carries transient_failures, the number of collection requests
-    that were retried away. Suppressing them is right -- a 5xx or a socket
-    timeout inside the deadline is exactly what the retry loop is for -- but
-    suppressing them without counting made two different failures produce one
-    report: a hub that answered nothing and an agent that collected nothing both
-    left the records None, so the role named missing_categories either way and
-    read as a broken agent. The count carries no record content and no
-    credential, which is why it can go into evidence at all.
-
-    Attached at each return rather than folded into evaluate_telemetry: a fetch
-    that fails after the last evaluation still has to be counted, and two of the
-    four returns sit exactly there. It is on the passing return as well, so the
-    role can read the key on a converge where nothing was missing.
+    Every return carries transient_failures (retried requests), so a hub that answered
+    nothing is distinguishable from an agent that collected nothing.
     """
     deadline = monotonic() + timeout_seconds
     system_record = None

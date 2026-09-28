@@ -10,10 +10,7 @@ include PolicySupport
 ROOT = File.expand_path("..", __dir__)
 ROLE_PATH = File.join(ROOT, "roles", "audiobookshelf", "tasks", "main.yml")
 DEFAULTS_PATH = File.join(ROOT, "roles", "audiobookshelf", "defaults", "main.yml")
-# The runtime half of the contract, which is the half that would issue a scan.
-# It was inside tests/contracts/audiobookshelf.sh until issue #147 gave it a
-# file; a negative grep left pointing at the wrapper would go trivially true
-# against the 74 lines that remain there and assert nothing.
+# The runtime half of the contract, which would issue a scan (#147).
 CONTRACT_PATH = File.join(ROOT, "tests", "contracts", "audiobookshelf-runtime.rb")
 INTEGRATION_PATH = File.join(ROOT, "tests", "integration.sh")
 
@@ -181,15 +178,12 @@ def validate_current_library_id!(tasks, found)
     Array(current_id_assert["that"]) == [
       "audiobookshelf_current_library.id | string is match(platform_safe_api_identifier_pattern)"
     ] && Array(current_id_gate["when"]) == ["audiobookshelf_current_library | length > 0"] &&
-      # The pattern is one platform variable since #647, so the value it names is
-      # half of this property and is held here rather than trusted.
+      # The pattern is one platform variable (#647), so its value is held here too.
       YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
           .fetch("platform_safe_api_identifier_pattern") == SAFE_ID_PATTERN,
     "current library ID must be validated against the safe API pattern"
   )
-  # `assert` renders the source text of the failing condition and the rendered
-  # fail_msg, never the values, so an untemplated message is the whole property
-  # here; `no_log` would only hide which condition failed.
+  # `assert` prints the failing condition's source and fail_msg, never values.
   require_condition(
     !current_id_assert.fetch("fail_msg", "").to_s.include?("{{"),
     "unsafe current library IDs must not be disclosed"
@@ -529,9 +523,6 @@ def validate_scan_diagnostic!(tasks)
   )
 end
 
-# The groups run in the order they were written as one method, and each resolves
-# its own tasks where it used to, so a mutation that deletes a task still raises
-# at the same point. `found` carries the tasks and indexes a later group compares.
 def validate_initial_scan!(tasks, defaults)
   found = {}
   validate_scan_classification!(tasks, defaults, found)
@@ -560,8 +551,6 @@ def mutation_rejected!(tasks, defaults, label)
   raise "#{label} mutation was not rejected"
 end
 
-# The role is stage files imported from main.yml; static_role_tasks assembles
-# them the way Ansible does, so this reads the whole role and not one stage.
 tasks = static_role_tasks(ROLE_PATH, aliases: false)
 defaults = YAML.safe_load_file(DEFAULTS_PATH, aliases: false)
 validate_initial_scan!(tasks, defaults)

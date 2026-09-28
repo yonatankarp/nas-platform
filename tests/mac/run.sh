@@ -8,11 +8,7 @@ FRESH_PHASES=' preflight deploy seed verify idempotence drift reconcile recreate
 mac_script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 . "$mac_script_dir/lib.sh"
-# Sourced for cleanup_sandbox_projects alone: capture_diagnostics collects
-# container state and logs per Compose project, and it used to name eight of them
-# by hand. Eight services had been promoted since, so a failed run's evidence was
-# missing every one of them. The roster it needs already exists here, and
-# tests/mac/cleanup.sh reads the same file for the same reason.
+# Sourced for cleanup_sandbox_projects, the project roster capture_diagnostics uses.
 cleanup_sandbox_repo_dir=$mac_repo_dir
 . "$mac_repo_dir/tests/sandbox_cleanup.sh"
 . "$mac_repo_dir/tests/integration_lock.sh"
@@ -72,12 +68,8 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-# The lane's Ruby programs, its own and the contracts it runs, call
-# YAML.safe_load_file and Enumerable#filter_map throughout, and macOS's
-# /usr/bin/ruby has neither. Refuse such a ruby here, before the first of them
-# runs, rather than let it die as a NoMethodError generate_immich_fixture_vars
-# swallows and an ENOENT on the file it never wrote (#854). Probed by API, not
-# by version number, so there is no second copy of a floor to keep in step.
+# The lane's Ruby needs YAML.safe_load_file and filter_map, which macOS's
+# /usr/bin/ruby lacks; probed by API rather than version (#854).
 mac_ruby=$(command -v ruby 2>/dev/null) ||
   mac_die 'ruby is not on PATH; install a current Ruby (docs/getting-started-mac.md)'
 ruby -ryaml -e \
@@ -123,29 +115,10 @@ case $(CDPATH= cd -- "$(dirname -- "$vault_password_file")" 2>/dev/null && pwd -
   "$mac_repo_dir"/*) mac_die 'vault password input must remain outside the repository' ;;
 esac
 
-# THE COMMITTED PER-SERVICE VAULTS ARE STILL LOADED BY THIS LANE, AND THAT IS
-# NOT WHAT tests/integration_controller.sh DOES (#650). That harness runs inside
-# a container against a disposable clone at /repo, so it can `rm -f
-# inventory/group_vars/all/vault_*.yml` before installing the ephemeral vault --
-# and it does, with the reason stated beside it. This script runs
-# `ansible-playbook` against $mac_repo_dir, which is THE OPERATOR'S OWN
-# CHECKOUT, so the same two lines here would delete eighteen committed files out
-# of their working tree. The treatment is not portable and must not be copied.
-#
-# What that leaves is a coupling nothing states. inventory/mac.yml sits beside
-# inventory/group_vars/, so `all` is loaded from there, and every committed
-# vault_<role>.yml is decrypted with the single --vault-password-file this
-# script exports. It works only while the operator's Mac vault password equals
-# the repository's: equal, and production ciphertext is decrypted into a run
-# that then overrides it with `-e @"$vault_file"`; unequal, and the run dies
-# mid-play on a decryption error that names neither this coupling nor the file.
-#
-# Not fixed here, because both available fixes are wrong for a residue sweep: a
-# removal is destructive, and giving the Mac inventory its own group_vars
-# directory is a restructure -- the lane legitimately needs main.yml and every
-# service_<role>.yml out of that same directory, and Ansible offers no per-file
-# exclusion. Asserting the passwords match would be worse still: it would make a
-# rule of the accident. The decision belongs with whoever owns the Mac proof.
+# This lane loads the committed vault_<role>.yml files from the operator's own
+# checkout (unlike tests/integration_controller.sh, which deletes them in a clone;
+# never copy that here). It works only while the Mac vault password equals the
+# repository's; otherwise the run dies mid-play on a decryption error (#650).
 
 canonical_input_path() {
   input_parent=$(CDPATH= cd -- "$(dirname -- "$1")" 2>/dev/null && pwd -P) ||
@@ -155,7 +128,6 @@ canonical_input_path() {
 
 vault_file=$(canonical_input_path "$vault_file" 'vault file')
 vault_password_file=$(canonical_input_path "$vault_password_file" 'vault password input')
-
 
 if [ -n "$selected_phase" ]; then
   case "$PHASES" in *" $selected_phase "*) ;; *) mac_die "unknown phase: $selected_phase" ;; esac
@@ -272,10 +244,7 @@ pin_protected_input() {
   pin_kind=$4
   pin_external=$5
   pin_reuse=$6
-  # The 313-line Ruby program this used to pipe in from a quoted heredoc is now
-  # pin-protected-input.rb, where sh -n, a linter and a unit test can all reach
-  # it. Its stdin was that heredoc, exhausted by the time the program ran; keep
-  # stdin at end-of-file so the pin can never consume the caller's.
+  # Keep stdin at end-of-file so the pin can never consume the caller's.
   "$mac_script_dir/pin-protected-input.rb" "$pin_source" "$pin_destination" "$pin_label" \
     "$pin_kind" "$pin_external" "$mac_repo_dir" "$protected_input_root" "$pin_reuse" \
     </dev/null
@@ -333,11 +302,8 @@ ensure_immich_fixture_vars() {
 }
 git_revision=$(git -C "$mac_repo_dir" rev-parse HEAD)
 vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
-# One probe for the allocator and for preflight. TCPServer sets SO_REUSEADDR,
-# and on macOS that lets a bind on 127.0.0.1 succeed beside a listener on the
-# wildcard address, so the probe binds both: the loopback bind meets a listener
-# on 127.0.0.1, the wildcard bind one on 0.0.0.0. Only EADDRINUSE means taken;
-# any other bind error propagates, because another candidate will not clear it.
+# One probe for the allocator and for preflight. macOS SO_REUSEADDR lets a loopback
+# bind succeed beside a wildcard listener, so the probe binds both.
 # ponytail: IPv4 only; add "::" if a proof ever publishes on IPv6 alone.
 mac_port_probe='
   require "socket"
@@ -348,12 +314,8 @@ mac_port_probe='
     false
   end
 '
-# Candidates come from a band below both defaults' ephemeral ranges (Linux
-# 32768, macOS 49152), never from a port-0 bind: a kernel-assigned port goes
-# back to the pool on close, and any outgoing connection or sibling port-0 bind
-# can take it before preflight rebinds it (#833). Inside this band only an
-# explicit bind of the same number can collide. A hundred taken candidates in
-# a band of 12768 ports is not bad luck, so the allocator stops there.
+# Candidates come from a band below both ephemeral ranges, never a port-0 bind: a
+# kernel-assigned port can be taken before preflight rebinds it (#833).
 # ponytail: fixed band; derive it from the host's range if one is lowered below 32768.
 allocate_service_port() {
   while :; do
@@ -377,36 +339,23 @@ allocate_service_port() {
   done
 }
 
-# Emits one decimal port per roster service, in roster order, from a validated
-# ports file. The roster arrives as arguments rather than as a literal list so
-# that the emission order and the order the caller unpacks are the same list.
+# Emits one port per roster service, in roster order, from a validated ports file.
 read_integration_ports() {
-  # The reader is read-integration-ports.rb: a 30-line TOCTOU-safe program that
-  # ran from a `<<'RUBY'` heredoc here until #315, where sh -n, ruby -c and a
-  # unit test could reach none of it. Two roots meet on this line and must not be
-  # confused: the program is resolved from $mac_script_dir, this script's own
-  # checkout, while $mac_repo_dir is passed as the tree the ports file must not
-  # live inside. stdin stays at end-of-file because the heredoc exhausted it.
+  # The program comes from this checkout; $mac_repo_dir is the tree the ports file
+  # must not live inside. stdin stays at EOF.
   # shellcheck disable=SC2086
   "$mac_script_dir/read-integration-ports.rb" "$integration_ports_file" "$mac_repo_dir" \
     $MAC_SERVICE_PORT_ORDER </dev/null
 }
 
 if [ "$proof_platform" = integration ]; then
-  # read-integration-ports.rb answers every refusal with the single word `unsafe`
-  # and echoes nothing about the file, deliberately, so this message is the only
-  # place a reader is told anything -- and what it can honestly say is what THIS
-  # checkout requires, which is not information about the rejected input. The
-  # roster is named because the commonest cause is that it grew: the file must
-  # carry exactly one `<name>_port` key per entry, so a ports file written before
-  # a service was added is refused with nothing else wrong with it.
+  # The reader answers every refusal with `unsafe`; the commonest cause is a ports
+  # file written before the roster grew.
   integration_ports=$(read_integration_ports) ||
     mac_die "integration ports input is invalid: it must carry exactly one \
 \"<name>_port\" key per entry of $MAC_SERVICE_PORT_ORDER, and nothing else"
 
-  # The validated representation contains one decimal integer per roster service,
-  # in roster order, because read_integration_ports emitted it from this same
-  # list. The length check keeps a short list from binding services to nothing.
+  # One port per roster service in roster order; the length check refuses a short list.
   # shellcheck disable=SC2086
   set -- $integration_ports
   [ "$#" -eq "$(mac_service_port_count)" ] || mac_die 'integration ports input is invalid'
@@ -419,15 +368,8 @@ else
   callback_host=host.docker.internal
 fi
 
-# report.rb names one --<service>-port option per roster service, so the flag
-# list is the roster spelled with hyphens -- literally so, because a roster entry
-# is a port name and such a name may carry an underscore that a long option must
-# not. The shell variable keeps the underscore (`<name>_port`, which is what the
-# role reads); only the flag is respelled. `adguard_dns` was the only entry that
-# ever exercised this and #577 removed it with the service, so the transformation
-# is held by tests/policy_mac_test.rb rather than by an instance. The caller's own
-# arguments are appended to, never replaced: OptionParser is order-insensitive
-# across distinct options, so they may sit before the port flags.
+# One --<name>-port flag per roster entry; an underscore in a port name becomes a
+# hyphen in the flag only (tests/policy_mac_test.rb holds the transformation).
 initialize_report_input() {
   for mac_roster_service in $MAC_SERVICE_PORT_ORDER; do
     mac_roster_flag=$(printf '%s' "$mac_roster_service" | tr '_' '-')
@@ -446,9 +388,7 @@ if [ ! -f "$state_input" ]; then
       eval "${mac_roster_service}_port=\$expected_${mac_roster_service}_port"
     done
   else
-    # Each allocation is told every port already handed out, so the cascade that
-    # used to repeat the growing argument list by hand -- fourteen arguments on
-    # the last call -- is now one accumulator threaded through the roster.
+    # Each allocation is told every port already handed out.
     mac_allocated_ports=
     for mac_roster_service in $MAC_SERVICE_PORT_ORDER; do
       # shellcheck disable=SC2086
@@ -468,16 +408,8 @@ else
   state_git_revision=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("git_revision")' "$state_input")
   state_vault_checksum=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("vault_checksum")' "$state_input")
   state_project_name=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("project_name")' "$state_input")
-  # THE IDENTITY COMPARISONS COME FIRST, and the order is the diagnostic. The
-  # port read below fails whenever the roster has grown since the state file was
-  # written -- `document.fetch` raises on the key that is not there -- and it
-  # said 'resume state input does not record the service ports', which sends a
-  # reader to a file that is not wrong about anything. What is actually wrong in
-  # that case is that the checkout moved under a sandbox, which the revision
-  # comparison names exactly. So every scalar the state file already yielded is
-  # compared before the ports are read, and the port failure is left to mean
-  # what it says: a state file written by this revision that does not record
-  # them.
+  # Identity comparisons come first: a grown roster also fails the port read below,
+  # and the revision mismatch is the accurate diagnosis for it.
   [ "$state_lane" = "$lane" ] || mac_die 'resume lane does not match the recorded lane'
   [ "$state_proof_platform" = "$proof_platform" ] ||
     mac_die 'resume proof platform does not match the recorded run'
@@ -491,9 +423,7 @@ else
     mac_die 'resume Git revision does not match the recorded run'
   [ "$state_vault_checksum" = "$vault_checksum" ] ||
     mac_die 'resume vault checksum does not match the recorded run'
-  # One interpreter start-up for every roster port, instead of one per service.
-  # `set --` rather than a pipe: in POSIX sh the right side of a pipe is a
-  # subshell and the assignments would evaporate with it.
+      # `set --` rather than a pipe: the right side of a pipe is a subshell.
   state_ports=$(
     # shellcheck disable=SC2086
     ruby -rjson - "$state_input" $MAC_SERVICE_PORT_ORDER <<'RUBY'
@@ -666,9 +596,7 @@ execute_phase() {
           return 1
         }
       done
-      # Resolved once, into a variable, so that a roster service without a port
-      # aborts here rather than collapsing the substitution to nothing and
-      # letting both reservation checks pass over an empty list.
+      # Resolved into a variable so a missing port aborts instead of checking an empty list.
       reserved_ports=$(mac_service_ports) || {
         mac_die 'reserved host ports are unresolved'
         return 1
@@ -817,6 +745,5 @@ if [ -d "$sandbox" ]; then
   preserve_sandbox_on_exit=true
 fi
 
-# Preservation is already the default. Keeping the parsed flag explicit makes
-# the CLI contract stable for automation that requests it defensively.
+# Preservation is the default; the flag is kept so the CLI contract stays stable.
 : "$keep_on_failure"

@@ -12,15 +12,9 @@ require_relative "policy_support"
 include TestScaffold
 
 CONTRACT = File.join(ROOT, "tests", "contracts", "dozzle.sh")
-# Since issue #147 the contract's Ruby lives in six files beside the wrapper, so
-# a check that reads "the contract" has to say which part of it. The wrapper is
-# still what you run; the diagnostics below are spelled in its live half.
+# The contract's Ruby lives beside the wrapper (#147); these diagnostics are in the live half.
 RUNTIME = File.join(ROOT, "tests", "contracts", "dozzle-runtime.rb")
-# Derived from the wrapper's own text rather than restated, by the same rule
-# tests/run_contracts.rb and tests/policy_mutation_support.rb use, so a seventh
-# program is covered on the day it is added. The floor below is what keeps this
-# list from going quiet: a regex that stopped matching would otherwise turn every
-# absence assertion into a vacuous truth.
+# Derived from the wrapper's text like tests/run_contracts.rb; floored below.
 CONTRACT_PROGRAMS = File.read(CONTRACT).each_line
                         .reject { |line| line.lstrip.start_with?("#") }
                         .flat_map { |line| line.scan(%r{tests/contracts/[A-Za-z0-9_./-]+\.rb}) }
@@ -214,10 +208,7 @@ check(failures, CONTRACT_PROGRAMS.all? { |path| File.file?(path) },
       "the Dozzle wrapper names a Ruby program that is absent: " \
       "#{CONTRACT_PROGRAMS.reject { |path| File.file?(path) }.join(', ')}")
 
-# Positive assertions: each of these sentences is spelled in the live half and
-# nowhere else in the repository, so this is the file that has to hold them. Left
-# pointed at the wrapper they announce their own breakage; the ten rows in
-# tests/dozzle_contract_test.rb prove each still fires against a plant here.
+# Positive assertions, spelled only in the live half.
 runtime = File.read(RUNTIME)
 fixed_diagnostics = [
   "OOM drift fixture differs",
@@ -233,11 +224,7 @@ fixed_diagnostics = [
 fixed_diagnostics.each do |diagnostic|
   check(failures, runtime.include?(diagnostic), "Dozzle contract is missing fixed diagnostic: #{diagnostic}")
 end
-# Absence assertions, and they are the dangerous half: pointed at the 180-line
-# wrapper they would be trivially true forever. The subject of "the contract must
-# not interpolate this" is the whole contract, which after #147 is the wrapper
-# plus its programs -- so the whole of it is read here rather than only the file
-# that happens to spell the variables today.
+# Absence assertions read the whole contract (wrapper plus programs), or they are vacuous.
 whole_contract = ([CONTRACT] + CONTRACT_PROGRAMS).map { |path| File.read(path) }.join("\n")
 unsafe_diagnostic_fragments = [
   "template differs: expected #{'#'}{expected_template.inspect}",
@@ -301,9 +288,7 @@ relay_mutations = [
    "      - ${DOZZLE_STATE_ROOT:?}/alert-relay:/state\n",
    "      - ${DOZZLE_STATE_ROOT:?}:/state\n",
    "alert relay mounts differ"],
-  # The listener port has one home, inventory/group_vars/all/service_dozzle.yml. These three
-  # mutations put a literal back into each consumer in turn and require the
-  # contract to reject it, so a second copy cannot reappear unnoticed.
+  # The listener port has one home, service_dozzle.yml; a literal copy must be rejected.
   ["literal relay healthcheck port", "services/dozzle/compose.yml",
    "urlopen('http://127.0.0.1:${ALERT_RELAY_PORT:?}/healthz'",
    "urlopen('http://127.0.0.1:8081/healthz'",
@@ -344,12 +329,8 @@ role_safety_mutations = [
    "        dozzle_alert_relay_state_child_before_prepare.stat.isdir | default(false)\n"]
 ].freeze
 
-# Every row above copies the repository into a temporary directory of its own,
-# breaks one thing in the copy and runs the static half of the contract against
-# it, so the rows share nothing and each one is a copy plus a subprocess the
-# interpreter is only waiting on. Run one after another that was this check's
-# whole cost; collected as callables they go through the pool in the order they
-# are declared, which is also the order their failures are reported in.
+# Each row copies the repository, breaks one thing and runs the static contract; pooled,
+# reported in declaration order.
 copy_rows =
   [->(collected) { check_label_complete_fixture(collected) }] +
   name_mutations.map do |mutation, diagnostic|
@@ -367,11 +348,8 @@ copy_rows =
 
 in_parallel_cases(failures, copy_rows) { |row, collected| row.call(collected) }
 
-# An absence invariant over the whole role still has to reach every task, but it
-# reads the parsed scalars one at a time: a comment explaining why the role must
-# not coerce an opaque identifier is not a coercion, and a folded expression that
-# breaks the pipe onto its own line is one. Each scalar is offered with its
-# whitespace removed as well, so neither spelling escapes.
+# Parsed scalars, with and without whitespace, so comments do not match and folded
+# expressions do.
 role_scalars = PolicySupport.task_strings(YAML.safe_load_file(ROLE, aliases: true))
                             .map { |value| value.gsub(/[[:space:]]+/, "") }
 check(failures, role_scalars.none? { |value| value.include?("dispatcher.id|int") },

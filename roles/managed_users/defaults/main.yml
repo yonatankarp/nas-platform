@@ -1,46 +1,29 @@
 ---
-# The managed-user capability register, read from the DEPLOYED release rather
-# than from the controller checkout: roles/arr/tasks/configarr.yml is the
-# precedent, and the reason is the same -- what the target honours is what the
-# target carries. Every caller lists this path in its own
-# deployment_target_extra_paths.
+# Read from the deployed release, not the controller checkout; every caller
+# lists it in deployment_target_extra_paths.
 managed_users_register_path: >-
   {{ platform_current_dir }}/config/managed-user-capabilities.yml
 
-# Administrative credentials for the list, create and repair requests. A service
-# authenticating with a bearer or API-key header sets managed_users_admin_headers
-# and leaves these omitted.
+# Header-authenticated services set managed_users_admin_headers and omit these.
 managed_users_admin_headers: {}
 managed_users_admin_username: "{{ omit }}"
 managed_users_admin_password: "{{ omit }}"
 managed_users_admin_basic: true
 
-# The per-identity authentication probe. komga answers a GET against the
-# identity's own basic credentials; the POST services send a credential body.
 managed_users_authenticate_method: GET
 managed_users_authenticate_basic: true
 managed_users_authenticate_body: "{{ omit }}"
 managed_users_authenticate_body_format: "{{ omit }}"
-# Headers every authenticate request carries that are not the identity's own
-# credential. jellyfin names its client on every call, login included.
+# Non-credential headers on every authenticate call (jellyfin names its client).
 managed_users_authenticate_headers: {}
-# The status a successful authenticate answers. immich's login creates a session
-# and answers 201.
 managed_users_authenticate_status: 200
 
-# The attribute naming a user in the API listing, when it is not the attribute
-# naming the user in the declaration. jellyfin declares `username` and lists
-# `Name`; everywhere else the two are one word.
+# Listed attribute when it differs from the declared one (jellyfin lists
+# `Name`).
 managed_users_listed_identity_attribute: "{{ managed_users_identity_attribute }}"
 
-# The records a listing holds for one identity. The role binds the identity per
-# task as managed_users_matching_identity and resolves this against
-# managed_users_list_json -- the first listing, or the one re-read after
-# creation. Exact attribute equality by default; immich, whose server folds the
-# email it stores and whose listing has always been bucketed by
-# `trim | lower`, sets managed_users_match_normalized and matches the folded
-# bucket instead. Either way managed_user_ambiguity_errors then refuses a listing
-# in which the folded count and the match count disagree.
+# Bound per identity as managed_users_matching_identity. Normalized matching
+# (immich) compares the `trim | lower` bucket instead of exact equality.
 managed_users_match_normalized: false
 managed_users_identity_matches: >-
   {{ (managed_users_list_json |
@@ -58,56 +41,30 @@ managed_users_create_status: [201]
 managed_users_reconcile_method: PATCH
 managed_users_repair_status: [204]
 
-# What a complete listing must satisfy, asserted against the first listing and
-# again against the one re-read after creation. BRACE-FREE, like
-# managed_users_verify_conditions, so `assert` evaluates them in order and stops
-# at the first false: a service that wraps its list in a paginated envelope
-# (audiobookshelf) proves the envelope is a mapping before anything reads a key
-# out of it.
+# Brace-free so `assert` stops at the first false: an envelope is proved a
+# mapping before a key is read out of it.
 managed_users_listing_conditions:
   - managed_users_list_json | type_debug == 'list'
 
 # Whether an authenticated identity may differ from the declared one by case or
-# surrounding whitespace. komga compares emails normalised; audiobookshelf has
-# always required the login response to echo the declared username exactly.
+# whitespace.
 managed_users_authenticate_identity_normalized: true
 
-# The pattern a listed API identifier must match before this role puts it in a
-# request path. The platform's contract by default; a service whose identifiers
-# have a narrower, known shape (beszel's PocketBase record ids) states it, so
-# moving onto this role never widens the guard it had.
+# A service with a narrower known id shape states it, so the guard never widens.
 managed_users_id_pattern: "{{ platform_safe_api_identifier_pattern }}"
 
-# Credential-bound identities (beszel). When true the role proves, in BOTH
-# phases, that each identity's credential authenticates as the very record the
-# listing names; records the id each authentication returns
-# (managed_users_authenticated_id, evaluated against the authenticate result);
-# re-resolves its matches from the listing re-read after creation, so a record
-# created without its declared properties is repaired in the same run; and
-# refuses to repair any identity whose resolved record is not the one its
-# credential proved. The two id maps it keeps are readable from
-# managed_users_verify_conditions.
+# Credential-bound identities (beszel): proves each credential authenticates as
+# the listed record, re-resolves after creation, and refuses to repair a record
+# its credential did not prove.
 managed_users_bind_authenticated_ids: false
 
-# Re-resolve matches from the listing re-read after creation without binding
-# authenticated identities (jellyfin, whose repair merges into the re-read
-# policy). managed_users_bind_authenticated_ids implies it.
+# Re-resolve after creation without binding ids (jellyfin); implied by the
+# above.
 managed_users_reresolve_after_creation: false
 
-# Task files a caller runs INSIDE this role, for refusals that must hold between
-# two of its steps. Each is a path include_tasks resolves from this role's own
-# tasks directory, so a caller names its file as ../../<role>/tasks/<file>.yml.
-# The file runs with this role's names in scope (managed_users_matches,
-# managed_users_listing, managed_users_creation, managed_users_declared) and is
-# already gated on the phases of the steps around it.
-#   before_create: after existing credentials are proved, before creation is
-#     planned or performed; preflight and reconcile, --check included.
-#   after_creation: once the listing re-read after creation is bound, before
-#     this role reads it; reconcile only, never under --check.
-#   before_repair: after the stable-identity refusal, before the repair; reconcile
-#     and verify, --check included. immich reads and refuses the records its
-#     preference repair targets here, so nothing it refuses is patched.
-#   before_verify: immediately before the exact verification; verify only.
+# Caller task files run inside this role, as ../../<role>/tasks/<file>.yml:
+# before_create (preflight+reconcile), after_creation (reconcile, not --check),
+# before_repair (reconcile+verify), before_verify (verify only).
 managed_users_before_create_tasks: ""
 managed_users_after_creation_tasks: ""
 managed_users_before_repair_tasks: ""

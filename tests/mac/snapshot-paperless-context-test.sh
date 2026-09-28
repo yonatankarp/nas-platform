@@ -18,16 +18,8 @@ mkdir -m 0700 -p "$sandbox/service-data/docker" "$sandbox/service-data/media" \
   "$fixture/snapshot" "$fixture/bin"
 printf 'schema=1\nproject=%s\n' "$project" > "$sandbox/.nas-platform-mac-owned"
 chmod 0600 "$sandbox/.nas-platform-mac-owned"
-# The integration adoption drill deploys the namespaced Compose identities the
-# Mac lane deploys, so the drill must resolve the owned project prefix rather
-# than the canonical production names.
-#
-# The stub is `ruby` because the coordinated snapshot is a `#!/usr/bin/env ruby`
-# program since #315, so the wrapper's exec resolves this file first and hands it
-# the program's own path. Until then the wrapper ran `exec ruby - drill DIR` and
-# the first argument was the heredoc's `-`; asserting the path instead is
-# stronger, because it also proves the wrapper reached the extracted program
-# rather than some other one.
+# The drill must resolve the owned project prefix, not production names. The stub
+# is `ruby` because the wrapper execs the extracted program by path (#315).
 cat > "$fixture/bin/ruby" <<'SH'
 #!/bin/sh
 case $1 in

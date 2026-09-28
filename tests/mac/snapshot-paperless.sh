@@ -3,10 +3,7 @@ set -eu
 set +x
 umask 077
 
-# The two Ruby programs this dispatches to are siblings of this file, so they are
-# resolved from this script's own checkout. Nothing here inspects another tree,
-# but the rule is the one #147 measured: a program is part of the script, not
-# part of whatever tree the script was pointed at.
+# Sibling Ruby programs resolve from this script's own checkout (#147).
 mac_script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 
@@ -22,19 +19,8 @@ shift
 
 if [ "$mode" = --self-test ]; then
   [ "$#" -eq 0 ] || usage
-  # The offline manifest proof is snapshot-paperless-test.rb beside this file,
-  # and the coordinated snapshot at the end is snapshot-paperless.rb. Both
-  # arrived here as `<<'RUBY'` heredocs until #315, where sh -n, ruby -c and a
-  # reader could reach neither. Hold standard input at end-of-file: a heredoc
-  # exhausted it by construction and a sibling program would inherit the
-  # caller's.
-  #
-  # The paths are spelled repository-relative rather than as bare siblings so
-  # that tests/ci/classify_changes_test.rb's harness closure reaches them. It
-  # follows `tests/...` literals out of tests/integration.sh and the contracts,
-  # and a program it cannot reach is a program nothing requires to select a
-  # suite -- which for these two would mean a change to the whole coordinated
-  # snapshot running the policy gate and no integration lane at all.
+  # Spelled repository-relative so classify_changes_test.rb's harness closure
+  # reaches it and a change selects a suite; stdin held at EOF (#315).
   exec "$mac_repo_dir/tests/mac/snapshot-paperless-test.rb" </dev/null
 fi
 
@@ -69,10 +55,8 @@ fi
 : "${PLATFORM_DOCKER_ROOT:?}"
 : "${PLATFORM_MEDIA_ROOT:?}"
 : "${PLATFORM_PAPERLESS_PORT:=8000}"
-# How long recovery waits for valkey to answer after its container is started.
-# Declared here rather than buried in the Ruby body so the recovery regression
-# test can reach the timeout branch in a second instead of a minute; the Ruby
-# side floors it, so no setting can turn the wait off.
+# Recovery's valkey wait; declared here so the regression test can shorten it.
+# The Ruby side floors it.
 : "${PLATFORM_PAPERLESS_RECOVERY_DEADLINE:=60}"
 if [ "$mode" = drill ] && [ "${paperless_integration_drill:-false}" = true ]; then
   : "${PLATFORM_MAC_SANDBOX:?}"
@@ -120,9 +104,7 @@ elif [ "$mode" = drill ] && [ "${PLATFORM_KIND:-}" = integration ]; then
     exit 1
   }
 fi
-# The integration adoption drill deploys into the same owned Mac sandbox
-# project, and the integration Compose override now names its containers after
-# that project, so both disposable lanes resolve one namespaced identity.
+# Both disposable lanes resolve one namespaced container identity.
 if [ -n "${PLATFORM_PROJECT_NAME:-}" ]; then
   : "${PLATFORM_PAPERLESS_WEBSERVER_CONTAINER:=$PLATFORM_PROJECT_NAME-paperless-webserver}"
   : "${PLATFORM_PAPERLESS_POSTGRES_CONTAINER:=$PLATFORM_PROJECT_NAME-paperless-postgres}"

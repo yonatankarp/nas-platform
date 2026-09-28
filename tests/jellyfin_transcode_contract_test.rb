@@ -11,64 +11,34 @@ require_relative "policy_support"
 
 include TestScaffold
 
-# The contract's runtime half, which this file slices rather than runs. It was
-# a <<'RUBY' heredoc inside tests/contracts/jellyfin.sh until issue #147 gave it
-# a file; the eval below reads it directly now, and its backtraces name a real
-# path instead of `-`.
+# The contract's runtime half, which this file slices (see RUNTIME_TOP_LEVEL) rather than runs.
 RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "jellyfin-runtime.rb")
-# The runtime half's first top-level statement, and so the line the eval below
-# must stop before.
 RUNTIME_TOP_LEVEL = /^vault_yaml, vault_error, vault_status = /
 VALIDATE_POLICY = File.join(ROOT, "tests", "validate-policy.sh")
 SECRET = "JELLYFIN-TRANSCODE-SECRET-DO-NOT-LEAK"
 Response = Struct.new(:code, :body)
 ContractFailure = Class.new(StandardError)
 
-# These five bound how long the harness waits before calling something hung.
-# They are not performance assertions: every behavioural property below has its
-# own check, and the one that matters most -- that a request is cut short by its
-# own deadline rather than by the far end finally letting go -- is proven by
-# asking the fixture whether it was still holding the connection, not by a
-# stopwatch. tests/validate-policy.sh runs its checks concurrently, so on a
-# loaded runner work that takes milliseconds unloaded can take orders of
-# magnitude longer: a 30-way parallel run failed this file's renamed-library
-# poll budget, which passed alone moments later. They are generous enough that
-# only a genuine hang trips them, and overridable for anyone who wants them
-# strict.
-#
-# PROOF_DEADLINE  the deadline handed to a request that must be bounded.
-# HANG_GUARD      the last-resort ceiling on any of it; only a hang reaches it.
-# FIXTURE_HANG    how long a blackhole fixture holds a connection. It must
-#                 outlast HANG_GUARD, or an unbounded request would slip under
-#                 the guard because the fixture released it first.
+# Hang bounds, not performance assertions: generous because the gate runs checks
+# concurrently, and overridable. FIXTURE_HANG must outlast HANG_GUARD, or an unbounded
+# request would slip under the guard because the fixture released it first.
 PROOF_DEADLINE_SECONDS = Float(ENV.fetch("JELLYFIN_PROOF_DEADLINE", "1"))
 HANG_GUARD_SECONDS = Float(ENV.fetch("JELLYFIN_HANG_GUARD", "10"))
 FIXTURE_HANG_SECONDS = Float(ENV.fetch("JELLYFIN_FIXTURE_HANG", "30"))
-# The renamed-library wait polls in-process. Cases that only have to reach the
-# controlled timeout are load-safe at any budget -- a slow runner makes them
-# time out sooner, not later -- so they stay small and keep the file quick.
+# Cases that only reach the controlled timeout are load-safe at any budget, so it stays small.
 LIBRARY_WAIT_TIMEOUT_SECONDS = Float(ENV.fetch("JELLYFIN_LIBRARY_WAIT_TIMEOUT", "0.05"))
-# Cases that must poll more than once before giving up need a budget that
-# survives losing the CPU between polls: this is the one that flaked.
+# Polls more than once before giving up, so it must survive losing the CPU between polls.
 LIBRARY_WAIT_POLLED_TIMEOUT_SECONDS =
   Float(ENV.fetch("JELLYFIN_LIBRARY_WAIT_POLLED_TIMEOUT", "1"))
-# Cases that return as soon as the fixture yields a complete state pay nothing
-# for a patient budget, so they get one.
 LIBRARY_WAIT_PATIENT_TIMEOUT_SECONDS =
   Float(ENV.fetch("JELLYFIN_LIBRARY_WAIT_PATIENT_TIMEOUT", "10"))
-# How long the proof keeps polling after the segment request returns. Production
-# is deliberately generous; the cases that never report a transcode have to
-# reach their diagnostic quickly, so they run against a small override. Only the
-# no-transcode paths ever consume it, and they fail sooner under load, not later.
+# Production is generous; only the no-transcode paths consume this, and fail sooner under load.
 OBSERVATION_GRACE_SECONDS = Float(ENV.fetch("JELLYFIN_OBSERVATION_GRACE", "0.05"))
 
 failures = []
 
-# A server that accepts one request and then holds the connection open without
-# answering it. `released?` stays false for as long as it is still holding, so a
-# request that failed while it reads false was cut short by its own deadline
-# rather than by this fixture letting go -- the property under test, stated
-# without reference to how many seconds either of them took.
+# Accepts one request and holds it unanswered. A request that failed while `released?`
+# reads false was cut short by its own deadline, not by this fixture.
 class BlackholeServer
   def initialize(hold: FIXTURE_HANG_SECONDS)
     @server = TCPServer.new("127.0.0.1", 0)
@@ -101,11 +71,8 @@ class BlackholeServer
   end
 end
 
-# Waiting for a worker to finish is a thread wake-up, so it is quick -- but on a
-# loaded runner "quick" is not "within one fixed sleep", and a leak check that
-# slept a guessed interval would report a leak for a thread that was merely
-# waiting for a core. Poll for the baseline instead; a genuinely leaked thread
-# never returns to it and still trips the guard.
+# Poll for the baseline rather than sleeping a guessed interval: on a loaded runner a
+# finishing thread may still be waiting for a core.
 def settle_threads(baseline)
   started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   loop do
@@ -126,9 +93,6 @@ class TranscodeScenario
               :stale_cache_hit, :missing_deadline_paths, :attempt_deadlines,
               :deadline_mismatch, :observed_after_completion
 
-  # False for as long as the blocked segment request is still blocked. A proof
-  # that gave up while this reads false was bounded by its own deadline, not by
-  # the fixture finally answering.
   def segment_released?
     @segment_released
   end
@@ -213,9 +177,7 @@ class TranscodeScenario
     File.binwrite(File.join(@transcode_root, cache_name), "\x47mpeg-ts")
   end
 
-  # The modes that model an observation landing after the segment request: they
-  # answer at once and record the worker, so `await_segment_completion` can hold
-  # every later Sessions poll until that worker has actually finished.
+  # Answer at once and record the worker, so later Sessions polls wait until it finished.
   def segment_response
     case @mode
     when :straddle, :no_transcode, :foreign_device
@@ -225,8 +187,6 @@ class TranscodeScenario
       end
       Response.new("200", "\x47mpeg-ts")
     when :success, :ordering, :stale_cache_only
-      # The old contract issues this request synchronously and cannot observe a
-      # session until after it returns. The fixed contract runs it in a worker.
       return Response.new("200", "\x47mpeg-ts") if Thread.current == Thread.main
 
       @mutex.synchronize do
@@ -242,8 +202,7 @@ class TranscodeScenario
       return Response.new("200", "\x47mpeg-ts") if Thread.current == Thread.main
 
       @mutex.synchronize { @segment_active = true }
-      # Outlasts the hang guard on purpose: a proof that waited for this instead
-      # of honouring its own deadline must be caught, not accidentally excused.
+      # Outlasts the hang guard on purpose, so a proof ignoring its own deadline is caught.
       sleep FIXTURE_HANG_SECONDS
       @segment_released = true
       Response.new("200", "\x47mpeg-ts")
@@ -252,11 +211,8 @@ class TranscodeScenario
     end
   end
 
-  # True only when the segment request has genuinely finished: the contract
-  # clears its in-progress flag in an `ensure` before the worker dies, so a dead
-  # worker is proof the flag is already false. Bounded by the hang guard, and it
-  # reports what it saw rather than assuming -- a wait that ran out must not let
-  # the straddle assertion pass on a straddle that never happened.
+  # The contract clears its in-progress flag in an `ensure`, so a dead worker proves it false.
+  # Reports what it saw, so a wait that ran out cannot pass a straddle that never happened.
   def await_segment_completion
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     loop do
@@ -268,8 +224,6 @@ class TranscodeScenario
     end
   end
 
-  # A session whose DeviceId is not this attempt's. The proof must ignore it
-  # exactly as if no session had been reported at all.
   def foreign_session
     {
       "DeviceId" => "nas-platform-jellyfin-proof-#{"f" * 32}",
@@ -387,16 +341,9 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
     "PLATFORM_JELLYFIN_TRANSCODE_ROOT" => transcodes
   )
   ARGV.replace(["seed"])
-  # Two splits used to be needed: one to cut the runtime half out of the shell
-  # file it was a heredoc in, and one to stop before it starts running. Issue
-  # #147 gave the runtime half a file, so only the second remains -- and it is
-  # what keeps this eval a LOAD rather than a run. Everything above the vault
-  # read is definitions and constants; the first statement that acts on a real
-  # Jellyfin is that read, so truncating there is the whole safety property.
-  #
-  # RUNTIME_TOP_LEVEL must therefore match exactly once. A zero-match split
-  # returns the file whole and this eval would execute the contract against the
-  # developer's machine; that is the failure this count refuses.
+  # Truncating before the vault read keeps this eval a load rather than a run. The
+  # pattern must match exactly once: a zero-match split returns the whole file and
+  # would execute the contract against the developer's machine.
   runtime = File.read(RUNTIME_PROGRAM)
   check(failures, runtime.scan(RUNTIME_TOP_LEVEL).length == 1,
         "the runtime program's top-level marker is not unique, so the load below would run it")
@@ -411,8 +358,7 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
     Object.send(:remove_const, :TRANSCODE_OBSERVATION_GRACE_SECONDS)
     Object.const_set(:TRANSCODE_OBSERVATION_GRACE_SECONDS, OBSERVATION_GRACE_SECONDS)
   end
-  # Without the override the no-transcode cases would poll to the full proof
-  # timeout and assert the wrong diagnostic, inside a concurrent policy run.
+  # Without the override the no-transcode cases poll to the full proof timeout.
   check(failures, grace_overridden,
         "the proof exposes no post-segment observation grace to bound")
   wait_source = library[/^def wait_for_complete_library.*?(?=^def assert_managed_library)/m]
@@ -430,9 +376,7 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
           immediate, timeout: LIBRARY_WAIT_PATIENT_TIMEOUT_SECONDS
         ) == complete_library,
         "complete renamed-library state was not accepted")
-  # The deadline is absolute and monotonic: ahead of the clock read that preceded
-  # the call, and no further ahead than the budget it was handed. The upper edge
-  # is a sanity bound on the arithmetic, not a timing measurement.
+  # The upper edge is a sanity bound on the arithmetic, not a timing measurement.
   check(failures,
         immediate.deadlines.one? &&
           immediate.deadlines.first.is_a?(Numeric) &&
@@ -473,8 +417,7 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
   check(failures, globally_eventual.calls == 2,
         "renamed-library polling did not wait for the complete folder array")
 
-  # This one has to poll more than once *and* run out of budget, so it is the
-  # only wait here that a runner losing the CPU between polls can break.
+  # The only wait here that a runner losing the CPU between polls can break.
   persistent_incomplete = LibraryWaitScenario.new([[complete_library, incomplete_sibling]])
   persistent_error = library_wait_failure(
     persistent_incomplete, timeout: LIBRARY_WAIT_POLLED_TIMEOUT_SECONDS
@@ -490,8 +433,7 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
                   expired.calls.zero?,
         "an expired renamed-library deadline reached the blocking API call")
 
-  # The fixture sleeps past the budget unconditionally, so load can only make
-  # this arrive later still: the expected failure is the load-safe direction.
+  # The fixture sleeps past the budget unconditionally, so load cannot flip this result.
   delayed_complete = LibraryWaitScenario.new(
     [[complete_library]], delay: LIBRARY_WAIT_TIMEOUT_SECONDS * 2
   )
@@ -512,8 +454,6 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
   mismatch_elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - mismatch_started
   check(failures, mismatch_error&.message == "renamed library did not regain its complete API shape",
         "an exact-name mismatch did not reach the controlled timeout")
-  # Terminating with the controlled diagnostic above is what proves the wait is
-  # bounded; this only catches a wait that never terminates at all.
   check(failures, mismatch_elapsed < HANG_GUARD_SECONDS,
         "exact-name mismatch timeout hung past the guard")
 
@@ -575,10 +515,7 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
       [[complete_library]], delay: LIBRARY_WAIT_TIMEOUT_SECONDS * 2
     )
     library_wait_failure(delayed)
-    # The mutation's whole effect is at the API boundary: the blocking call is
-    # entered with nothing that could cut it short. Observing that is the proof.
-    # An elapsed-time check could not distinguish the two, because this fixture
-    # sleeps for its full delay either way.
+    # The fixture sleeps its full delay either way, so the missing deadline is the only observable.
     check(failures, delayed.deadlines == [nil],
           "removing renamed-library deadline propagation survived behavioral tests")
 
@@ -668,8 +605,7 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
   check(failures, ordering_scenario.session_poll_while_active,
         "the contract did not poll Sessions while the segment request was active")
 
-  # Ruby's Timeout module lazily starts one shared watcher thread. Prime it so
-  # leak checks count only per-request workers created by the proof or fixture.
+  # Prime Timeout's lazily started watcher thread so leak checks count only per-request workers.
   Timeout.timeout(0.01) { nil }
   baseline_threads = Thread.list.select(&:alive?)
   stale_scenario = TranscodeScenario.new(:stale_cache_only, transcode_root: transcodes)
@@ -684,11 +620,8 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
   check(failures, settle_threads(baseline_threads) == baseline_threads,
         "the stale-cache rejection leaked a segment worker thread")
 
-  # The regression this file exists to pin. A poll that straddles the segment
-  # request's completion sees a transcode the server really did produce for this
-  # attempt; the proof used to call that a failure and turn a correct platform
-  # red. The fixture holds every Sessions poll until the segment worker has
-  # finished, so the straddle is reproduced on purpose rather than raced into.
+  # The regression this file pins: a poll straddling the segment request's completion saw a
+  # real transcode and reported failure. The fixture reproduces the straddle on purpose.
   straddle_scenario = TranscodeScenario.new(:straddle, transcode_root: transcodes)
   $jellyfin_transcode_scenario = straddle_scenario
   begin
@@ -714,8 +647,7 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
   check(failures, settle_threads(baseline_threads) == baseline_threads,
         "the absent-transcode rejection leaked a segment worker thread")
 
-  # With the timing guard gone, the proof-specific DeviceId is the only thing
-  # keeping somebody else's transcode out of this attempt's result.
+  # The proof-specific DeviceId is the only thing keeping another transcode out of this result.
   foreign_scenario = TranscodeScenario.new(:foreign_device, transcode_root: transcodes)
   $jellyfin_transcode_scenario = foreign_scenario
   begin

@@ -6,16 +6,11 @@ argument_specs:
       platform_project_name:
         type: str
         required: false
-      # Nextcloud answers HTTP 400 to any Host header not in trusted_domains,
-      # and this is where the address a human types comes from. It also feeds
-      # overwrite.cli.url, which is what cron.php and occ put into the URLs they
-      # generate with no request to infer a host from.
+      # Must be in trusted_domains; also feeds overwrite.cli.url.
       platform_public_host:
         type: str
         required: false
-      # Declared bool rather than left to a truthy string. The teardown branch
-      # and the deploy branch are selected by this one value, and a string
-      # "false" is true in Jinja.
+      # A string "false" is true in Jinja.
       nextcloud_deployment_enabled:
         type: bool
         required: true
@@ -31,10 +26,7 @@ argument_specs:
       nextcloud_postgres_host_path:
         type: path
         required: false
-      # Bare hostnames, no port and no scheme: Nextcloud compares each entry
-      # against the request's Host header alone. tasks/deploy.yml asserts that
-      # shape and the presence of 127.0.0.1 and localhost before anything is
-      # deployed, because a role argument spec cannot express either.
+      # Bare hostnames; tasks/deploy.yml asserts the shape, which a spec cannot.
       nextcloud_trusted_domains:
         type: list
         elements: str
@@ -76,9 +68,7 @@ argument_specs:
       nextcloud_php_memory_limit:
         type: str
         required: false
-      # Declared int rather than left to the default because both are passed to
-      # Compose as a wait budget, where a string is a module error at the one
-      # moment the run is already waiting on a container.
+      # A string wait budget is a module error mid-wait.
       nextcloud_compose_wait_timeout:
         type: int
         required: false

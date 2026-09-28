@@ -1,52 +1,13 @@
 ---
-# THE STORE IS COPIED ASIDE BEFORE A PINNED UPGRADE, AND THIS IS NOT A BACKUP.
-#
-# Say the second half first, because the first half reads like a safety it does
-# not provide. The copy lands under {{ pre_upgrade_backup_path }}, which every
-# caller places on the same disk, inside the directory it is a copy of.
-# Off-site backup for this platform is parked by decision, so a drive failure,
-# a filesystem loss or a mistaken `rm -rf` of the data root takes the original
-# and the copy together. docs/secrets.md is where the real exposure is recorded.
-#
-# WHAT IT DOES BUY IS THE FAILURE #511 ACTUALLY RECORDED. A service that
-# migrates its own SQLite store when it starts makes a version bump one-way:
-# the newer image writes a schema the older one declines to open, and it
-# declines INSIDE the container, which is a crash loop every five minutes rather
-# than a failure a play reports. roles/image_downgrade_guard, which every caller
-# includes just before this, refuses to go BACK; this is what makes going back
-# possible at all -- restore these files, pin the older image, converge.
-#
-# WHY THE CONTAINER IS STOPPED FIRST. SQLite in write-ahead-logging mode is not
-# safely copied file by file while it is open: a checkpoint landing between the
-# copy of the store and the copy of its -wal yields a pair that never existed.
-# The container is about to be recreated anyway -- an upgrade is pending, that is
-# the whole gate -- so stopping it before the copy buys a consistent store for a
-# few seconds of downtime the upgrade was going to take regardless. Each caller
-# records why its application offers no on-demand backup route instead.
-#
-# IT RUNS ONLY WHEN AN UPGRADE IS PENDING, keyed on an actual image change: a
-# copy on every converge would report a change on every converge, and
-# idempotence is a hard requirement here.
-#
-# Callers include this role between roles/image_downgrade_guard and their
-# Compose deployment, so a downgrade is refused before anything is stopped, and
-# name pre_upgrade_backup_restart in their deployment report. INCLUDE, NEVER
-# IMPORT: an imported role brings its argument validation as a task tagged
-# `always`, which then runs in every tagged converge and in verify.yml with the caller's terms undefined, and fails there -- measured on a
-# probe play. Its registers are host-wide, so a caller that skips the include
-# still sees the last caller's; roles/vaultwarden/tasks/report.yml says why the
-# copy is therefore not a report term.
+# Copies a self-migrating store aside before a pinned upgrade so it can be rolled back
+# (#511). NOT A BACKUP: the copy sits on the same disk, inside the data root.
+# Include (never import) between image_downgrade_guard and the Compose deployment.
 
-# Shared with tasks/pg_dump.yml: which image the release pins, which the
-# container runs, and whether that is an upgrade. tasks/pending.yml says why the
-# pin is read there rather than handed in.
 - name: Resolve whether an upgrade is pending for the service whose store is copied
   ansible.builtin.include_tasks: pending.yml
 
-# The copy directory is pruned and chmodded 0700, so a caller that pointed it at
-# the store directory, or above it, would have this role remove the store's own
-# journal and lock the container out of its data root. Refused on every run, not
-# only an upgrading one: it is a misconfiguration whether or not it fires today.
+# The copy directory is pruned and chmodded 0700; on or above the store it would
+# destroy the store's journal and lock the container out.
 - name: Require the copy directory to sit below the store rather than on or above it
   ansible.builtin.assert:
     that:
@@ -82,11 +43,7 @@
     - ansible_check_mode
     - pre_upgrade_backup_upgrade_pending | bool
 
-# BEFORE THE STOP, so the one refusal that has no copy to take costs no downtime.
-# It covers a store missing before the stop only; the rescue below reads the
-# store again before it starts anything, because starting the old image over a
-# missing store would create a fresh empty one, the next converge would copy
-# that, and the upgrade would run over nothing the operator recognises.
+# Before the stop, so a missing store costs no downtime.
 - name: Read the store before stopping the container that holds it
   ansible.builtin.stat:
     path: "{{ pre_upgrade_backup_store_dir }}/{{ pre_upgrade_backup_store_file }}"
@@ -117,32 +74,12 @@
     - not ansible_check_mode
     - pre_upgrade_backup_upgrade_pending | bool
 
-# THE STOP AND THE COPY ARE ONE UNIT. A stop that is not followed by a completed
-# copy used to leave the service down: every task after it refused, the container
-# stayed `exited`, and every later converge failed at the same task with
-# changed=0 until someone repaired the path by hand -- measured on Kapowarr by
-# planting a file where pre-upgrade-backup/ belongs. The rescue starts the
-# container this block stopped, on the image it was created from, and still
-# fails the run: an upgrade without a completed copy is never taken. It is
-# reachable only from a failed task inside the block, so a converged host and
-# --check never see it.
+# The stop and the copy are one unit: the rescue restarts the old container and still
+# fails the run, so an upgrade never proceeds without a completed copy.
 - name: Copy the store aside, starting the old container again if the copy fails
   block:
-    # STOPPED RATHER THAN REMOVED, and only the one service, so the caller's
-    # deployment recreates it onto the new image exactly as it would have from
-    # running.
-    #
-    # `recreate: never` IS LOAD-BEARING AND WAS FOUND BY RUNNING IT. Without it
-    # the module's `state: stopped` brings the project up to the release's own
-    # definition first and only then stops it, so the container is REPLACED by
-    # one created from the new pin -- measured on Vaultwarden: `docker ps -a`
-    # reported `Created` on the new image before the copy had been taken. A
-    # created-but-never-started container migrates nothing, but the retry does
-    # not survive it: the next converge would read the new image as deployed,
-    # find no upgrade pending, and start it against a store this run never
-    # copied. With `recreate: never` the module stops the existing container and
-    # nothing else -- measured: one `Stopping` action, the container left at
-    # `Exited (0)` still on the old image.
+    # `recreate: never` is load-bearing: without it `state: stopped` first recreates the
+    # container on the new pin, and the next converge would skip the copy.
     - name: Stop the service before copying the store it is about to migrate
       community.docker.docker_compose_v2:
         project_src: "{{ platform_current_dir }}/services/{{ pre_upgrade_backup_service_name }}"
@@ -156,18 +93,8 @@
         - not ansible_check_mode
         - pre_upgrade_backup_upgrade_pending | bool
 
-    # THE SET IS READ RATHER THAN LISTED. After a clean stop SQLite has
-    # checkpointed the log and, for Vaultwarden, truncated -wal and -shm to zero
-    # bytes rather than unlinking them -- measured -- while Kapowarr's clean stop
-    # left the store alone. Reading the set is what makes both right without a
-    # branch: a stop that did not complete cleanly leaves a log with content in
-    # it, and a store that has never been opened has neither file. -journal is
-    # the same for a store in SQLite's default rollback-journal mode, which is
-    # Karakeep's: a hot journal after an unclean stop is part of the store, and a
-    # clean stop deletes it. Not
-    # recursive, so an application's own dated backups beside the store are
-    # not taken for it. pre_upgrade_backup_extra_patterns carries anything else
-    # the store is worthless without, such as Vaultwarden's rsa_key*.
+    # Read rather than listed: -wal/-shm/-journal exist or not depending on how the store
+    # was stopped. Not recursive; extra_patterns carries e.g. Vaultwarden's rsa_key*.
     - name: Read the store files this copy must carry
       ansible.builtin.find:
         paths: "{{ pre_upgrade_backup_store_dir }}"
@@ -200,11 +127,8 @@
         - not ansible_check_mode
         - pre_upgrade_backup_upgrade_pending | bool
 
-    # 0700 and 0600, because the copy carries whatever the store holds, and for
-    # Vaultwarden that is rsa_key.pem, the one credential in that service.
-    # Ownership is set only where the caller says the platform owns it: an
-    # unconditional owner fails on Docker Desktop, where a non-root controller
-    # cannot chown, with "chown failed" after the container has stopped.
+    # 0700/0600: the copy holds whatever the store holds (Vaultwarden's rsa_key.pem).
+    # Owner only when the platform owns it: Docker Desktop cannot chown.
     - name: Create the pre-upgrade copy directory
       ansible.builtin.file:
         path: "{{ pre_upgrade_backup_path }}"
@@ -216,8 +140,6 @@
         - not ansible_check_mode
         - pre_upgrade_backup_upgrade_pending | bool
 
-    # ansible.builtin.copy moves each file into place atomically, so a run
-    # interrupted here leaves whole files rather than truncated ones.
     - name: Copy the store aside before the pinned upgrade
       ansible.builtin.copy:
         src: "{{ item.path }}"
@@ -234,11 +156,7 @@
         - not ansible_check_mode
         - pre_upgrade_backup_upgrade_pending | bool
 
-    # ONE GENERATION. A log the previous copy carried and this one did not would
-    # sit beside a fresh store as a directory that looks like one store and is
-    # two, so anything the copy above did not just write is removed. A stale
-    # -journal is the worst of them: SQLite would read it as hot and roll the
-    # restored store back with another generation's pages.
+    # One generation: a stale -journal would roll a restored store back with foreign pages.
     - name: Remove pre-upgrade copies this run did not write
       ansible.builtin.file:
         path: "{{ pre_upgrade_backup_path }}/{{ item }}"
@@ -253,9 +171,7 @@
         - item not in (pre_upgrade_backup_store_files.files | default([])
                        | map(attribute='path') | map('basename') | list)
   rescue:
-    # First, before anything else can rebind them. The path is the one the failed
-    # task was acting on: the copy directory or file for the tasks that write, the
-    # store directory for the two that read it, the project for the stop.
+    # First, before anything else rebinds ansible_failed_result.
     - name: Record where the pre-upgrade copy failed
       ansible.builtin.set_fact:
         pre_upgrade_backup_failed_task: "{{ ansible_failed_task.name | default('an unnamed task') }}"
@@ -271,30 +187,16 @@
              if (ansible_failed_task.action | default('')) is search('find|assert')
              else (ansible_failed_result.path | default(pre_upgrade_backup_path, true)) }}
 
-    # THE STORE IS READ AGAIN BEFORE ANYTHING STARTS. The check ahead of the stop
-    # proves the store was there then; a store lost after the stop -- the failure
-    # the in-block assertion names -- is not covered by it. Starting the old image
-    # over a missing store creates a fresh empty one, the next converge's check
-    # finds that file, copies it and upgrades over it with a green run: measured
-    # by deleting the store as the container exited. So only a regular file counts:
-    # a dangling symlink and a directory both report `exists`, and the old image
-    # started over either one runs on a store it creates somewhere else (measured).
-    # `failed_when: false` because stat fails outright on a permission error rather
-    # than reporting absence, and a rescue that fails here never reaches its
-    # verdict; an unreadable store reads as not a regular file and is not started
-    # over.
+    # Re-read before restarting: the old image over a missing store creates an empty one
+    # that the next converge would copy and upgrade over. Only a regular file counts;
+    # failed_when: false so an unreadable store reads as absent.
     - name: Read whether the store is still there to start over
       ansible.builtin.stat:
         path: "{{ pre_upgrade_backup_store_dir }}/{{ pre_upgrade_backup_store_file }}"
       register: pre_upgrade_backup_store_after
       failed_when: false
 
-    # `recreate: never` again, for the reason the stop carries it: `up` without it
-    # replaces the stopped container with one on the new pin, which both starts
-    # the migration this block exists to protect and makes the next converge read
-    # the new image as deployed and skip the copy. With it the module starts the
-    # existing container and nothing else -- measured: the stopped container came
-    # back `Up` on the image it was created from, with the same container ID.
+    # `recreate: never` again, for the same reason as the stop.
     - name: Start the service again on the image it was running
       community.docker.docker_compose_v2:
         project_src: "{{ platform_current_dir }}/services/{{ pre_upgrade_backup_service_name }}"
@@ -307,15 +209,11 @@
         wait: true
         wait_timeout: "{{ platform_compose_wait_timeout }}"
       register: pre_upgrade_backup_restart
-      # Tolerated rather than redacted from the verdict: `is failed` below is what
-      # tells a container that came back healthy from one that is crash-looping,
-      # which a running-state read taken the moment `up` returns cannot (measured).
+      # Tolerated: `is failed` below distinguishes a healthy restart from a crash loop.
       ignore_errors: true
       when: pre_upgrade_backup_store_after.stat.isreg | default(false)
 
-    # What Docker reports rather than what the module claimed. The same container
-    # ID running is the old image running, because a container never changes its
-    # image -- and it is also what a stop that itself failed leaves behind.
+    # The same container ID running means the old image is running.
     - name: Read whether the container this run stopped is running again
       ansible.builtin.command:
         argv:
@@ -344,10 +242,6 @@
           {{ pre_upgrade_backup_outcome }}
       vars:
         pre_upgrade_backup_label: "{{ pre_upgrade_backup_service_name | capitalize }}"
-        # Running again means the same container ID is running and the start that
-        # put it there waited out its health check. A start skipped because the
-        # store was not a regular file still reads as running when the stop itself
-        # failed and never took the container down.
         pre_upgrade_backup_running_again: >-
           {{ ((pre_upgrade_backup_running.stdout_lines | default([])
                | select('in', pre_upgrade_backup_container_ids.stdout_lines) | list | length > 0)

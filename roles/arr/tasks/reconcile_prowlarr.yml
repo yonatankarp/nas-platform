@@ -141,10 +141,7 @@
       - item.1 is mapping
       - item.1.name is string
       - item.1.name is match('^[^\r\n]+$')
-      # Prowlarr and the Servarr apps omit `value` for an optional field that
-      # has never been set. The projection already reads a missing value as
-      # null, so requiring it here refused a response the rest of the role
-      # handles correctly. The name still has to be well formed.
+      # Servarr omits `value` for a never-set optional field; the projection reads it as null.
     fail_msg: Prowlarr returned an unsupported application field schema.
   loop: "{{ arr_prowlarr_applications_before.json | subelements('fields') }}"
   loop_control:
@@ -209,9 +206,7 @@
       - item.fields | length > 0
       - item.enable | default(true) is boolean
       - item.priority | default(25) is integer
-      # Prowlarr refuses a create or update whose AppProfileId is not above
-      # zero, so an operator who names one has to name a usable one; the
-      # default 1 is Prowlarr's own "Standard" sync profile.
+      # Prowlarr refuses AppProfileId <= 0; 1 is its own "Standard" sync profile.
       - item.app_profile_id | default(1) is integer
       - item.app_profile_id | default(1) | int > 0
       - >-
@@ -233,9 +228,7 @@
 - name: Validate every declared Prowlarr indexer field
   ansible.builtin.assert:
     that:
-      # A declaration is written here, not returned by a service: an operator
-      # who names a field without a value has written an incomplete one, and
-      # accepting it let a malformed duplicate identity through.
+      # A declaration (not a readback) must give every field a value.
       - item.1.value is defined
       - item.1 is mapping
       - item.1.name is string
@@ -363,18 +356,8 @@
     label: prowlarr-operator-indexer
   no_log: true
 
-# A set_fact whose facts nothing reads, on purpose: the point is the evaluation,
-# not the result. acquisition_application_projection and its siblings raise on a
-# malformed readback, so forcing them here fails the run BEFORE the mutation
-# below rather than after it. #654 found these looking exactly like dead code,
-# which they are not -- but nothing said so.
-#
-# An `assert: that: - (... | ...) is mapping` would state that in the task type,
-# which is what every other validate-before-mutate step in this file does, and
-# is the better shape. It is not done here because `is mapping` is a stronger
-# claim than the current tasks make, and this role is converged by the
-# five-minute poller: a new assertion that turns out to be wrong stops
-# deployment. That conversion wants its own change with a measurement behind it.
+# Evaluated for its side effect (#654): the projections raise on a malformed readback,
+# failing before the mutation. Not yet an `is mapping` assert: that is a stronger claim.
 - name: Evaluate every owned Prowlarr application projection before mutation
   ansible.builtin.set_fact:
     arr_prowlarr_preflight_application_current_projection: >-
@@ -402,18 +385,7 @@
   changed_when: false
   no_log: true
 
-# A set_fact whose facts nothing reads, on purpose: the point is the evaluation,
-# not the result. acquisition_application_projection and its siblings raise on a
-# malformed readback, so forcing them here fails the run BEFORE the mutation
-# below rather than after it. #654 found these looking exactly like dead code,
-# which they are not -- but nothing said so.
-#
-# An `assert: that: - (... | ...) is mapping` would state that in the task type,
-# which is what every other validate-before-mutate step in this file does, and
-# is the better shape. It is not done here because `is mapping` is a stronger
-# claim than the current tasks make, and this role is converged by the
-# five-minute poller: a new assertion that turns out to be wrong stops
-# deployment. That conversion wants its own change with a measurement behind it.
+# Evaluated for its side effect, as above (#654).
 - name: Evaluate every owned Prowlarr indexer projection before mutation
   ansible.builtin.set_fact:
     arr_prowlarr_preflight_indexer_current_projection: >-

@@ -10,27 +10,9 @@ mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 : "${PLATFORM_MAC_VAULT_PASSWORD_FILE:?PLATFORM_MAC_VAULT_PASSWORD_FILE is required}"
 : "${PLATFORM_MAC_FIXTURE_VARS_FILE:?PLATFORM_MAC_FIXTURE_VARS_FILE is required}"
 
-# This wrapper deliberately names only verify.yml. Calling site.yml here would
-# reconverge state and could turn a verification defect into a false pass.
-#
-# The Pushover endpoint is pointed at a port nothing listens on, and this is the
-# only lane that needs saying so. roles/beszel gates its credential check on
-# --tags platform_verify_beszel, which is exactly what this wrapper passes, so
-# the check does run here -- against a vault holding the ephemeral Pushover
-# stand-ins, none of which was ever a Pushover credential. Every such call would
-# be a 4xx against the household's own applications, and Pushover temporarily
-# blocks an IP that sends enough of them. The integration lanes need no equivalent: they converge
-# site.yml with lane tags and never run verify.yml, so the tag gate excludes
-# them by itself.
-#
-# Here rather than in inventory/group_vars/mac_hosts, because a URL is portable
-# configuration rather than a machine fact and tests/policy_platform_test.rb
-# refuses one there by name -- measured, not guessed. Here rather than in the
-# Immich fixture vars file too, because that file is regenerated and compared
-# against itself. An unreachable endpoint is the honest answer rather than a
-# workaround: a lane holding stand-in credentials cannot find out whether the
-# real pair works, and "did not find out" is a state the check reports and
-# passes on.
+# Only verify.yml: site.yml would reconverge and could turn a defect into a pass.
+# Pushover points at a dead port: Beszel's credential check runs under this tag with
+# stand-in keys, and enough 4xx calls get the IP blocked by Pushover.
 mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" \
   "$mac_repo_dir/verify.yml" \
   --vault-password-file "$PLATFORM_MAC_VAULT_PASSWORD_FILE" \

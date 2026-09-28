@@ -1,26 +1,11 @@
 ---
-# Behaviour of roles/image_downgrade_guard, which is the converge-time half of
-# #511: it refuses to start an image older than one that has already run against
-# the service's own store, because a service that migrates on start writes a
-# schema the older image declines to open -- inside the container, where the
-# only symptom is a crash loop.
-#
-# This runs the shipped role rather than a restatement of it. The release tree
-# and the Docker daemon are both fixtures: the pinned image comes from a
-# compose.yml written per case, and a `docker` stub on PATH answers `container
-# ls` and `container inspect` from two files the case writes beside it. So the
-# subject is the file's own expressions, and a change to them that breaks the
-# arithmetic fails here rather than on the NAS.
-#
-# The version arithmetic is where the defects are, and the port row is one that
-# happened rather than one imagined: reading the tag from the left of the whole
-# reference resolves `registry.example:5000/x/y:v1.33.3` to 5000, and every
-# comparison after that is between two registry ports.
+# Runs the shipped roles/image_downgrade_guard (#511) against a fixture release tree and
+# a `docker` stub. The port row is a real past defect: `registry.example:5000/x/y:v1.33.3`
+# once parsed as version 5000.
 - name: Prove the image downgrade guard
   hosts: localhost
   gather_facts: false
-  # Play level, because `environment` is not a task attribute of an include and
-  # the stub has to be on PATH for the command tasks the role runs inside it.
+  # Play level: `environment` is not a task attribute of an include.
   environment:
     PATH: "{{ guard_root }}/bin:{{ lookup('env', 'PATH') }}"
   vars:
@@ -28,18 +13,10 @@
       {{ lookup('file', playbook_dir ~ '/../roles/image_downgrade_guard/tasks/main.yml')
          | from_yaml }}
     guard_root: "{{ lookup('env', 'TMPDIR') | default('/tmp', true) }}/nas-platform-image-downgrade-guard-{{ guard_worktree_id }}"
-    # Per worktree rather than one fixed path, because this repository routinely
-    # has several worktrees live at once and a shared fixture makes two
-    # concurrent runs read and delete each other's files. It identifies the
-    # worktree rather than the run for a reason the play cannot work around: the
-    # `environment` above is templated for every task including the first, so
-    # `guard_root` has to resolve before anything has run. A run id from a
-    # set_fact fails the play at task one with `'guard_run_id' is undefined`,
-    # and so does one from ansible.builtin.tempfile; a `lookup` evaluated here
-    # would re-run on every reference and hand different tasks different paths.
+    # Per worktree, so concurrent runs cannot delete each other's fixtures. Not per run:
+    # `environment` is templated before any task, so a set_fact id would be undefined.
     guard_worktree_id: "{{ (playbook_dir | hash('sha1'))[:12] }}"
-    # name, the image the release pins, the references Docker recorded for
-    # containers of this service, and what the guard must conclude.
+    # name, pinned image, references Docker recorded, expected conclusion.
     guard_cases:
       - name: "the #511 downgrade, one release back past a migration"
         pinned: ghcr.io/vavallee/bindery:v1.33.3@sha256:aaaa
@@ -78,9 +55,7 @@
         deployed: [docker.io/library/nextcloud:34.0.4-apache@sha256:y]
         refused: true
         newer: ["34.0.4"]
-      # #826: the tag shapes of the three roles that adopted the guard there,
-      # each on a real pin pair from this repository's history, so a change
-      # to the arithmetic that mishandles one of them fails here.
+      # #826: real tag shapes of the three roles that adopted the guard.
       - name: a Nextcloud major reverted, across the suffixed tag
         pinned: docker.io/library/nextcloud:34.0.4-apache@sha256:aaaa
         deployed: [docker.io/library/nextcloud:35.0.1-apache@sha256:y]
@@ -127,8 +102,7 @@
         refused: false
         newer: []
 
-    # The --check review rows (#851): the release `current` still names, the
-    # candidate this run would install, and whether the review must refuse.
+    # --check review rows (#851): `current`, candidate, expected refusal.
     guard_review_rows:
       - row: review-downgrade
         current: ghcr.io/vavallee/bindery:v1.34.0@sha256:bbbb
@@ -140,32 +114,8 @@
         refused: false
 
   tasks:
-    # At the start as well as at the end, because the end is not reached by a
-    # run that failed, and this play's failure sustains itself: the tripwire
-    # near the end reads a leftover `check-mode-probe` as proof that the
-    # check-mode block wrote it, and the run failing there never reaches the
-    # removal below -- so it fails identically forever after, accusing the
-    # guard long after whatever produced the file is gone (#557).
-    #
-    # #557 blames an interrupt for the leftover probe, and that is measurably
-    # not where it comes from. No correct run writes the probe at all, because
-    # the block-level check_mode is what stops it, so an interrupt or a peer
-    # session's kill leaves only a tree that the next run overwrites: a stale
-    # tree holding a bogus docker stub, stale argv and a v0.0.1 compose, with
-    # no probe, passes all twelve cases it then held even before this task existed. The
-    # probe comes only from a run in which check mode did not reach that task
-    # -- a defect this tripwire caught, or an uncommitted edit being iterated
-    # on -- and it then outlives its cause.
-    #
-    # So wrapping the play in block/always would break the loop too, and is
-    # rejected on cost rather than on correctness: it re-indents three hundred
-    # lines to delete one file, and still does nothing for a kill or for a
-    # concurrent peer. This task is four lines and heals a tree left by any
-    # cause.
-    #
-    # Safe only because the suffix above is per worktree -- on a shared path it
-    # would delete a concurrent run's live fixture, so the two halves are one
-    # fix and not two.
+    # Also at the start: a leftover `check-mode-probe` would otherwise fail every later run
+    # at the tripwire (#557). Safe only because the fixture path is per worktree.
     - name: Remove a fixture tree an interrupted earlier run left behind
       ansible.builtin.file:
         path: "{{ guard_root }}"
@@ -184,11 +134,7 @@
         - review-heal/current/services/bindery
         - review-heal/candidate/services/bindery
 
-    # The stub records its own argv, which is the only way to prove the guard
-    # asks for stopped containers. A guard that dropped --all would still pass
-    # every row above on this fixture, because the fixture answers whatever it
-    # is asked -- and the container the guard exists for is the one that has
-    # already exited.
+    # The stub records argv, the only proof the guard asks for stopped containers (--all).
     - name: Install the Docker stub the guard reads its daemon through
       ansible.builtin.copy:
         dest: "{{ guard_root }}/bin/docker"
@@ -219,17 +165,8 @@
       loop_control:
         label: "{{ item.name }}"
 
-    # A floor rather than non-emptiness, and it is what survives of this
-    # assertion's original job. Each case now compares its own verdict and its
-    # own `newer` list against the ones it declares, in
-    # image_downgrade_guard_case.yml -- so a flipped verdict is caught there
-    # and no longer has to be inferred from a total. What a per-case assertion
-    # cannot catch is a case list that silently became one row: every row it
-    # still holds would pass, and the run would prove nothing. Sixteen is what
-    # the list holds; both fail-open rows and both no-comparison rows are
-    # load-bearing, so a shrink is a deliberate act with a diff. The two
-    # verdict counts stay for the same reason -- a list that shrank to sixteen
-    # copies of one row satisfies the length floors and reaches one verdict.
+    # A floor, so a case list that silently shrank cannot pass; each case checks its own
+    # verdict. The verdict counts catch sixteen copies of one row.
     - name: Require the case list to have run whole
       ansible.builtin.assert:
         that:
@@ -258,16 +195,8 @@
           {{ (lookup('file', guard_root ~ '/docker-argv').split('\n')
               | select('search', '^container ls') | list | first | default('', true)) }}
 
-    # Structure rather than behaviour, and it is the half a fixture cannot show:
-    # a read that claims a change breaks idempotence, a read that skips itself
-    # under --check turns the refusal into silence exactly when an operator is
-    # reading the plan, and a `when: ansible_check_mode` deferral -- which
-    # roles/container_cpu is right to carry and this role is not -- would gut it.
-    #
-    # Collected by loop rather than by selectattr because the module key holds
-    # dots: Jinja reads `ansible.builtin.command` as a path through three nested
-    # mappings, so selectattr on it matches nothing and reports zero reads on a
-    # file that has two.
+    # Structure the fixture cannot show: reads must not claim changes, skip under --check, or
+    # defer on ansible_check_mode. Looped, not selectattr: the dotted module key defeats it.
     - name: Collect the reads the guard performs
       ansible.builtin.set_fact:
         guard_reads: >-
@@ -300,10 +229,7 @@
           it has to judge in check mode rather than defer.
           The tasks naming ansible_check_mode are {{ guard_check_mode_tasks }}.
       vars:
-        # ansible_check_mode may choose which release the pin is read from
-        # (#851) and nothing else: on a read of the daemon or on the refusal it
-        # would be the deferral this assertion exists to keep out. Paired with
-        # each task's rendering because `search` needs a string.
+        # ansible_check_mode may only choose the release the pin is read from (#851).
         guard_check_mode_tasks: >-
           {{ guard_role_tasks | map(attribute='name')
              | zip(guard_role_tasks | map('string'))
@@ -313,10 +239,7 @@
           - Read the deployed Compose definition of the guarded service
           - Resolve the pinned image reference of the guarded container
 
-    # The refusal has to fire under --check, because a plan that reads clean and
-    # then crash-loops on apply is the #511 failure with an extra step. The
-    # fixture is rewritten to the downgrade first: the loop above left the last
-    # case's files behind.
+    # The refusal must fire under --check; rewrite the downgrade fixture first.
     - name: Write the downgrade fixture the check-mode proof reads
       ansible.builtin.copy:
         dest: "{{ guard_root }}/{{ item.path }}"
@@ -340,23 +263,8 @@
     - name: Refuse the downgrade while only planning
       check_mode: true
       block:
-        # First, and it is not decoration. If block-level check_mode did not
-        # reach the tasks inside the include, this whole block would be an
-        # ordinary converge refusing for ordinary reasons and reporting green --
-        # and no planted defect could tell the difference, because every plant
-        # that touches `check_mode: false` trips the structural assertion above.
-        # Keyword inheritance through an include is not uniform here: an
-        # `environment` on the include of a case file is rejected outright,
-        # which is why that one sits at play level.
-        #
-        # The probe is a write that check mode must not perform, rather than a
-        # read of `ansible_check_mode`. That variable was the first attempt and
-        # it is the wrong oracle: it reports whether the RUN carries --check, so
-        # a task-level check_mode leaves it false and the tripwire fired on a
-        # block that was working correctly. What a task-level check_mode does do
-        # is hand every module `_ansible_check_mode`, which is the whole of what
-        # the guard meets under --check, since it reads that variable nowhere --
-        # the structural assertion above is what holds that true.
+        # Tripwire: proves block-level check_mode reaches the included tasks. A write probe, not
+        # ansible_check_mode, which reflects only the run's --check flag.
         - name: Probe whether check mode reaches the tasks inside this block
           ansible.builtin.file:
             path: "{{ guard_root }}/check-mode-probe"
@@ -404,13 +312,8 @@
              ~ '. A plan that reads clean and then crash-loops on apply is #511
                 with an extra step.' }}
 
-    # #851. Under a real --check the release is not activated, so `current`
-    # still names the one this run replaces, and a guard reading it judges the
-    # wrong pin: a downgrade under review passes and is refused only live, and
-    # the review of the merge that heals one is refused for a pin it no longer
-    # carries. The block above cannot show either -- block-level check_mode
-    # leaves ansible_check_mode false -- so these rows are --check runs of their
-    # own, against a daemon that recorded v1.34.0 (written above).
+    # #851: real --check runs, where `current` still names the replaced release; the block
+    # above cannot show this.
     - name: Write the two releases each review row holds
       ansible.builtin.copy:
         dest: "{{ guard_root }}/{{ item.0.row }}/{{ item.1 }}/services/bindery/compose.yml"

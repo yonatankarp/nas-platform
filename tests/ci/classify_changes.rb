@@ -4,11 +4,7 @@ require "json"
 require "open3"
 
 module ClassifyChanges
-  # The suite table is data, not code: tests/ci/suites.conf lists every suite
-  # once, with the tags it converges, and tests/integration.sh reads the same
-  # rows for its own --list-suites, its unknown-suite refusal and its fixed tags.
-  # Everything below is derived from it, so a new suite is one row rather than
-  # one table here and another one there kept equal by a policy check.
+  # tests/ci/suites.conf is the one suite table; tests/integration.sh reads the same rows.
   SUITE_TABLE_PATH = File.expand_path("suites.conf", __dir__)
   SUITE_TABLE = File.readlines(SUITE_TABLE_PATH, chomp: true).filter_map do |line|
     fields = line.sub(/#.*/, "").split
@@ -18,16 +14,12 @@ module ClassifyChanges
     suite, kind, tags = fields
     [suite, kind, tags == "-" ? [] : tags.split(",")]
   end.freeze
-  # Lanes that gate a workflow job of their own rather than dispatching an
-  # integration suite. Every other lane is one suite.
+  # Lanes that gate a workflow job of their own rather than dispatch a suite.
   JOB_LANES = %w[static docs vault reconciliation].freeze
-  # `harness` rows are suites no CI lane dispatches: `full`, the runner's own
-  # default, and `smoke`, a strict prefix of idempotence-check that every
-  # selection carrying it already paid for, through that lane or the shards (#832). A lane is its suite with hyphens written as
-  # underscores, because a lane is also a GitHub Actions output key.
+  # `harness` rows (full, smoke) are suites no CI lane dispatches (#832). A lane is its suite
+  # with hyphens as underscores, because a lane is also a GitHub Actions output key.
   CI_SUITE_ROWS = SUITE_TABLE.reject { |_suite, kind, _tags| kind == "harness" }.freeze
-  # The integration suite each lane dispatches, in the order the CI matrix runs
-  # them. The job lanes above are not suites.
+  # The suite each lane dispatches, in CI matrix order.
   SUITES = CI_SUITE_ROWS.to_h { |suite, _kind, _tags| [suite.tr("-", "_"), suite] }.freeze
   LANES = (JOB_LANES + SUITES.keys).freeze
   SERVICE_LANES = CI_SUITE_ROWS.filter_map do |suite, kind, _tags|
@@ -37,42 +29,20 @@ module ClassifyChanges
     suite.tr("-", "_") if kind == "acquisition"
   end.freeze
   TAGGED_LANES = (ACQUISITION_LANES + SERVICE_LANES).freeze
-  # The untagged idempotence lane and the shards that decompose it. The two forms
-  # cover the same ground by different routes -- each shard converges a slice of
-  # the site three times, the unsharded lane converges all of it three times -- so
-  # a selection takes one or the other and never both. Which one is the whole
-  # difference between `--full` and falling open:
-  #
-  #   --full          the nightly and workflow_dispatch, where nothing is waiting
-  #                   on the answer. Keeps the single pass, and with it the only
-  #                   proof this repository has that the site is idempotent *as a
-  #                   whole* rather than shard by shard.
-  #   unmapped path   a pull request or the merge that lands it, where somebody
-  #                   is. Takes the shards, whose wall is the slowest one.
-  #
-  # So `--full` is no longer literally every lane, and that is the one exception
-  # to it: running both forms would converge the site six times to learn what
-  # three converges already said.
+  # The unsharded idempotence lane and its shards: a selection takes one form, never both.
+  # `--full` keeps the single pass, the only whole-site idempotence proof; a fall-open takes the shards.
   IDEMPOTENCE_LANE = "idempotence_check"
   IDEMPOTENCE_SHARD_LANES = SUITES.keys.filter do |lane|
     lane.start_with?("idempotence_") && lane != IDEMPOTENCE_LANE
   end.freeze
-  # The one lane that is never selected by a path and never by `--full`: it needs
-  # a BASE to compare against, and only the --diff mode has one. `--full` and a
-  # fall-open therefore leave it off rather than dispatching a lane that would
-  # refuse for want of its inputs.
+  # Needs a BASE revision, so only --diff can select it.
   UPGRADE_LANE = "upgrade"
-  # Which services the upgrade lane can take as its subject, DERIVED from which
-  # ones carry a seed-and-verify program rather than restated here.
-  # tests/integration.sh applies the same rule against the same directory, so the
-  # runner and the classifier cannot disagree about what is runnable, and adding a
-  # service to the lane is one new file rather than two list edits.
+  # Derived from which services carry tests/contracts/<svc>-upgrade.rb, the rule
+  # tests/integration.sh applies too.
   UPGRADE_SUBJECTS = Dir.glob(File.expand_path("../contracts/*-upgrade.rb", __dir__))
                         .map { |path| File.basename(path, ".rb").delete_suffix("-upgrade") }
                         .sort.freeze
-  # The tags CI narrows the site to for each lane it selects by tag. Planned
-  # acquisition suites converge only the shared inert foundation and validate it
-  # with their static contract.
+  # The tags CI narrows the site to for each tagged lane.
   SERVICE_TAGS = CI_SUITE_ROWS.filter_map do |suite, kind, tags|
     [suite.tr("-", "_"), tags] if %w[acquisition service].include?(kind)
   end.to_h.freeze
@@ -95,77 +65,11 @@ module ClassifyChanges
     "vaultwarden" => %w[vaultwarden],
     "karakeep" => %w[karakeep]
   }.freeze
-  # Paths the policy gate checks and nothing else in CI reads. The auto-deploy
-  # playbook and its two roles are reachable only from
-  # install-production-auto-deploy.yml -- site.yml never includes them and
-  # tests/integration.sh never names them -- so no suite can observe a change to
-  # one. The vault generator is the same shape: the suites build their sandbox
-  # vault with tests/generate-ephemeral-vault.sh, which writes its own plaintext
-  # rather than running this playbook. The encrypted vault is the other half of
-  # that: tests/integration.sh removes the committed per-service vaults and
-  # installs the sandbox vault at inventory/group_vars/all/vault.yml before any
-  # play runs, so no suite ever reads the committed ones. Falling open to every
-  # lane was costing the whole suite matrix to re-prove one line.
-  # renovate.json is read by tests/renovate_policy_test.rb and by no play at all.
-  #
-  # vault.yml itself is no longer committed (#612 moved its last key into the
-  # per-service files), and tests/policy_vault_test.rb refuses a tracked one. It
-  # stays listed so a change re-adding it still reaches the static job that
-  # refuses it and, through VAULT_ROUTED_PATTERN, the vault job.
-  #
-  # The committed vault is no longer static-*only*: since #561
-  # a second job opens it, with the password held as a repository secret, and runs
-  # validate-vault.yml against it -- so the file selects `vault` as well, through
-  # VAULT_ROUTED_PATTERN below, which the per-service vault_<role>.yml files match too. The gate's own check on it is unchanged and remains
-  # the cheap half: tests/policy_vault_test.rb asserts the artifact is still
-  # encrypted, which needs no password and therefore no secret.
-  #
-  # The documents are here for the same reason and not because they are
-  # documentation: each one is read *by name* by a check that only the static job
-  # runs -- tests/policy_test.rb, the mutation harness's retired-declaration
-  # sweep, tests/policy_mac_test.rb, tests/policy_vault_test.rb,
-  # tests/bazarr_provider_schema_test.rb, tests/production_auto_deploy_role_test.rb
-  # -- and those checks are the policy gate itself, so they cannot move to a
-  # cheaper job. Everything else under docs/ is routed by docs_input? below to the
-  # docs job instead, which is why docs/secrets.md is no longer here: the only
-  # check that reads it, tests/secrets_docs_test.rb, runs there.
-  # tests/ci/classify_changes_test.rb derives the coupling from the registered
-  # checks themselves and fails when a document reaches no job that runs a check
-  # reading it, so the next doc-reading check cannot reopen the hole by being
-  # written.
-  #
-  # CLAUDE.md is the one that got in anyway (issue #346), because the derivation
-  # only ever looked for `docs/...` and README: tests/policy_test.rb sweeps it for
-  # retired declarations and tests/docs_links_test.rb compares its lane roster and
-  # its service-stack count against the tree, both added by #276, while it matched
-  # no lane map at all and fell through to inert_path? as ordinary Markdown.
-  # Editing either of those two claims merged green and turned main red on the
-  # next unrelated change.
-  #
-  # The plan document is here for the opposite-looking reason, and it is not an
-  # exception to the rule above: no check reads it for its content. It is the one
-  # file in the tree still carrying the pre-#493 "137" in an exit-code exclusion
-  # list, and tests/dozzle_exit_code_exclusion_identity_test.rb's EXPECTED_OWNERS
-  # is six only because that occurrence is excluded at tests/policy_test.rb:184.
-  # So the count is correct only while this document stays a historical record;
-  # an edit turning it back into a live owner would falsify the check without
-  # touching it. That is a coupling, and it selects static because the check that
-  # depends on it runs there rather than in docs.
-  #
-  # docs/ci-performance-history.md is the evidence half of CLAUDE.md's CI
-  # performance sections, moved out by #652. The text selected static while it
-  # lived in CLAUDE.md, because tests/policy_test.rb sweeps it for retired
-  # declarations, and that sweep still reads it under docs/ -- so it keeps the
-  # route rather than losing the half of its coverage a docs-only change would.
-  # The derivation names it too, because tests/case_pool_support.rb -- which every
-  # pooled check loads -- and a few other checks cite it by path for the
-  # measurements behind them.
-  #
-  # docs/incident-history.md and docs/host-cleanup.md are the same move made for
-  # the rest of CLAUDE.md by #838, and keep the route for the same reason: the
-  # retired-declaration sweep in tests/policy_test.rb reads them under docs/ as it
-  # read the text in CLAUDE.md. tests/deployment_gate_coverage_test.rb cites the
-  # first by path for the dated memory measurement.
+  # Paths only the policy gate reads. The auto-deploy play and roles and the vault generator are
+  # unreachable from site.yml and the suites (which install their own sandbox vault). vault.yml stays
+  # listed so re-adding it reaches the check that refuses it (#612). Each document is read by name by a
+  # static-only check, which classify_changes_test derives; the 2026-08-05 plan is here because
+  # tests/dozzle_exit_code_exclusion_identity_test.rb's owner count depends on it staying historical.
   STATIC_ONLY_PATHS = %w[
     .gitignore
     CLAUDE.md
@@ -188,16 +92,8 @@ module ClassifyChanges
     renovate.json
     templates/vault-plain.yml.j2
   ].freeze
-  # Documentation is a gate input rather than inert text, and the coupling is a
-  # glob, not a list: tests/docs_links_test.rb reads README.md and every *.md
-  # under docs/, and it resolves each link against the working tree, so deleting
-  # an image a document points at breaks it too. Routing the whole directory here
-  # is what closes the half that rescuing documents by name never could -- a
-  # broken link under docs/superpowers/plans/ used to merge green and turn main
-  # red. It selects the docs job, which needs Ruby and the checkout and nothing
-  # else, rather than the fifteen-minute static job a typo fix has no business
-  # paying for. The documents STATIC_ONLY_PATHS still names select both, CLAUDE.md
-  # among them: the link gate reads it here, the policy gate reads it there.
+  # tests/docs_links_test.rb reads CLAUDE.md, README.md and every docs/ Markdown (and their link
+  # targets), so the whole directory selects the cheap docs job.
   DOCUMENTATION_PATHS = %w[CLAUDE.md README.md].freeze
   DOCUMENTATION_PREFIXES = %w[docs/].freeze
   STATIC_ONLY_PREFIXES = %w[
@@ -205,12 +101,8 @@ module ClassifyChanges
     roles/production_auto_deploy/
     scripts/
   ].freeze
-  # The files under tests/ that tests/integration.sh executes on the target. A
-  # change to one of them changes what every suite does, so they keep falling
-  # open; everything else under tests/ is a check the policy gate runs and
-  # selects the gate alone. tests/ci/classify_changes_test.rb asserts this list
-  # against what the harness actually invokes, so a new harness file that is
-  # missing here fails there rather than silently skipping every suite.
+  # Files tests/integration.sh executes; they fall open. Everything else under tests/ selects the
+  # gate alone. classify_changes_test asserts this list against what the harness invokes.
   INTEGRATION_HARNESS_PATHS = %w[
     tests/assert-no-vault-secrets.rb
     tests/ci/suites.conf
@@ -248,131 +140,36 @@ module ClassifyChanges
   ACQUISITION_OWNED_PATHS = {
     "tests/media_control_network_collision_test.sh" => "arr"
   }.freeze
-  # The media acquisition reconciliation contract lifts task files out of these
-  # two roles and runs them against a fixture, and reads their defaults for its
-  # timings, so any change inside either role changes what it asserts. Selecting
-  # the lane rather than the individual files is deliberate: the contract reads
-  # roles/arr/tasks/, roles/arr/files/configarr/ and roles/downloaders/tasks/,
-  # and a file added to any of them must select the contract without an edit
-  # here.
+  # The reconciliation contract lifts task files and defaults out of these roles, so any change
+  # inside either selects it without a per-file edit.
   RECONCILIATION_LANES = %w[arr downloaders].freeze
-  # A selected lane, and the lane its subject is not fully proved without. Two
-  # different shapes share the table, and both are dependencies between lanes
-  # rather than between files, which is why the table is keyed by lane: whatever
-  # selects the first lane needs the second, and a file added to the role must
-  # not need an edit here to get it.
-  #
-  # The first shape is one role with two states no single sandbox reaches. The
-  # Usenet provider is declared in the vault or it is not, and SABnzbd's
-  # `section=servers` reconciliation
-  # only ever upserts, so a server declared once stands after the declaration is
-  # emptied. The `downloaders` lane therefore converges the undeclared state from
-  # the start -- tests/integration_controller.sh builds its vault with
-  # `--undeclared usenet`, which is the state every real target starts in and the
-  # one #274 broke -- and the `bindery` lane converges the same arr and
-  # downloaders stacks from a fully declared vault. Each lane asserts one branch
-  # of roles/downloaders/tasks/verify.yml, so a change inside that role has to
-  # select both or one branch is routed to no runtime lane at all.
-  #
-  # The second shape is a lane that consumes another role's *converged* state, so
-  # the producing role's own lane cannot see what it broke. The `seerr` lane is
-  # the only one that converges arr and Jellyfin together, and Seerr does not
-  # merely need Jellyfin running: roles/seerr/tasks/bootstrap.yml POSTs the vault
-  # Jellyfin administrator credentials to `/auth/jellyfin` to claim the Seerr
-  # admin account inside the anonymous-takeover window, and
-  # roles/seerr/tasks/main.yml verifies `/settings/jellyfin` against
-  # `seerr_jellyfin_hostname`/`_port` and reconciles `jellyfinUsername` against
-  # the managed-user roster. A Jellyfin change to its address, its administrator
-  # identity or its user list therefore breaks the seerr lane, and the `jellyfin`
-  # lane converges no Seerr and reports nothing (#349). This is not the fail-open
-  # property CLAUDE.md relies on: roles/jellyfin/ *is* mapped, so the unmapped
-  # fallback never fires -- fail-open covers paths nobody thought about, not
-  # paths mapped too tightly.
-  #
-  # The audiobookshelf row is that same second shape. roles/bindery reconciles
-  # Bindery's Audiobookshelf integration against Audiobookshelf's *converged*
-  # state: it signs in as the vault administrator, mints an Audiobookshelf API
-  # key for itself, and resolves the managed library by name. The
-  # `audiobookshelf` lane converges no Bindery and would report nothing, and the
-  # handoff Bindery configures fails at WARN and is swallowed, so a change to
-  # Audiobookshelf's administrator identity, its API-key routes or its library
-  # name breaks the integration with nothing red anywhere else.
-  #
-  # The arr rows of the same shape are declined rather than missing, and
-  # tests/ci/classify_changes_test.rb states them so: the `arr` lane and the
-  # `reconciliation` job already converge and assert arr's own state, and the
-  # downloaders, bindery, trailarr and seerr lanes read it over stable APIs
-  # rather than through a one-shot credential handshake. Four more lanes on every
-  # arr change is not what that buys.
-  #
-  # The beszel row is the first shape. roles/beszel stores the webhook the relay
-  # receives Beszel's alerts through, and only the dozzle lane sends one: its
-  # beszel-notify mode asks the converged hub to deliver through the stored URL to
-  # the relay and on to the Pushover recorder. The beszel lane converges no relay
-  # and compares the stored string only, so a URL that no longer reaches the relay
-  # is red nowhere else.
+  # A lane, and the lane its subject is not fully proved without. Two shapes:
+  # - one role, two states no single sandbox reaches: downloaders converges an undeclared Usenet
+  #   provider (#274), bindery a declared one; only dozzle exercises beszel's stored webhook.
+  # - a lane consuming another role's converged state: seerr claims its admin through Jellyfin (#349),
+  #   bindery mints an Audiobookshelf API key. Arr rows are declined; classify_changes_test says why.
   COMPANION_LANES = {
     "beszel" => %w[dozzle],
     "downloaders" => %w[bindery],
     "audiobookshelf" => %w[bindery],
     "jellyfin" => %w[seerr]
   }.freeze
-  # The contract's own files. They are read by no play and by no integration
-  # suite, so they select the contract alone rather than falling open to every
-  # lane in the repository. The support file is listed because all three legs
-  # require it -- routing one leg on its own is not safe while they share it.
+  # Read by no play or suite, so they select the contract alone; all three legs share the support file.
   RECONCILIATION_OWNED_PATHS = %w[
     tests/media_acquisition_reconciliation_support.rb
     tests/media_acquisition_reconciliation_core_test.rb
     tests/media_acquisition_reconciliation_bazarr_test.rb
     tests/media_acquisition_reconciliation_configarr_test.rb
   ].freeze
-  # The workflow file, which is the one path here whose route is not "the jobs
-  # that read it". Nothing reads .github/workflows/ci.yml: it *defines* the jobs
-  # every other row is routed to. So what a change to it has to buy is **job
-  # coverage** -- one leg of every job in the workflow -- rather than reader
-  # coverage, which is why it selects `docs` and `reconciliation` even though no
-  # documentation check and no reconciliation check opens it. Read that before
-  # "correcting" the entry back to the readers.
-  #
-  # It fell open to everything until #395, and that was every suite leg in the
-  # matrix to prove nothing about any suite: 33 of the 45 commits that touched
-  # this file between 2026-06-01 and 2026-09-05 changed nothing else that
-  # selected a single lane, and paid for the whole matrix twice -- once on the
-  # pull request, once on the merge.
-  #
-  # Three legs are enough because the matrix is uniform by construction and stays
-  # that way under test. The `suites` job is one job template; the only
-  # suite-dependent thing in it is the `case "$SUITE"` that decides whether
-  # --tags is passed, and tests/ci/workflow_test.rb executes that shell for every
-  # suite in the matrix, with tags and without, and asserts the argv -- in
-  # `static`, which any change here still selects. What no static check can
-  # prove is that the job's *steps* still work on a runner, and one leg proves
-  # that as well as all of them would. tests/ci/classify_changes_test.rb derives
-  # the rest from the workflow itself: it reads every `needs.changes.outputs.*`
-  # a job is gated on and fails unless this selection turns that job on, so a
-  # new job gated on a new output cannot land here unrouted.
-  #
-  # A service lane rather than `foundation`: selecting foundation empties
-  # selected_tags in write_github_outputs, which would flip the idempotence_check
-  # leg onto the untagged path and converge the whole site. beszel is the
-  # cheapest service lane -- the smallest stack, and no companion lane -- and the
-  # standard block below adds `static` and `idempotence_check` around it.
-  #
-  # Only this one path. Anything else that appears under .github/ is unmapped and
-  # keeps falling open to every lane, which is the property CLAUDE.md relies on.
+  # ci.yml is routed for job coverage, not readers: it defines the jobs, so it selects one leg of
+  # every job (#395). One suite leg suffices because workflow_test executes the suites job's
+  # `case "$SUITE"` for every suite. Any other .github/ path still falls open.
   CI_WORKFLOW_ROUTED_PATH = ".github/workflows/ci.yml"
-  # The artifacts the vault job reads: vault.yml and the per-service
-  # vault_<role>.yml beside it. Each is static-only too -- the gate's encryption
-  # check still runs on it -- so the routing is additive rather than a move.
-  # roles/vault_contract/, validate-vault.yml and the generator template are
-  # deliberately *not* matched: none of them is claimed by a lane, so each
-  # already falls open to every job including this one, and naming them here
-  # would narrow what they run rather than widen it.
+  # vault.yml and vault_<role>.yml also select the vault job (additive to static). roles/vault_contract/
+  # and validate-vault.yml are deliberately unmatched: they already fall open to every job.
   VAULT_ROUTED_PATTERN = %r{\Ainventory/group_vars/all/vault(?:_[a-z0-9_]+)?\.yml\z}
   CI_WORKFLOW_JOB_LANES = %w[docs vault reconciliation].freeze
-  # komga rather than beszel, which it was until beszel gained dozzle as a
-  # companion: one representative leg should cost one leg.
+  # A tagged lane (foundation would empty selected_tags) with no companion, so one leg costs one leg.
   CI_WORKFLOW_SUITE_LANE = "komga"
 
   module_function
@@ -382,14 +179,8 @@ module ClassifyChanges
     selection = LANES.to_h { |lane| [lane, false] }
     return everything(selection, sharded: false) if full
 
-    # Resolved HERE, before the loop below, because that loop can return: an
-    # unmapped path falls open, and a fall-open used to force the upgrade lane
-    # off however the pins had moved. That is not a hypothetical -- the pull
-    # request that introduced this lane touches tests/integration.sh, which is
-    # unmapped, so the lane could not have dispatched on its own change, and
-    # neither could a Renovate pin bump that happened to touch anything else.
-    # `--full` and `--files` reach this with base nil and get nil back, so they
-    # stay off without a special case of their own.
+    # Resolved before the loop, which returns on a fall-open: a fall-open must still dispatch the
+    # upgrade lane when a pin moved.
     @upgrade_subject = upgrade_subject(paths, base, head)
 
     tagged_lanes = []
@@ -442,9 +233,7 @@ module ClassifyChanges
       %w[static idempotence_check].each { |lane| selection[lane] = true }
       tagged_lanes.each { |lane| selection[lane] = true }
     end
-    # The contract's own files are fixtures of the policy gate as well -- they are
-    # named in tests/policy_mutation_support.rb and tests/policy_vault_test.rb --
-    # so they select static too.
+    # The contract's files are policy-gate fixtures too.
     selection["static"] = true if reconciliation_owned
     selection["reconciliation"] = true if reconciliation_owned ||
                                           RECONCILIATION_LANES.any? { |lane| selection.fetch(lane) }
@@ -452,34 +241,13 @@ module ClassifyChanges
     selection
   end
 
-  # The subject the upgrade lane converges, and the image reference the BASE
-  # branch pins it to, or nil when there is nothing to migrate.
-  #
-  # Both halves have to hold. A compose.yml can change without its `image:`
-  # moving -- a memory limit, a mount, a logging option -- and converging the
-  # same version twice proves nothing while costing a full lane, so the pin is
-  # compared rather than the file. And the base is read with `git show` rather
-  # than from the working tree: this runs in the `changes` job, which is the one
-  # job that checks out at fetch-depth 0, and on a pull_request the checkout is
-  # the merge commit rather than the head, so both sides are named explicitly.
-  #
-  # ONE SUBJECT, and the limit is stated rather than hidden: a diff that moves
-  # two subjects' pins proves the first of them in UPGRADE_SUBJECTS order. The
-  # alternative is a second matrix dimension for a case Renovate produces one
-  # image at a time, and #771's batch withholds these images from it.
+  # [service, base image] for the upgrade lane, or nil. Compares pins, not files: a compose change
+  # that leaves `image:` alone proves nothing. ONE subject: two moved pins prove the first.
   def upgrade_subject(paths, base, head)
     return nil unless base && head
 
-    # The MERGE BASE, not the base tip, and the two are not the same claim.
-    # changed_paths diffs `base...head`, which is the merge base against head --
-    # so the paths this is handed are the pull request's own changes. Reading the
-    # pin at `base` instead would take whatever main's tip pins, and when main
-    # has moved that pin since the branch forked, the lane would converge main's
-    # version and then the head's and red at roles/image_downgrade_guard on a
-    # pull request performing no downgrade at all. Narrow -- both sides would
-    # have edited the same `image:` line, so such a pull request conflicts and
-    # gets no CI run -- but the two halves have to agree what "base" means, and
-    # one line is cheaper than the argument.
+    # The merge base, matching changed_paths' `base...head`: main's tip may have moved the pin
+    # since the fork, which would red the downgrade guard on a PR performing no downgrade.
     merge_base, _error, status = Open3.capture3("git", "merge-base", base, head)
     comparison = status.success? && !merge_base.strip.empty? ? merge_base.strip : base
 
@@ -490,13 +258,8 @@ module ClassifyChanges
       base_image = pinned_image(comparison, compose)
       head_image = pinned_image(head, compose)
       next if base_image.nil? || head_image.nil? || base_image == head_image
-      # A subject whose own lane has no tags could only be converged by
-      # converging the whole site, which is the idempotence lane's cost for a
-      # one-service proof. tests/contract_upgrade_seed_test.rb requires every
-      # roster entry to be a tagged row in tests/ci/suites.conf, so this is a
-      # closed door rather than a filter that silently drops things -- but only
-      # since that check was added. Before it, dropping this line was undetected
-      # and a subject with no tags resolved nil with no diagnostic anywhere.
+      # An untagged subject would converge the whole site; tests/contract_upgrade_seed_test.rb
+      # requires every subject to be a tagged row.
       next unless SERVICE_TAGS.key?(service.tr("-", "_"))
 
       return [service, base_image]
@@ -504,11 +267,8 @@ module ClassifyChanges
     nil
   end
 
-  # The single `image:` a service's canonical compose.yml pins, at one revision.
-  # nil for anything else -- an unreadable path, a file that pins none, a file
-  # that pins several -- because every one of those is a subject the lane cannot
-  # repin unambiguously, and guessing at one is how a lane converges the wrong
-  # version and reports success.
+  # The single `image:` a compose.yml pins at a revision; nil for none or several, because a
+  # guess converges the wrong version and reports success.
   def pinned_image(revision, path)
     content, _error, status = Open3.capture3("git", "show", "#{revision}:#{path}")
     return nil unless status.success?
@@ -544,20 +304,10 @@ module ClassifyChanges
     paths
   end
 
-  # Every lane on, in one of the two idempotence forms. Routing still fails open
-  # -- an unmapped path costs time rather than coverage -- it just stops paying
-  # for the slowest job in the run to re-prove, in one 32-minute pass, what five
-  # shards prove in the time of the longest of them.
+  # Every lane on, in one of the two idempotence forms.
   def everything(selection, sharded:)
-    # UPGRADE_LANE is the one lane a full selection does not automatically turn
-    # on, and the condition is the SUBJECT rather than the form. `--full` and
-    # `--files` have no base revision to resolve one from, so it stays off there
-    # and a leg that would refuse for want of its inputs is never dispatched. A
-    # fall-open does have one, and a fall-open whose diff moved a subject's pin
-    # dispatches the lane: a fall-open already runs every suite leg, so one more
-    # is marginal, and forcing it off there left the lane unable to run on any pull
-    # request that also touched an unmapped path -- including the one that
-    # introduced it.
+    # Upgrade stays off only without a subject: --full and --files have no base, but a fall-open
+    # whose diff moved a pin still dispatches it.
     off = sharded ? [IDEMPOTENCE_LANE] : IDEMPOTENCE_SHARD_LANES
     off += [UPGRADE_LANE] if @upgrade_subject.nil?
     selection.to_h { |lane, _| [lane, !off.include?(lane)] }
@@ -574,13 +324,8 @@ module ClassifyChanges
                           .uniq
            end
     io.puts "selected_tags=#{tags.join(',')}"
-    # The subject is the one output that does not come from the selection this is
-    # handed, and that is a coupling worth refusing rather than documenting:
-    # classify resolves it into @upgrade_subject, so a caller that classifies
-    # twice and then writes would emit the LAST classification's subject beside
-    # the FIRST one's lanes. Silent, and wrong in the direction that matters --
-    # a lane dispatched with no subject tags. Caught the first time this pairing
-    # was written, in tests/ci/classify_changes_test.rb.
+    # The subject lives in @upgrade_subject, so classifying twice before writing would pair one
+    # run's subject with another's lanes.
     unless selection.fetch(UPGRADE_LANE) == !@upgrade_subject.nil?
       raise "upgrade selection #{selection.fetch(UPGRADE_LANE)} does not match the resolved " \
             "subject #{@upgrade_subject.inspect}: write_github_outputs must be given the " \
@@ -589,12 +334,8 @@ module ClassifyChanges
     service, base_image = @upgrade_subject
     io.puts "upgrade_service=#{service}"
     io.puts "upgrade_base_image=#{base_image}"
-    # The upgrade lane's tags are its SUBJECT's, never the run's. selected_tags
-    # is the union of every tagged lane the run selected, and a fall-open empties
-    # it entirely -- which would send this lane down the untagged branch and
-    # converge the whole site twice for a one-service proof. That is not a corner
-    # case: a fall-open is exactly the selection a Renovate bump lands in
-    # whenever it touches anything unmapped.
+    # The subject's tags, never selected_tags: a fall-open empties that and would send this lane
+    # down the untagged branch, converging the whole site twice.
     io.puts "upgrade_tags=#{service ? SERVICE_TAGS.fetch(service.tr('-', '_')).join(',') : ''}"
   end
 
@@ -602,23 +343,8 @@ module ClassifyChanges
     SUITES.filter_map { |lane, suite| suite if selection.fetch(lane) }
   end
 
-  # Reached only after docs_input? has claimed CLAUDE.md, README.md and everything
-  # under docs/, so no documentation the link gate reads can be called inert here.
-  # What is left is Markdown the gate does not read at all -- a stray note beside
-  # a role -- and editor droppings.
-  #
-  # Repository-root Markdown is the exception, and it is a rule rather than a
-  # list. This line used to exempt AGENTS.md by name, a file that has never
-  # existed in any ref, while the agent-instructions file that does exist fell
-  # through it into `.md` and reached no job (issue #346). Root Markdown is where
-  # a check-read document lands, so it falls open to every lane instead of being
-  # guessed at by name; naming it above is what buys it a cheaper answer.
-  # `.gitignore` used to be listed here as obviously inert. It is not: two policy
-  # scripts read it -- tests/policy_beszel_test.rb requires the Mac proof reports
-  # excluded, tests/policy_ci_test.rb the local ANSIBLE_HOME -- so a change that
-  # deleted an entry those checks require selected no job and merged green. It is
-  # the #346 shape one directory up, and it is answered the same way: the file is
-  # a gate input, so it routes to the job that reads it.
+  # Reached after docs_input?. Root Markdown is never inert: it falls open (#346). Nor is
+  # .gitignore: policy scripts read it, so it is in STATIC_ONLY_PATHS.
   def inert_path?(path)
     return true if path.match?(%r{\ALICENSE(?:\.[^/]+)?\z})
     return true if path.match?(%r{\A(?:\.idea|\.vscode)/}) || path == ".editorconfig"
@@ -650,36 +376,9 @@ module ClassifyChanges
       !INTEGRATION_HARNESS_PATHS.include?(path)
   end
 
-  # tests/expected/<service>.yml is routed to the lane for the same reason
-  # acquisition_lane has routed its own since it was written: the file declares
-  # the per-container CPU ceilings the converge checks against Docker's applied
-  # quota once the stack is up, so a change to it changes what the lane asserts
-  # rather than only what the policy gate reads. The first contract to read one
-  # directly was Seafile's, removed in #501, which is how the omission surfaced:
-  # the harness closure in tests/ci/classify_changes_test.rb reached that
-  # service's tests/expected/ fixture and found it selecting no suite at all.
-  #
-  # inventory/group_vars/all/service_<role>.yml is routed for exactly that
-  # argument (#650). #611 split one unmapped main.yml into seventeen per-service
-  # files and routed none of them, so each fell open to the whole matrix -- a
-  # change to service_komga.yml dispatched 29 legs where the komga lane is what
-  # asserts it. These files carry the settings a converge applies and the storage
-  # host_prep creates, so they change what the lane asserts and not only what the
-  # policy gate reads. The sibling vault_<role>.yml is deliberately NOT routed
-  # here: VAULT_ROUTED_PATTERN already sends it to static and vault, and its
-  # plaintext is never read by a lane.
-  #
-  # Keyed by the ROLE rather than the service name, which is why SERVICE_NAMES
-  # carrying paperless_ngx beside paperless-ngx is load-bearing here: that is the
-  # platform's one name/role divergence, and the file is named for the role.
-  #
-  # The route appears in acquisition_lane below as well, and neither copy is
-  # individually necessary -- the caller tries acquisition_lane first and falls
-  # through to service_lane, SERVICE_NAMES names every acquisition project too,
-  # and deleting either line alone leaves every verdict unchanged (measured).
-  # That is the same redundancy tests/expected/<lane>.yml already carries in both
-  # resolvers, so this follows the file rather than inventing an exception; what
-  # a plant can catch is deleting the pair, which is the state #650 found.
+  # tests/expected/<svc>.yml and service_<role>.yml change what the lane asserts, so they route
+  # to it (#650). Keyed by role name, hence paperless_ngx in SERVICE_NAMES. acquisition_lane
+  # repeats both routes; either copy alone is redundant, deleting the pair is not.
   def service_lane(path)
     SERVICE_NAMES.each do |lane, names|
       names.each do |name|

@@ -1,12 +1,7 @@
 ---
-# Platform fragments. Compose resolves a YAML anchor only inside the file that
-# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
-# copies equal and records there why cross-file sharing was not taken.
-#
-# This stack declares no x-healthcheck-defaults on purpose. Three of these four
-# containers run the health check their image ships, and the fourth supplies
-# only a test; giving any of them the platform's interval, timeout, retries and
-# start_period would replace the image's own timing rather than share a default.
+# Platform fragments: anchors are file-local; tests/policy_test.rb pins the copies.
+# No x-healthcheck-defaults on purpose: these containers run their image's own health
+# check, and platform timing would replace it rather than share a default.
 x-logging: &default-logging
   driver: json-file
   options:
@@ -15,11 +10,7 @@ x-logging: &default-logging
 
 x-service-defaults: &service-defaults
   cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
-  # These containers carry no `user:`, so PID 1 starts as root. Refusing
-  # privilege escalation is what keeps that from being a path to more than
-  # root-in-a-namespace: nothing in the Immich images executes a setuid binary,
-  # and the Postgres entrypoint reaches its own account with setuid(2) as root,
-  # which no_new_privs does not restrict.
+  # No `user:` here, so PID 1 is root; no_new_privs keeps it root-in-a-namespace.
   security_opt:
     - no-new-privileges:true
   restart: unless-stopped
@@ -36,10 +27,7 @@ services:
       dev.dozzle.name: immich-server
     ports:
       - "2283:2283"
-    # The nested bind layout of the source deployment. /data holds the
-    # originals on the media volume; the regenerable derivatives and the
-    # profile tree are redirected onto the Docker root so the media volume
-    # carries only irreplaceable photographs.
+    # Regenerable derivatives go to the Docker root; the media volume keeps originals only.
     volumes:
       - ${NAS_MEDIA_ROOT:?}/Immich:/data
       - ${NAS_DOCKER_ROOT:?}/immich/data/thumbs:/data/thumbs
@@ -51,28 +39,20 @@ services:
       DB_DATABASE_NAME: ${IMMICH_DB_NAME:?}
       DB_USERNAME: ${IMMICH_DB_USERNAME:?}
       DB_PASSWORD: ${IMMICH_DB_PASSWORD:?}
-    # Immich runs its own schema migrations at startup and will corrupt neither
-    # an empty nor a half-initialized database, so both dependencies are gated
-    # on health rather than on start.
+    # Immich migrates its own store on start and refuses to go back; both dependencies
+    # are gated on health.
     depends_on:
       redis:
         condition: service_healthy
       database:
         condition: service_healthy
-    # Intel Quick Sync on the NAS. This is the production capability; platforms
-    # without a render node remove it in their override and transcode on CPU.
+    # Quick Sync on the NAS; overrides without a render node remove it.
     devices:
       - /dev/dri:/dev/dri
-    # The image ships its own health check. Enabling it explicitly is what makes
-    # `compose up --wait` mean anything: Compose treats a container with no
-    # health check as ready the moment it is running.
+    # Enabled explicitly so `compose up --wait` waits for it.
     healthcheck:
       disable: false
-    # This is the process that writes an original photograph to /data and its
-    # row to Postgres. A minute is enough for an upload in flight to land on
-    # both sides; it is deliberately not longer, because background transcodes
-    # and thumbnail jobs write only regenerable derivatives and pick themselves
-    # up again on the next start.
+    # A minute lets an in-flight upload land in /data and Postgres; derivatives resume.
     stop_grace_period: 1m
 
   immich-machine-learning:
@@ -83,8 +63,6 @@ services:
     labels:
       dev.dozzle.group: immich
       dev.dozzle.name: immich-machine-learning
-    # Models are downloaded on first use and are regenerable, so this volume is
-    # a cache in the storage inventory rather than service state.
     volumes:
       - ${NAS_DOCKER_ROOT:?}/immich/data/model-cache:/cache
     environment:
@@ -92,12 +70,8 @@ services:
     healthcheck:
       disable: false
 
-  # Deliberately still named redis: Immich resolves its cache by this Compose
-  # service name, and the image behind it is Valkey.
-  # Tracks the digest Immich's own compose carries, but it is a cache, not part
-  # of the release contract: upstream refreshes this digest independently of
-  # Immich releases, so ours need not equal the one the pinned tag shipped with.
-  # Digest refreshes are wanted here for base-image patches.
+  # Named redis because Immich resolves it by service name; the image is Valkey. Its
+  # digest may differ from Immich's own compose: refreshes are wanted for base patches.
   redis:
     <<: *service-defaults
     container_name: immich_redis
@@ -108,30 +82,13 @@ services:
       dev.dozzle.name: redis
     healthcheck:
       test: redis-cli ping || exit 1
-    # Valkey answers SIGTERM by writing one final snapshot before it exits. This
-    # one keeps no volume at all — the job queue is rebuilt from Postgres — so
-    # the window is only about exiting cleanly rather than being killed with a
-    # write open. 30s is well past what that snapshot costs.
+    # No volume here; 30s is just for a clean exit.
     stop_grace_period: 30s
 
-  # Not really one version. This is Immich's own purpose-built Postgres image,
-  # and the tag encodes three coupled things: the Postgres major, the
-  # VectorChord version and the pgvector version. Immich's schema depends on
-  # those extensions for smart search and face recognition.
-  #
-  # This line deliberately leaves Immich's own compose (#839). Upstream still
-  # ships a 14 tag carrying pgvecto.rs whose variant the base-images repository
-  # stopped building, so its digest is frozen at an old Postgres minor and the
-  # major reaches end of life. This tag is a maintained build that Immich's CI
-  # does not run, bounded instead by the ranges the pinned server enforces at
-  # startup: POSTGRES_VERSION_RANGE and VECTORCHORD_VERSION_RANGE in
-  # server/src/constants.ts at that release's tag. Recheck both when changing
-  # the server pin; the server refuses to start outside them.
-  #
-  # A major change is a dump and restore, never an in-place bump:
-  # docs/immich-postgres-17-cutover.md is the procedure. The restore preflight
-  # derives the expected major from this tag in roles/immich/tasks/main.yml, so
-  # nothing else restates it.
+  # Immich's Postgres: the tag couples the Postgres major, VectorChord and pgvector.
+  # Diverges from Immich's compose (#839); recheck POSTGRES_VERSION_RANGE and
+  # VECTORCHORD_VERSION_RANGE (server/src/constants.ts) when moving the server pin.
+  # A major change is a dump and restore: docs/immich-postgres-17-cutover.md.
   database:
     <<: *service-defaults
     container_name: immich_postgres
@@ -151,11 +108,6 @@ services:
     shm_size: 128mb
     healthcheck:
       disable: false
-    # The image's STOPSIGNAL is SIGINT, which is a Postgres fast shutdown:
-    # connections dropped, open transactions aborted, then a checkpoint that
-    # flushes every dirty buffer. Two minutes, twice what the Paperless cluster
-    # gets, because this one carries the photo library's VectorChord indexes and
-    # a proportionally larger buffer cache to write out. Killed mid-checkpoint
-    # the cluster is not lost, but it comes back through WAL recovery — and this
-    # directory is recovery: critical.
+    # SIGINT fast shutdown ends in a checkpoint; 2m for the larger buffer cache, since a
+    # kill means WAL recovery on recovery: critical data.
     stop_grace_period: 2m

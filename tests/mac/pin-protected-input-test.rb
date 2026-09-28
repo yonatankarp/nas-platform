@@ -1,28 +1,6 @@
 #!/usr/bin/env ruby
-# Behaviour and sequencing of tests/mac/pin-protected-input.rb.
-#
-# The pin is the Mac proof's trust boundary: it is what decides that the vault
-# and the password provider a human named on the command line are still the same
-# bytes by the time they reach the sandbox. Until #147 it was a 313-line Ruby
-# program inside a `<<'RUBY'` heredoc in tests/mac/run.sh, so nothing
-# syntax-checked it and the only thing that ever ran it was a full Mac lifecycle
-# proof needing Docker and a real vault password.
-#
-# Two layers, because the program has two kinds of property:
-#
-#   Behaviour -- drive the real program over real fixtures, one case per refusal
-#   it is supposed to make and one per copy it is supposed to produce. These
-#   assert the exact diagnostic, not merely a nonzero exit: a guard that fails
-#   for the wrong reason has stopped guarding what it names.
-#
-#   Sequencing -- the TOCTOU properties are *orderings*, not outputs. That the
-#   held-descriptor lstat happens through `in_directory`, that the read sits
-#   between two `source.stat` calls, that the path is re-lstat'd after the read:
-#   none of that is observable without losing a race, and a test that has to lose
-#   a race to pass does not belong in the policy gate. They are pinned as
-#   offsets into the source, the same way tests/policy_mac_test.rb pins that
-#   reconciliation deploys before it verifies.
-#
+# Behaviour and TOCTOU sequencing of tests/mac/pin-protected-input.rb, the Mac
+# proof's vault/password trust boundary. Orderings are pinned as source offsets.
 # Run with --self-test to prove both layers detect a planted regression.
 
 require "fileutils"
@@ -34,19 +12,12 @@ require "tmpdir"
 PROGRAM = File.join(__dir__, "pin-protected-input.rb")
 VAULT_HEADER = "$ANSIBLE_VAULT;1.1;AES256\n"
 
-# A backstop, not a budget. Nothing below asserts how long the pin takes, and no
-# case comes within an order of magnitude of this: it exists because one
-# regression this suite now guards -- an unbounded reader join after the process
-# group KILL -- parks the pin forever rather than making it return late, and a
-# gate check that hangs is worse than one that fails. An environment input for
-# the same reason IMMICH_PLAYBOOK_TIMEOUT and AUDIOBOOKSHELF_PLAYBOOK_TIMEOUT
-# are.
+# A backstop against a hang (e.g. an unbounded reader join), not a budget.
 PIN_TIMEOUT_SECONDS = Float(ENV.fetch("PIN_PROGRAM_TIMEOUT", "120"))
 
 def with_sandbox
   Dir.mktmpdir("nas-platform-pin-test.") do |raw|
-    # Realpath, not the mktmpdir path: the program requires the protected root to
-    # be its own realpath, and macOS hands out /var/... symlinks for TMPDIR.
+    # Realpath: the protected root must be its own realpath, and macOS TMPDIR is a symlink.
     root = File.realpath(raw)
     layout = {
       root: root,
@@ -73,12 +44,8 @@ PinOutcome = Struct.new(:succeeded) do
   end
 end
 
-# Deliberately not Open3.capture2e. The pin has to run under a deadline, and a
-# pipe would put reader threads in this harness -- exactly the construct whose
-# failure mode one case below exists to provoke. A file redirect has none, so the
-# deadline is a plain waitpid and the output is read back afterwards. The pin
-# leads its own process group so a run that overruns can be killed whole; the
-# grandchild one case plants is outside it by construction and is reaped by pid.
+# Not Open3.capture2e: pipe reader threads are the construct one case provokes. A file
+# redirect keeps the deadline a plain waitpid; the pin leads its own process group.
 def run_pin(program, layout, source, destination, kind, external, reuse, label)
   Dir.mktmpdir("nas-platform-pin-output.") do |directory|
     combined = File.join(directory, "output")
@@ -101,16 +68,8 @@ def run_pin(program, layout, source, destination, kind, external, reuse, label)
   end
 end
 
-# A run that overruns the deadline has to leave nothing behind, and killing the
-# pin's own group is not enough: the pin spawns its provider with `pgroup: true`,
-# so the provider leads a group of its own that the pin's group KILL cannot
-# reach. Take those out first, while the pin is still alive to be identified as
-# their parent.
-#
-# This is one of two mechanisms and both are wanted: the wedged providers below
-# also bound their own lives, because this one identifies its targets from `ps`
-# and a fixture that leaves a process running on someone's machine is not a
-# failure a test gets to have twice. Neither is redundant with the other.
+# On overrun, kill the provider's own process group (spawned with pgroup: true) first,
+# then the pin's. The wedged providers also bound their own lives, in case `ps` fails.
 def kill_pin_group(pid)
   child_process_groups(pid).each do |group|
     Process.kill("KILL", -group)
@@ -123,17 +82,8 @@ rescue Errno::ESRCH, Errno::ECHILD
   nil
 end
 
-# The pin's children that lead a group of their own, which is the one kind its
-# own group KILL misses.
-#
-# Group leadership is asked of each child rather than assumed from how the pin is
-# known to spawn, and the asking is the point rather than a formality: signalling
-# a process group by a pid that leads no group does not fail, it reaches whatever
-# group happens to carry that id. On a developer's machine that is something
-# entirely unrelated, and a test suite that KILLs it would be a far worse bug
-# than the leak this function exists to prevent. Do not replace the check with
-# the knowledge that the pin spawns exactly one child, with `pgroup: true`; that
-# is true today and is not what makes the signal safe.
+# The pin's children that lead their own group. Leadership is checked, never assumed:
+# signalling a group by a pid that leads none can KILL an unrelated process group.
 def child_process_groups(pid)
   listing, status = Open3.capture2("ps", "-e", "-o", "pid=", "-o", "ppid=")
   return [] unless status.success?
@@ -154,14 +104,8 @@ rescue SystemCallError
   false
 end
 
-# The grandchild the reader-outlives-the-kill case plants has a hard backstop of
-# its own, because it is by construction outside the process group the pin
-# signals and nothing the pin does can end it. The case always kills it
-# explicitly, so this only decides how long a *crashed* run could leave it
-# behind. Late-bound rather than a constant because the self-test shortens it for
-# one mutation: with a reader join unbounded the pin waits for this grandchild,
-# so a short life turns that regression into an acceptance the case names rather
-# than a hang the deadline has to catch.
+# The planted grandchild's own backstop; it is outside the pin's group. Late-bound
+# so the self-test can shorten it for one mutation.
 def grandchild_lifetime_seconds
   Float(ENV.fetch("PIN_GRANDCHILD_LIFETIME", "30"))
 end
@@ -191,11 +135,7 @@ def recorded_grandchild_pid(pidfile, within: 10)
   end
 end
 
-# A fixture that leaks a process every run is not one to keep, so confirming the
-# grandchild is gone is one of the case's assertions rather than best-effort
-# cleanup. It is not this process's child -- its parent exited and it was
-# reparented -- so it is signalled by pid and observed with kill(0), not waited
-# for.
+# Confirming the reparented grandchild is gone is an assertion, not best-effort cleanup.
 def reap_grandchild(failures, name, pidfile)
   pid = recorded_grandchild_pid(pidfile)
   if pid.nil?
@@ -212,8 +152,6 @@ def reap_grandchild(failures, name, pidfile)
   failures << "#{name}: the fixture grandchild #{pid} survived being reaped"
 end
 
-# The destination every case that is not deliberately testing an unsafe
-# destination writes into.
 def pinned_destination(layout, name = "deployment-vault.yml")
   File.join(layout[:protected_root], name)
 end
@@ -234,8 +172,7 @@ def acceptance(failures, name, output, status)
   failures << "#{name}: the pin refused a valid input: #{output.strip.inspect}"
 end
 
-# One entry per property. Named so --self-test can run only the cases a planted
-# regression is supposed to move, rather than the whole suite ten times over.
+# One entry per property, named so --self-test runs only the cases a plant should move.
 BEHAVIOUR = {
   "vault-happy-path" => lambda do |program, failures|
     with_sandbox do |layout|
@@ -331,11 +268,8 @@ BEHAVIOUR = {
         File.binread(destination) == "VAULT-PASSWORD-DO-NOT-LEAK\n"
     end
   end,
-  # The provider runs fchdir'd into the source's own parent, with the source as
-  # $0 and no inherited stdin. All three are security properties: the first is
-  # what makes the pin immune to a renamed path component, the second keeps the
-  # basename out of anything the shell evaluates, and the third stops a provider
-  # from consuming the runner's input.
+  # The provider runs fchdir'd into the source's parent, with the source as $0 and no
+  # inherited stdin; all three are security properties.
   "executable-provider-environment" => lambda do |program, failures|
     with_sandbox do |layout|
       source = write_source(layout, "provider", <<~PROVIDER, mode: 0o700)
@@ -398,22 +332,8 @@ BEHAVIOUR = {
               "protected deployment password input provider output exceeds the size limit")
     end
   end,
-  # Costs the pin's own five-second bound, plus the one second its post-TERM wait
-  # is bounded to. It is the only case that does, and it is the guard between a
-  # wedged provider and a Mac proof that never returns.
-  #
-  # The provider ignores TERM, which is what makes that second bound load-bearing:
-  # a provider that dies on the group TERM is reaped before `wait_thread.join(1)`
-  # is reached, so the bound executes and returns a finished thread. Refusing to
-  # die is what makes it return nil and the KILL that follows it necessary. An
-  # ignored disposition survives exec, so the sleep ignores TERM too and only the
-  # KILL ends either -- which is the point.
-  #
-  # It stays a bounded sleep rather than an unbounded loop, because a provider
-  # that ignores TERM outlives everything but the KILL. kill_pin_group takes the
-  # provider's group out on the deadline path, but it identifies that group from
-  # `ps`, so the provider's own limit is what covers the case where that fails.
-  # Sixty seconds, as this case has always used.
+  # Costs the pin's 5s bound plus its 1s post-TERM wait. The provider ignores TERM,
+  # which makes the KILL necessary; it stays a bounded sleep in case kill_pin_group fails.
   "provider-that-hangs" => lambda do |program, failures|
     with_sandbox do |layout|
       source = write_source(layout, "provider", <<~PROVIDER, mode: 0o700)
@@ -427,31 +347,13 @@ BEHAVIOUR = {
               "protected deployment password input provider timed out")
     end
   end,
-  # The only case in which a reader outlives the kill, and so the only one that
-  # makes the pin's reader-join bounds load-bearing. Every other blocked case
-  # leaves the wedged process inside the group the pin signals, so the KILL
-  # reaches it, EOF arrives on both captured pipes and each reader join returns a
-  # finished thread -- the bound executes and has never had to fire.
-  #
-  # Here the provider backgrounds a grandchild into a process group of its own --
-  # Process.setpgid(0, 0), which is portable where setsid(1) is not -- and lets it
-  # inherit the provider's stdout, so terminate_group cannot reach it and no EOF
-  # ever arrives. The provider itself exits 0, so nothing here goes through
-  # Timeout::Error and the reader-join bound is the only thing that ends the run.
-  #
-  # That is why the assertions are what they are. "provider failed" from a
-  # provider that ran to completion is the only diagnostic this path can produce:
-  # the pin checks timed_out, oversized, unsupported and contains_nul first and
-  # none of them hold, and a provider whose shell exited 0 leaves capture_failed
-  # as the only remaining cause -- which is reachable only from a reader join that
-  # returned nil. None of that depends on how fast the machine is. Reverting
-  # either reader join to an unbounded one makes the pin wait for the grandchild
-  # instead of giving up on it, which is a different outcome, not a slower one.
+  # The only case where a reader outlives the kill: a grandchild in its own process
+  # group holds stdout open, the provider exits 0, and only the bounded reader join
+  # ends the run, yielding "provider failed".
   "provider-whose-reader-outlives-the-kill" => lambda do |program, failures|
     name = "provider-whose-reader-outlives-the-kill"
     with_sandbox do |layout|
-      # Under the sandbox root rather than the pinned source's own parent: the
-      # pin re-lstats that directory after the provider runs.
+      # Under the sandbox root: the pin re-lstats the source's own parent afterwards.
       pidfile = File.join(layout[:root], "grandchild.pid")
       completed = File.join(layout[:root], "provider-completed")
       grandchild = "Process.setpgid(0, 0); " \
@@ -471,11 +373,8 @@ BEHAVIOUR = {
           File.file?(completed)
         failures << "#{name}: a protected copy was written anyway" unless
           Dir.children(layout[:protected_root]).empty?
-        # Whatever the pin prints, it is one line and nothing else. That the line
-        # is the right one is the refusal above; this is the other half, because
-        # a reader that dies when its stream is closed under it must not add
-        # Ruby's own thread-death header and stack trace to a gate whose failures
-        # are read by substring.
+        # One line only: a reader dying on a closed stream must not add Ruby's
+        # thread-death trace to a gate whose failures are read by substring.
         failures << "#{name}: the pin printed more than its diagnostic: #{output.inspect}" if
           output.lines.length > 1
       ensure
@@ -543,9 +442,7 @@ def behaviour_failures(program, names = BEHAVIOUR.keys)
   failures
 end
 
-# Every ordering below is a TOCTOU property that no output can show. `before`
-# must precede the syscall it guards and `after` must follow it, so each is
-# asserted as a pair of offsets into the source rather than as its mere presence.
+# TOCTOU orderings no output can show, asserted as ordered offsets into the source.
 def sequence_failures(source)
   failures = []
   offset = lambda do |needle|
@@ -565,8 +462,7 @@ def sequence_failures(source)
     source.include?("flags = File::RDONLY | File::NOFOLLOW | File::NONBLOCK")
   failures << "the pin no longer creates the protected copy exclusively" unless
     source.include?("output_flags = File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW")
-  # A held directory descriptor is only a defence if every subsequent look at the
-  # source goes through it. Four do, and each must stay an in_directory call.
+  # Every look at the source after opening must go through the held directory.
   %w[held_path_before source held_path_after provider_held_path_after].each do |binding|
     failures << "the pin no longer reaches #{binding} through the held directory" unless
       source.match?(/^\s*#{binding} = in_directory\(parent_directory\)/)
@@ -619,11 +515,7 @@ def interface_failures(program)
   failures
 end
 
-# Each planted regression names the cases it should move and the exact failure
-# the suite must emit when it does. A mutation that only turns the suite red
-# somewhere is not proof that the case guarding it works -- and the wording
-# distinguishes a guard that was removed ("accepted what it must refuse") from
-# one that now fails for a different reason, which is a different regression.
+# Each plant names the cases it should move and the exact failure they must emit.
 MUTATIONS = [
   {
     label: "an unencrypted vault",
@@ -700,12 +592,8 @@ MUTATIONS = [
     from: "next if reader.join(1)",
     to: "next if reader.join",
     cases: %w[provider-whose-reader-outlives-the-kill],
-    # Unbounded, the join waits for the grandchild rather than giving up on it,
-    # so the pin captures the provider's (empty) output, calls it a success and
-    # writes the copy. Shortening the grandchild's life is what makes that
-    # difference an acceptance this suite names instead of a hang the deadline
-    # has to catch; it does not make the mutation any less detected, because a
-    # pin that waits accepts whenever the wait ends.
+    # Unbounded, the join waits for the grandchild and the pin accepts; the short
+    # grandchild life turns that into a named acceptance instead of a hang.
     environment: { "PIN_GRANDCHILD_LIFETIME" => "3" },
     expects: "provider-whose-reader-outlives-the-kill: the pin accepted what it must refuse"
   },
@@ -714,26 +602,13 @@ MUTATIONS = [
     from: "rescue IOError\n  { bytes: \"\", failed: true }",
     to: "rescue Errno::ENOTTY\n  { bytes: \"\", failed: true }",
     cases: %w[provider-whose-reader-outlives-the-kill],
-    # bounded_read's rescue is what actually silences the reader that dies when
-    # the pin closes its stream: closing a stream under a parked IO#read raises
-    # "stream closed in another thread" there, and the rescue turns it into a
-    # failed capture. Narrow the class and the exception escapes the thread
-    # instead, Thread#join re-raises it into the cleanup, the whole popen3 block
-    # unwinds into `rescue SystemCallError, IOError` -- and the pin returns a
-    # result with an empty output and no recorded failure, so it writes an empty
-    # protected copy and the Mac proof gets an empty vault password.
-    #
-    # This is not the report_on_exception property. Those two lines sit behind
-    # this rescue, so they never see an exception while it stands; the noise they
-    # suppress is reachable in the four capture3_with_timeout copies, whose
-    # readers have no rescue of their own, and not here.
+    # This rescue turns a reader killed by its stream closing into a failed capture;
+    # narrowed, the exception unwinds popen3 and the pin writes an empty password copy.
     expects: "provider-whose-reader-outlives-the-kill: the pin accepted what it must refuse"
   }
 ].freeze
 
-# The sequencing layer's own regression: a look at the source that stops going
-# through the held directory descriptor is exactly the TOCTOU window the pin
-# exists to close, and it changes no output at all.
+# The sequencing layer's regression: an lstat that bypasses the held directory changes no output.
 SEQUENCE_MUTATION = {
   label: "an unheld post-read lstat",
   from: 'held_path_after = in_directory(parent_directory) { File.lstat("./#{basename}") }',
@@ -748,9 +623,7 @@ def mutate(source, mutation)
   source.sub(from, mutation.fetch(:to))
 end
 
-# One mutation needs a shorter fixture grandchild than the suite's own default,
-# and the cases read it from the environment because that is how the deadline
-# beside it is configured too.
+# One mutation needs a shorter fixture grandchild, read from the environment.
 def with_environment(overrides)
   previous = overrides.keys.to_h { |key| [key, ENV[key]] }
   overrides.each { |key, value| ENV[key] = value }

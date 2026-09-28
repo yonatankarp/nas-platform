@@ -55,12 +55,7 @@
       - host_prep_media_acquisition_storage | selectattr('recovery', 'equalto', 'user') | list | length == 7
       - host_prep_media_acquisition_storage | selectattr('recovery', 'equalto', 'critical') | list | length == 11
       - host_prep_media_acquisition_storage | map(attribute='mode') | unique | list == ['0755']
-      # Torrent has been through no host's handoff, so it is still inert
-      # everywhere and this reads as an invariant. Usenet is not: the NAS took
-      # it through Phase 1, so asserting it off here would fail the very host
-      # that completed the handoff. Which hosts may enable which transport is
-      # an inventory property, checked where the inventory is, and comparing
-      # the flag to itself at runtime would prove nothing anyway.
+      # Torrent is inert everywhere; Usenet is enabled on the NAS, so not asserted.
       - not (media_torrent_enabled | bool)
     fail_msg: >-
       Media acquisition storage layout differs from the foundation, or a
@@ -103,10 +98,7 @@
   changed_when: false
   tags: [platform_verify_media_acquisition_foundation]
 
-# Unlooped on purpose, and it must stay that way. The per-path assertion below
-# iterates this list, so a selector that matched nothing would run zero
-# iterations and pass while proving nothing at all. The floor is the only thing
-# standing between that and a guard that can never fail.
+# Unlooped on purpose: the looped assertion below would pass on an empty list.
 - name: Require both acquisition tree roots to have been inspected
   ansible.builtin.assert:
     that:
@@ -123,18 +115,8 @@
   changed_when: false
   tags: [platform_verify_media_acquisition_foundation]
 
-# The two directories the Phase 1 acceptance item names. Selecting them out of
-# the stat results proves they were actually inspected above rather than
-# reaching the filesystem as implicit parents nothing declared.
-#
-# `mode == '0755'` is the load-bearing condition, and it is what makes the
-# handoff wording checkable rather than merely written down: other=5 is r-x, so
-# no POSIX permission refuses an ordinary local account and the denial rests
-# entirely on ADM share configuration. Tighten the declaration and this fails,
-# which is the point. The docs claim must not outlive the mode it describes.
-# Deliberately no separate `roth`/`xoth` conditions: other=5 already means
-# exactly r-x, so they could never fail beside the mode condition, and a
-# condition that cannot fail is worse than no condition at all.
+# `mode == '0755'` is load-bearing: with other=r-x the denial rests entirely on
+# ADM share configuration, so tightening the mode must fail the docs claim here.
 - name: Verify the acquisition tree roots the acceptance item names
   ansible.builtin.assert:
     that:

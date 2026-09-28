@@ -1,9 +1,6 @@
 ---
 # After the bootstrap, so a converge whose only change was registering the
-# administrator -- two recreates of the application -- is announced. Every term
-# carries a default because each task behind it is conditional. The pre-upgrade
-# copy's rescue start is named for completeness: that path fails the run before
-# this report, so it never decides the verdict here.
+# administrator is announced. Every term defaults: each task behind it is conditional.
 - name: Report the Karakeep deployment
   ansible.builtin.include_role:
     name: deployment_bundle

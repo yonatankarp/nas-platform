@@ -1,44 +1,11 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Two properties about the release a role reads, and the second exists because
-# the first forced a deferral.
-#
-# THE DEFECT (#547). A role that reads a file under platform_current_dir is
-# reading the INSTALLED release. Activating a new release is a command task, so
-# check mode skips it -- roles/deployment_bundle/tasks/target.yml relaxes its own
-# release requirement for exactly that reason -- and `current` therefore still
-# names the PREVIOUS release during a review. For a service this platform has
-# never converged, that release has no services/<name>/ at all, and the read
-# dies on a file that is simply not there.
-#
-# Found by an operator running `--check --diff` against the real NAS, which is
-# the reading CI structurally cannot do: the integration lane runs its check
-# phase after two live converges, so the release is always assembled by then.
-# The run died at task 1366 of an otherwise complete review with
-# `File not found: /volume1/Docker/nas-platform/current/services/vaultwarden/compose.yml`.
-#
-# THE WINDOW IS NARROW AND REAL. It opens when a new service's release is merged
-# and closes at that release's first live converge -- once per service, on the
-# one review an operator is told to run before applying anything. That is also
-# why the five readers in UNGUARDED_RELEASE_READS below have never triggered it:
-# every release currently on the NAS already carries arr, bindery and the three
-# shared roles' subjects, so their reads always find something.
-#
-# WHY A LEDGER RATHER THAN A RULE. Requiring every one of those five to be
-# guarded would fail the gate on five roles this change does not touch, for a
-# latent defect none of them has yet hit. A check that cries wolf gets deleted,
-# which is worse than no check. So the unguarded set is pinned exactly, in both
-# directions: a sixth appearing fails, and one of these being fixed without
-# updating the list fails too. It is a ledger of known latent readers rather
-# than a clean bill of health, and it is what a future change that decides to
-# fix them will edit.
+# Reads of the installed release (platform_current_dir): under --check `current`
+# still names the previous release, which lacks a never-converged service (#547).
+# Unguarded readers are pinned as a ledger both ways; the fixed ones must stay guarded.
 
-# Explicitly, not transitively. permitted_classes below names Date, and on this
-# workstation `require "yaml"` happens to define it -- psych pulls it in -- while
-# on the CI runner's psych it does not, so 5f7c1155 had to add this line after a
-# check died there with `uninitialized constant Date (NameError)` on a tree that
-# was green locally.
+# Explicitly: permitted_classes names Date, and the CI runner's psych does not load it.
 require "date"
 require "yaml"
 
@@ -49,27 +16,20 @@ include TestScaffold
 
 ROOT = ENV.fetch("PLATFORM_RELEASE_READ_ROOT", File.expand_path("..", __dir__))
 
-# Modules that OPEN the path and therefore fail when it is absent. `stat` is
-# deliberately not among them: reporting `exists: false` is the whole point of
-# it, and it is what a guarded read is guarded by.
+# Modules that OPEN the path. `stat` is not among them: it is what guards a read.
 RELEASE_READERS = {
   "ansible.builtin.slurp" => %w[path src],
   "ansible.builtin.include_vars" => %w[file]
 }.freeze
 
-# Every unguarded read of the installed release that exists today, by file. Each
-# is latent rather than broken: the services these reach are in every release
-# the NAS has, so the read always finds its file. Fixing one means giving it the
-# stat-and-three-states shape roles/vaultwarden/tasks/deploy.yml now carries, and
-# removing its line here.
+# Latent unguarded reads, by file. Fixing one means the stat-and-three-states shape
+# of roles/vaultwarden/tasks/deploy.yml and removing its line here.
 UNGUARDED_RELEASE_READS = [
   "roles/arr/tasks/configarr.yml",
   "roles/bindery/tasks/pre_upgrade_backup.yml",
   "roles/container_cpu/tasks/inspect.yml",
   "roles/image_downgrade_guard/tasks/main.yml",
-  # Live-only since it was added (#858): under --check it reads the candidate
-  # through a lookup, the way the guard above does since #851. Moved out of
-  # tasks/main.yml when the pg_dump entry came to share it (#826).
+  # Reads the candidate through a lookup under --check (#858).
   "roles/pre_upgrade_backup/tasks/pending.yml"
 ].freeze
 
@@ -81,38 +41,14 @@ GUARDED_RELEASE_READS = [
   "roles/vaultwarden/tasks/verify.yml"
 ].freeze
 
-# The keys that must never reach a deployed Vaultwarden, checked here in the
-# repository as well as on the target.
-#
-# THIS IS THE HALF THAT COVERS THE DEFERRAL. roles/vaultwarden sweeps the
-# INSTALLED release for these and, on a review where the release is not there to
-# read, now reports instead of sweeping. That is a real narrowing of the runtime
-# guard, so the same property is asserted here against the repository -- which
-# is always readable, runs on every pull request, and stops the keys reaching a
-# release at all. The two are complementary rather than duplicated: this one
-# cannot see what is actually installed on a target, and the runtime one cannot
-# run before the release exists.
-#
-# ADMIN_TOKEN puts a login on /admin; DISABLE_ADMIN_TOKEN opens the panel with
-# no login at all -- measured against the pinned image at 140 KB of live
-# unauthenticated panel -- and a service-level env_file could carry either where
-# neither guard would see it. Anything saved in that panel writes a config.json
-# that outranks every value the role renders.
+# Keys that must never reach a deployed Vaultwarden, checked in the repository
+# because the runtime sweep reports instead of sweeping when the release is absent.
+# Either key opens or exposes /admin, whose config.json outranks the rendered .env.
 FORBIDDEN_COMPOSE_KEYS = %w[ADMIN_TOKEN DISABLE_ADMIN_TOKEN].freeze
 VAULTWARDEN_COMPOSE_GLOB = File.join("services", "vaultwarden", "compose*.yml")
 
-# A TASK FILE THAT COULD NOT BE PARSED IS NOT A TASK FILE WITH NO RELEASE READ
-# IN IT (#596). This rescued to nil and the file dropped out of the sweep, and
-# nothing in this program could see that: the only cardinality assertion here is
-# `expected_reads`, which is a floor over the reads the two ledgers NAME, so it
-# catches an existing read going missing and says nothing at all about an
-# unparseable file that has just acquired a new one. Measured on this tree: an
-# unguarded slurp of {{ platform_current_dir }} planted into a role task file
-# failed by name, and appending one unclosed quote to that same file printed "2
-# guarded and 4 known-latent reads" and exited 0. +unreadable+ is what makes the
-# skip mean "unknown" rather than "nothing to report"; the problems it produces
-# are reported through the same list every other finding here uses, so a run
-# still names every violation it can see rather than stopping at the first.
+# An unparseable task file is reported through +unreadable+, not skipped: the
+# expected_reads floor cannot see an unparseable file acquiring a new read (#596).
 def release_reads(root, unreadable)
   Dir[File.join(root, "roles", "*", "tasks", "**", "*.yml")].sort.flat_map do |path|
     document = begin
@@ -139,10 +75,8 @@ def release_reads(root, unreadable)
         target = keys.filter_map { |key| options[key] }.first.to_s.gsub(/\s+/, " ").strip
         next unless target.include?("platform_current_dir")
 
-        # Guarded means an earlier task in the same file stats the same path, so
-        # the read can be skipped when it is absent. Same file, because that is
-        # where the fix belongs and a stat two files away proves nothing about
-        # the order they run in.
+        # Guarded means an earlier task in the same file stats the same path; a stat
+        # in another file proves nothing about run order.
         guarded = stats.any? { |(stat_index, stat_path)| stat_index < index && stat_path == target }
         { "file" => relative, "name" => task["name"].to_s, "guarded" => guarded }
       end
@@ -150,10 +84,8 @@ def release_reads(root, unreadable)
   end
 end
 
-# Compose accepts `environment:` as a mapping or as a sequence of NAME=VALUE
-# strings, and the platform overrides carry Compose's own `!override` tag, which
-# from_yaml refuses. Both are handled exactly as roles/vaultwarden does, so the
-# two guards cannot disagree about what a document declares.
+# Compose `environment:` may be a mapping or NAME=VALUE list, and overrides carry
+# `!override`, which from_yaml refuses. Handled as roles/vaultwarden does.
 def declared_keys(source)
   document = YAML.safe_load(source.gsub(" !override", "").gsub(" !reset", ""), aliases: true)
   services = document.is_a?(Hash) && document["services"].is_a?(Hash) ? document["services"].values : []
@@ -231,11 +163,8 @@ def sweep_problems(root = ROOT)
                 "added has been removed or the stat and the read have drifted apart. The review " \
                 "path is what breaks, and no lane can see it"
   end
-  # The third direction, and the one both lists were open in until it was
-  # planted: a guarded read simply dropped from the pin left every comparison
-  # above satisfied and reported success. It is the same hole
-  # CREDENTIAL_FREE_SERVICES had -- a set difference in one direction says
-  # nothing about a name that left the set entirely.
+  # The third direction: a guarded read dropped from the pin satisfies both
+  # one-way differences above.
   (guarded - GUARDED_RELEASE_READS).each do |file|
     problems << "#{file} stats the release path before opening it, which is the shape this check " \
                 "exists to keep, but it is named in neither list. Add it to " \
@@ -243,10 +172,7 @@ def sweep_problems(root = ROOT)
                 "silent regression -- and if it was moved off UNGUARDED_RELEASE_READS, take it " \
                 "out of there in the same edit"
   end
-  # A derivation that found nothing satisfies every comparison above. The number
-  # is today's real count rather than a comfortable floor, for the reason
-  # tests/deployment_gate_coverage_test.rb states about its own: a floor below
-  # the truth buys nothing.
+  # An empty derivation satisfies every comparison above; the count is exact.
   expected_reads = UNGUARDED_RELEASE_READS.length + GUARDED_RELEASE_READS.length
   if reads.map { |read| read.fetch("file") }.uniq.length < expected_reads
     problems << "the sweep found #{reads.length} reads of platform_current_dir across " \
@@ -257,16 +183,9 @@ def sweep_problems(root = ROOT)
 end
 
 # --- self-test ---------------------------------------------------------------
-#
-# Folded into every run: the sweep is static and costs under a second, and a
-# guard that proves itself on every run is one fewer manifest line to keep true.
-# Each plant is a defect a reader could plausibly introduce, with the property it
-# must break.
+# Folded into every run; each plant is a plausible defect with the property it breaks.
 PLANTS = [
-  # The stat and the slurp name the same path today; this points the stat
-  # somewhere else, which is how the guard drifts apart in practice rather than
-  # by anyone deleting it. String#sub takes the first occurrence, and the stat
-  # is the earlier of the two.
+  # String#sub takes the first occurrence, and the stat is the earlier of the two.
   { "name" => "the deploy sweep's stat drifts off the path it guards",
     "file" => "roles/vaultwarden/tasks/deploy.yml",
     "from" => "  ansible.builtin.stat:\n    path: >-\n" \
@@ -274,14 +193,8 @@ PLANTS = [
     "to" => "  ansible.builtin.stat:\n    path: >-\n" \
             "      {{ platform_current_dir }}/services/vaultwarden/elsewhere\n",
     "expect" => "no longer stats the release path" },
-  # THE DEFECT #596 CLOSED, planted in a file that reads the installed release
-  # NOWHERE. Corrupting one of the six files the two ledgers name would drop a
-  # read they require and fail on the ledger comparison instead, proving nothing
-  # about this refusal; reconcile_connections.yml contributes no read at all, so
-  # every ledger comparison and the expected_reads floor stay satisfied and the
-  # old `rescue Psych::Exception; nil` reported success. That is the whole shape
-  # of the defect: a floor over the reads the ledgers NAME cannot see an
-  # unparseable file acquiring an unguarded one.
+  # Planted in a file with no release read (#596), so the ledgers and the
+  # expected_reads floor stay satisfied and only the parse refusal can fail it.
   { "name" => "a role task file that could not be parsed at all",
     "file" => "roles/trailarr/tasks/reconcile_connections.yml",
     "from" => "---\n# A connection is the only part",

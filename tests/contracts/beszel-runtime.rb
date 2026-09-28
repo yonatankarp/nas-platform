@@ -1,14 +1,7 @@
 #!/usr/bin/env ruby
-# The runtime half of the Beszel service contract: everything that needs a
-# served PocketBase hub, an encrypted vault and the persisted telemetry the
-# agents write.
-#
-# usage: beszel-runtime.rb MODE
-#
-# Every input arrives in the environment tests/contracts/beszel.sh exports,
-# PLATFORM_CONTRACT_REPO_DIR included, which is read below to require the
-# shared telemetry evaluator out of the INSPECTED tree rather than out of this
-# checkout. Run it through that wrapper rather than directly.
+# Runtime half of the Beszel contract: served hub, encrypted vault, persisted
+# telemetry. usage: beszel-runtime.rb MODE, through tests/contracts/beszel.sh;
+# the telemetry evaluator is required from the INSPECTED tree.
 require "json"
 require "net/http"
 require "open3"
@@ -20,37 +13,18 @@ require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests/contracts/supp
 
 MODE = ARGV.fetch(0)
 HUB = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_BESZEL_PORT'), 10)}")
-# The address the hub container reaches this program's notification recorder on
-# is whatever the deployment was told to use,
-# not the loopback address this contract connects to, and it is not a fixed name:
-# only Docker Desktop supplies host.docker.internal, so a Linux daemon gets an
-# address instead. Follow the precedence inventory/local.yml uses, and fall back
-# to the name inventory/mac.yml hardcodes, which the Mac lane relies on because it
-# exports neither variable.
+# The address the hub reaches the recorder at, in inventory/local.yml's precedence,
+# falling back to inventory/mac.yml's host.docker.internal.
 CALLBACK_HOST = [ENV["PLATFORM_CALLBACK_HOST"], ENV["PLATFORM_NAS_ADDRESS"]]
                 .compact.reject(&:empty?).first || "host.docker.internal"
-# What roles/beszel converges, read out of the inspected tree rather than typed
-# here. The hand-typed map this replaced drifted from beszel_alerts silently: a
-# threshold moved or an alert deleted in the defaults passed the static gate, and
-# only a live hub in the beszel lane could notice (#608).
-# tests/beszel_contract_test.rb keeps the one literal copy left, as the fixture
-# its hub serves, and holds that copy against the same defaults.
+# Read from the inspected tree's defaults, not hand-typed (#608).
 MANAGED_ALERTS = YAML.safe_load_file(File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "roles/beszel/defaults/main.yml"))
                      .fetch("beszel_alerts")
                      .to_h { |alert| [alert.fetch("name"), [alert.fetch("value"), alert.fetch("min")]] }.freeze
 DECOY_NAME = "00-contract-decoy"
 WRONG_OWNER_EMAIL = "wrong-owner-fixture@example.invalid"
 DUPLICATE_EVIDENCE = File.join(ENV.fetch("PLATFORM_REPORT_ROOT"), "beszel-duplicate-ids.txt")
-# The two budgets this program can spend waiting, and the only two numbers in it
-# a caller may need to lower. Both defaults are the deployment's: ninety seconds
-# for a real agent to write a 1m telemetry sample, fifteen for the hub's test
-# notification to reach the recorder the notify mode listens with. They are environment inputs for the reason
-# tests/contracts/seerr-runtime.rb's READY_TIMEOUT_SECONDS is (#319): a caller
-# that must reach the refusal these deadlines guard has to sit out the whole
-# budget to get there, and tests/beszel_contract_test.rb has one such row per
-# deadline. Ninety seconds of that was the floor of both beszel checks in
-# tests/validate-policy.sh. Nothing in a deployment sets either name, so the
-# beszel integration lane and the Mac proof read the defaults.
+# The only two waits; environment inputs so refusal rows need not sit them out (#319).
 TELEMETRY_POLL_TIMEOUT_SECONDS =
   Integer(ENV.fetch("PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS", "90"), 10)
 NOTIFICATION_POLL_TIMEOUT_SECONDS =
@@ -61,11 +35,8 @@ def fail_contract(message)
   exit 1
 end
 
-# roles/beszel's beszel_notification_url, rendered. The port is read from the
-# inspected tree's shared inventory, its one home. The token is encoded the way
-# Jinja's urlencode does it: every byte but letters, digits, `_.-~` and `/`
-# becomes %XX, so the space in "Bearer " is %20. That rule was measured through
-# Ansible, not assumed.
+# The port comes from shared inventory; the token is encoded as Jinja's urlencode
+# does (space becomes %20), measured through Ansible.
 RELAY_PORT = Integer(
   YAML.safe_load_file(File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"),
                                 "inventory/group_vars/all/service_dozzle.yml"))
@@ -108,10 +79,7 @@ rescue SystemCallError, Timeout::Error => error
   fail_contract("#{method.upcase} #{uri.path} failed: #{error.class}")
 end
 
-# Reads one request and answers it, for the notify mode's recorder. Copied from
-# tests/contracts/dozzle-runtime.rb rather than shared, as every contract carries
-# its own: shoutrrr's generic service sends one POST with a Content-Length and a
-# text/plain body, and nothing here has to be a general HTTP implementation.
+# Copied from dozzle-runtime.rb, as each contract carries its own.
 def read_recorded_request(socket)
   request_line = socket.gets
   return nil if request_line.nil?
@@ -131,12 +99,9 @@ rescue StandardError
   nil
 end
 
-# What the Dozzle alert relay's /beszel route requires, and the double encoding
-# that has to survive to reach it: template=json makes shoutrrr's generic service
-# send exactly {"message","title"} as JSON, and the percent-encoded
-# @Authorization query key becomes the header after Beszel has decoded and
-# re-encoded the whole query to add $title (SendShoutrrrAlert). Proved against a
-# real 0.19.0 hub, never read off the source alone.
+# The relay's /beszel envelope: template=json yields {"message","title"}, and the
+# percent-encoded @Authorization key survives Beszel's re-encoding to become the
+# header. Proved against a real 0.19.0 hub.
 def relay_envelope?(record)
   body = begin
     JSON.parse(record["body"])
@@ -216,10 +181,7 @@ end
 case MODE
 when "drift"
   managed_system = exact_record(managed_systems, "managed system")
-  # Beszel pins the users authRule to verified=true (read against 0.18.7, a
-  # dated record; services/beszel/compose.yml carries the pin). Keep the primary
-  # identity authentication-compatible so convergence can prove its preserved
-  # password before repairing the independently mutable role.
+  # Beszel pins the users authRule to verified=true; keep the identity compatible.
   request("patch", endpoint(HUB, "/api/collections/users/records/#{user_id}"), token: admin_token,
           body: { role: "user" })
 
@@ -314,37 +276,10 @@ when "notify"
     body: { identity: vault.fetch("vault_beszel_app_user_email"),
             password: vault.fetch("vault_beszel_app_user_password") }
   )
-  # NOT the URL the role converged, and that is the whole of what this mode can
-  # still prove. Beszel's production webhook is Pushover, and no proof that ends
-  # at a real Pushover account can run here: it would leave the platform's
-  # notification budget at the mercy of a test loop and would need an account
-  # this harness has no way to hold. So this mode hands the hub a shoutrrr
-  # generic webhook pointing at a recorder in this process and asserts the POST
-  # arrives, which demonstrates that the hub's shoutrrr dispatch works end to
-  # end -- authentication, the test-notification route, delivery to a real
-  # listener. It says nothing about whether the stored Pushover URL is
-  # deliverable. The verify mode below is what compares the stored value against
-  # the vault; nothing anywhere delivers through it.
-  #
-  # The recorder is the dozzle contract's, and reachable for the same reason:
-  # the integration controller runs with --network host and the Mac lane runs
-  # this program on the Mac, so a socket here is a socket on the Docker host.
-  # Its port is chosen at runtime because the URL travels in the request body.
-  # A fresh listener per run is also why no anti-replay baseline is needed any
-  # more: it cannot hold a message from before it existed.
-  #
-  # The URL form is read from the pinned sources rather than guessed. Beszel
-  # 0.19.0 vendors nicholas-fedor/shoutrrr v0.19.0, whose generic service POSTs
-  # over https unless `disabletls` is set (generic_config.go: WebhookURL), and
-  # returns an error for a dial failure or a status of 400 or more -- which the
-  # hub reports as a string in `err` (internal/alerts/alerts_api.go:
-  # SendTestNotification). The URL carries template=json and an @Authorization
-  # header because that is the form PR-B points Beszel at the alert relay with:
-  # the recorder requires the bearer header and the two-key JSON envelope, so
-  # this mode proves the transport the relay depends on. The message is matched
-  # on Beszel's test text rather than whole, because the hub appends its app URL.
-  # A wrong host, port or scheme therefore fails at `err`, and a hub that says
-  # it sent without sending fails at the recorder.
+  # Not the converged URL: no test can end at a real Pushover account. The hub is
+  # pointed at a recorder here, proving its shoutrrr dispatch end to end (verify
+  # compares the stored URL to the vault). A dial failure or a 400+ comes back in
+  # `err`; the message is matched on Beszel's test text, since the hub appends its URL.
   begin
     recorder = TCPServer.new("0.0.0.0", 0)
   rescue SystemCallError => error
@@ -373,15 +308,8 @@ when "notify"
     sleep 1
   end
 else
-  # The socket proxy's loopback port, asked from the host's network namespace --
-  # the vantage agent-intel has on the NAS, and the one this program has in the
-  # integration lane, whose controller runs with --network host. #829 moved the
-  # proxy onto an internal network and gave it a second, non-internal one that
-  # only it joins, because Docker does not publish a port for a container on
-  # internal networks alone. Nothing else in a lane runs agent-intel, so without
-  # this a proxy that lost that second network would pass everywhere and the
-  # first report would be the NAS's missing container telemetry. The Mac lane
-  # resets the port, so only the integration lane asks.
+  # The socket proxy's loopback port from the host namespace, agent-intel's vantage
+  # (#829); only the integration lane has it, since the Mac lane resets the port.
   if ENV.fetch("PLATFORM_KIND") == "integration"
     ping_port = Integer(ENV.fetch("PLATFORM_BESZEL_SOCKET_PROXY_PORT", "2375"), 10)
     begin
@@ -406,9 +334,7 @@ else
 
   settings = exact_record(records("user_settings", admin_token, equality("user", user_id)),
                           "managed user settings")
-  # The shoutrrr URL roles/beszel converges, rebuilt here from the vault's relay
-  # token and the relay port in shared inventory rather than read back from
-  # anywhere -- the credential direction the whole platform holds to.
+  # Rebuilt from the vault and shared inventory, never read back.
   expected_url = relay_webhook(vault.fetch("vault_dozzle_alert_relay_token"))
   notification_settings = settings.fetch("settings")
   notification_settings = JSON.parse(notification_settings) if notification_settings.is_a?(String)

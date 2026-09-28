@@ -13,9 +13,7 @@
   check_mode: false
   no_log: true
 
-# Only the declared keys are compared. The rest of the mapping is Seerr's own —
-# the API key, the VAPID pair, the locale — and the platform has no opinion on
-# it, so a change there must not read as drift.
+# Only declared keys are compared; the rest (API key, VAPID, locale) is Seerr's.
 - name: Resolve the Seerr main settings reconciliation
   ansible.builtin.set_fact:
     seerr_main_declared_now: >-
@@ -39,11 +37,7 @@
     - ansible_check_mode
     - seerr_main_repair | bool
 
-# POST /api/v1/settings/main is a deep merge rather than a replace — measured,
-# the API key survived a partial body — so this sends only what the platform
-# declares and leaves the rest of the mapping alone.
-#
-# Redacted: the request carries the API key.
+# A deep merge, so a partial body is safe. Redacted: carries the API key.
 - name: Declare the Seerr main settings
   ansible.builtin.uri:
     url: "{{ seerr_api }}/settings/main"
@@ -91,11 +85,8 @@
     - ansible_check_mode
     - seerr_pushover_repair | bool
 
-# The POST assigns the body to the agent verbatim — measured for ntfy, a partial
-# body dropped embedPoster from the read-back — so the whole object goes every
-# time and the comparison above is against the same shape.
-#
-# Redacted: the request carries the API key and the Pushover pair.
+# The POST replaces the agent verbatim, so the whole object is sent.
+# Redacted: carries the API key and the Pushover pair.
 - name: Declare the Seerr Pushover notification agent
   ansible.builtin.uri:
     url: "{{ seerr_api }}/settings/notifications/pushover"
@@ -158,10 +149,8 @@
   changed_when: true
   no_log: true
 
-# settings.public.initialized is not a gate on the API at all; it only controls
-# whether the frontend redirects to /setup. POST /api/v1/settings/initialize is
-# an unconditional write, so it is guarded on the current value rather than
-# called every converge.
+# `initialized` only stops the frontend redirecting to /setup; guarded because
+# the POST writes unconditionally.
 - name: Read the anonymous Seerr public settings
   ansible.builtin.uri:
     url: "{{ seerr_public_settings_url }}"

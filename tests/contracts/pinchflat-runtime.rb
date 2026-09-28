@@ -1,22 +1,7 @@
 #!/usr/bin/env ruby
-# The runtime half of the Pinchflat service contract: what only a deployed
-# Pinchflat can answer -- its health, that its interface admits exactly the
-# vault-authored administrator and nobody else, and that its state landed in
-# the declared config root.
-#
-# usage: pinchflat-runtime.rb
-#
-# Takes no arguments. Its whole input is the environment
-# tests/contracts/pinchflat.sh exports: PLATFORM_PINCHFLAT_PORT,
-# PLATFORM_PINCHFLAT_CONTAINER, PLATFORM_DOCKER_ROOT and the two
-# PLATFORM_CONTRACT_VAULT_* paths. On failure it writes one
-# `Pinchflat contract failed: ...` line to stderr and exits 1.
-#
-# Until #147 this was a `<<'RUBY'` heredoc inside tests/contracts/pinchflat.sh,
-# invisible to every static check and reachable by no test short of a full
-# integration lane. The body below is byte-identical to what that heredoc
-# rendered; the heredoc carried no `-r` preloads and no arguments, so neither
-# does the invocation that replaced it.
+# Runtime half of the Pinchflat service contract: health, that only the vault's
+# administrator is admitted, and that state landed in the config root (#147).
+# Takes no arguments; its input is the environment tests/contracts/pinchflat.sh exports.
 require "json"
 require "net/http"
 require "open3"
@@ -27,9 +12,8 @@ require "yaml"
 READY_TIMEOUT_SECONDS = 120
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_PINCHFLAT_PORT'), 10)}")
 CONTAINER = ENV.fetch("PLATFORM_PINCHFLAT_CONTAINER")
-# Pinchflat's whole state is one SQLite database beneath the declared config
-# root. It is what has to survive a container recreation, and its absence is
-# what a wrongly owned or wrongly mounted config bind looks like.
+# The SQLite database under the config root is Pinchflat's whole state; its absence
+# means a wrongly owned or mounted config bind.
 DATABASE = File.join(ENV.fetch("PLATFORM_DOCKER_ROOT"), "pinchflat", "config", "db", "pinchflat.db")
 
 def fail_contract(message)
@@ -86,8 +70,7 @@ credentials = [
   vault.fetch("vault_pinchflat_admin_username"), vault.fetch("vault_pinchflat_admin_password")
 ]
 
-# The interface is the writer, so all three outcomes are asserted: refused with
-# no credential, refused with the wrong one, accepted with exactly the vault's.
+# Refused without a credential, refused with the wrong one, accepted with the vault's.
 fail_contract("Pinchflat served its interface to an anonymous request") unless
   request("/").code == "401"
 fail_contract("Pinchflat served its interface to a wrong password") unless

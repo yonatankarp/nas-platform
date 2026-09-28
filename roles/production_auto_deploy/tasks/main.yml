@@ -30,9 +30,7 @@
       production auto-deployment requires Python 3.12 or newer, found
       {{ ansible_facts.python_version }}.
 
-# The encrypted vault is committed, so the checkout carries the candidate's own
-# copy and group_vars loads it. Only the password provider, which is never
-# committed, has to be placed outside the checkout the poller rewrites.
+# Only the password provider, never committed, lives outside the checkout.
 - name: Require the vault password provider
   ansible.builtin.stat:
     path: "{{ item }}"
@@ -81,10 +79,7 @@
       controller-requirements.txt before installing the poller. Without it the
       first automatic poll fails and records the revision as attempted.
 
-# The poller runs from cron with a deliberately narrow PATH, so it cannot rely
-# on the operator's login environment. NAS firmwares scatter binaries across
-# /usr/local, /usr/builtin and /opt, so discover them here instead of assuming
-# /usr/bin, and record the result in the poller's configuration.
+# Cron has a narrow PATH and NAS firmwares scatter binaries, so discover them.
 - name: Locate the tools the poller must run
   ansible.builtin.shell:
     cmd: command -v {{ item | quote }}
@@ -93,9 +88,7 @@
   loop: [git, curl, docker]
   changed_when: false
   failed_when: false
-  # A read that must really happen: skipped under --check, it records rc 0
-  # with an empty stdout, so the assertion below would report a tool missing
-  # instead of reporting what the install would do (#834).
+  # Must run under --check, or the assertion reports a tool missing (#834).
   check_mode: false
 
 - name: Require every tool the poller depends on
@@ -124,10 +117,7 @@
       {{ (production_auto_deploy_tools.values() | map('dirname') | list
           + ['/usr/bin', '/bin']) | unique | join(':') }}
 
-# Ansible checks locale.getlocale() and refuses to run when it reports None,
-# which is what a scheduler's empty environment produces. Probe each candidate
-# with the real interpreter rather than trusting locale -a, which is not
-# functional on every firmware.
+# Probe with the real interpreter: `locale -a` is broken on some firmwares.
 - name: Find a locale the installed Ansible accepts
   ansible.builtin.shell:
     cmd: >-
@@ -140,8 +130,7 @@
   loop: "{{ production_auto_deploy_locale_candidates }}"
   changed_when: false
   failed_when: false
-  # Skipped under --check, the result reads rc=0 for every candidate, so the
-  # review would record the first one untested (#834).
+  # Must run under --check, or the first candidate is recorded untested (#834).
   check_mode: false
 
 - name: Record the first locale that worked
@@ -160,19 +149,15 @@
       usable UTF-8 locale on this host, and Ansible refuses to run without one.
       Add a working locale to production_auto_deploy_locale_candidates.
 
-# Some NAS firmwares ship BusyBox crontab without the setuid bit and keep the
-# spool root-owned, so an unprivileged account cannot schedule anything. Probe
-# here rather than discovering it at the final task, after everything else has
-# already been installed. An empty crontab is a success: the implementations
-# differ on exit status but say so on stderr.
+# Some firmwares ship a non-setuid BusyBox crontab. An empty crontab is a
+# success: implementations differ on exit status but say so on stderr.
 - name: Check whether this account can manage its own crontab
   ansible.builtin.command:
     argv: [crontab, -l]
   register: production_auto_deploy_crontab_probe
   failed_when: false
   changed_when: false
-  # Skipped under --check, the result reads rc=0 and the assertion below would
-  # pass a crontab nobody probed (#834).
+  # Must run under --check, or the assertion passes an unprobed crontab (#834).
   check_mode: false
   when: not production_auto_deploy_external_scheduler | bool
 
@@ -227,8 +212,7 @@
     dest: "{{ production_auto_deploy_launcher_path }}"
     mode: "0700"
 
-# Before the configuration that names them, so a configuration never points at
-# a curl config that was not rendered. Each carries one application's token.
+# Before the configuration that names them.
 - name: Render the protected Pushover publisher configurations
   ansible.builtin.template:
     src: pushover.curl.j2
@@ -239,18 +223,14 @@
     label: "{{ item.path }}"
   no_log: true
 
-# This role rendered it until #558 removed ntfy; it carries the deploy
-# publisher's bearer token for a server that no longer runs.
+# ntfy was removed in #558; this file carries a bearer token for a dead server.
 - name: Remove the retired ntfy publisher configuration
   ansible.builtin.file:
     path: "{{ production_auto_deploy_config_root }}/ntfy.curl"
     state: absent
   no_log: true
 
-# Secret-bearing since #606: the two healthchecks.io ping URLs carry their
-# checks' tokens. Rendered after the poller copy above, and the poller reads a
-# configuration without them as "no ping", and one without the Pushover paths
-# as "cannot publish", so no half-installed state stops a deployment.
+# Secret-bearing: the healthchecks.io ping URLs carry their tokens (#606).
 - name: Write the protected poller configuration
   ansible.builtin.template:
     src: config.json.j2
@@ -268,8 +248,7 @@
   tags:
     - production_auto_deploy_cron
 
-# After the poller copy above, so a failed copy cannot leave this entry calling
-# an older poller that rejects --verify as an invalid argument every hour.
+# After the poller copy, so this never calls an older poller lacking --verify.
 - name: Install one hourly verification cron entry
   when: not production_auto_deploy_external_scheduler | bool
   ansible.builtin.cron:

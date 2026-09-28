@@ -8,8 +8,7 @@ from types import SimpleNamespace
 from ansible.errors import AnsibleFilterError
 
 
-# module_utils/ is run by file path, never via sys.path: tests/policy_test.rb
-# says why, and fails any filter plugin that touches it.
+# module_utils/ is run by file path, never via sys.path (tests/policy_test.rb).
 _MODULE_UTILS = Path(__file__).resolve().parents[1] / "module_utils"
 _GUARDS = SimpleNamespace(**runpy.run_path(str(_MODULE_UTILS / "schema_guards.py")))
 
@@ -74,12 +73,8 @@ def platform_container_cpu_runtime_errors(
     for inspection in inspections:
         if not isinstance(inspection, dict):
             raise AnsibleFilterError("runtime CPU inspection entry must be a mapping")
-        # Docker reports `"Labels": null` for an image that declares none, and
-        # `"HostConfig": null` in some inspect shapes. `.get(key, {})` substitutes
-        # only for an *absent* key, so a null one reached `None.get` and raised
-        # AttributeError — a raw traceback where every other malformed input to
-        # this filter is refused by name (#648). An absent key still reads as an
-        # empty mapping, which is what it did before.
+        # Docker may report `"Labels": null` / `"HostConfig": null`, and
+        # `.get(key, {})` only covers an absent key (#648).
         config = inspection.get("Config", {})
         if not _GUARDS.is_mapping(config):
             raise AnsibleFilterError(

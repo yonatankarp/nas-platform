@@ -100,10 +100,7 @@
          }) }}
   no_log: true
 
-# Unredacted for the same reason as the rule resolution in mail_state.yml: this
-# renders a rule and the desired rule payload, neither of which carries a
-# credential, and a rule that will be repaired is exactly what an operator
-# reading a converge needs to see.
+# Unredacted: a mail rule carries no credential (see mail_state.yml).
 - name: Resolve Paperless mail rule repair requirement
   tags: [platform_verify_paperless]
   ansible.builtin.set_fact:

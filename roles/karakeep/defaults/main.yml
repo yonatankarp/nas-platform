@@ -1,40 +1,26 @@
 ---
-# The operator switch, OFF here and ON in inventory. This default is the floor
-# under the decision inventory/group_vars/all/service_karakeep.yml makes, not a
-# copy of it: a caller with no inventory converges the project to `state: absent`.
-# tests/deployment_gate_coverage_test.rb requires it false. The gate lives inside
-# the role rather than on the site.yml entry so the deployment_bundle re-include
-# and the deployment report still run when it is off.
+# Floor under inventory's decision: off without inventory, converging to
+# `state: absent`. The gate lives in the role so the bundle re-include and the
+# deployment report still run when it is off.
 karakeep_deployment_enabled: false
 
-# 8087, the next free host port: services/karakeep/compose.yml records the
-# neighbours. The Compose file publishes the literal; this is the number the role
-# addresses and the disposable overrides republish.
+# The Compose file publishes the literal; this is the number the role addresses.
 karakeep_port: 8087
 
-# Every role addresses services over 127.0.0.1, which is correct whether the play
-# runs on the NAS itself or over SSH from a workstation -- and it is what lets the
-# bootstrap reach a listener published on loopback only.
 karakeep_url: "http://127.0.0.1:{{ karakeep_port }}"
 
-# NEXTAUTH_URL, the address clients use. Plain host:port like every service here
-# but Vaultwarden, built the way seerr_application_url is. platform_public_host
-# is required nonempty by roles/preflight before any target mutation, so this is
-# never `http://:8087` on a converge.
+# NEXTAUTH_URL, the address clients use; roles/preflight requires
+# platform_public_host nonempty, so it is never `http://:8087`.
 karakeep_nextauth_url: "http://{{ platform_public_host }}:{{ karakeep_port }}"
 
-# Where the application is published once bootstrapped. tasks/bootstrap.yml
-# overrides it with 127.0.0.1 for the one request that registers the
-# administrator; nothing else should.
+# tasks/bootstrap.yml overrides this with 127.0.0.1 for the one registration
+# request; nothing else should.
 karakeep_publish_address: 0.0.0.0
 
 karakeep_data_host_path: "{{ nas_docker_root }}/karakeep/data"
 karakeep_meilisearch_host_path: "{{ nas_docker_root }}/karakeep/meilisearch"
-# Where roles/pre_upgrade_backup copies db.db before a pinned upgrade: inside the
-# data root, as roles/kapowarr and roles/vaultwarden place theirs, because that
-# directory is already declared in nas_storage as recovery: critical, created by
-# host_prep and named by this role's containment check, so the copy needs no
-# declaration of its own. One generation, never rotated.
+# Inside the data root (already recovery: critical and contained), so the copy
+# needs no declaration of its own. One generation, never rotated.
 karakeep_pre_upgrade_backup_path: "{{ karakeep_data_host_path }}/pre-upgrade-backup"
 
 karakeep_compose_project_name: >-

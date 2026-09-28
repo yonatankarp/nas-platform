@@ -3,25 +3,11 @@
 # file: it lives in the SQLite connection table with no variable and no config
 # key, so it is reconciled through the API and nowhere else.
 #
-# Four measured behaviours shape this file. The create route validates with a
-# live GET {url}/api/v3/system/status carrying the submitted key and checks the
-# returned appName, so Radarr and Sonarr have to be reachable from inside the
-# container — which is why this runs only when the host has enabled Usenet and
-# why the role emits an explicit prediction under --check instead. It has no
-# uniqueness check at all: three identical creates produced ids 1, 2 and 3, so
-# every write is matched by name first. An update with an identical body is safe
-# and repeatable but always reports success, so the changed decision comes from
-# the comparison rather than from the response. And delete is asynchronous — the
-# listing is still stale seconds later — so nothing here deletes and re-creates.
-#
-# path_mappings stay empty on purpose. Trailarr appends a trailing slash on
-# write, so a declared /data/media/Movies reads back /data/media/Movies/ and a
-# naive comparison reports drift forever; the Compose file avoids needing one at
-# all by mounting both libraries at the same container paths Radarr and Sonarr
-# use.
-#
-# Redacted: the request carries the application API key, and the listing carries
-# Radarr's and Sonarr's.
+# Creates validate live against the arr (so this needs running arrs) and never dedupe,
+# so writes match by name; updates always report success, so changed comes from the
+# comparison; delete is asynchronous, so nothing deletes and re-creates. path_mappings
+# stay empty: Trailarr appends a slash on write, which would read as drift forever.
+# Redacted: the request and the listing carry API keys.
 - name: Read the declared Trailarr connections
   ansible.builtin.uri:
     url: "{{ trailarr_api }}/connections/"

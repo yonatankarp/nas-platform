@@ -6,17 +6,13 @@
   vars:
     deployment_target_service: karakeep
     deployment_target_require_current_release: true
-    # The two directories this role touches beyond the five paths
-    # deployment_target_service derives. Ansible creates nothing under either;
-    # the containers own everything inside.
+    # Beyond the five derived paths; the containers own everything inside.
     deployment_target_extra_paths:
       - "{{ karakeep_data_host_path }}"
       - "{{ karakeep_meilisearch_host_path }}"
 
-# Always the closed door: DISABLE_SIGNUPS true and the wildcard bind. The one
-# converge that needs it open re-renders it inside tasks/bootstrap.yml and renders
-# this again before that file ends, so the file on disk is this one whenever the
-# role is not mid-bootstrap.
+# Always the closed door (DISABLE_SIGNUPS true, wildcard bind); bootstrap.yml
+# re-renders it open and closed again within the one converge that needs it.
 - name: Render the private Karakeep environment
   ansible.builtin.template:
     src: env.j2
@@ -24,10 +20,8 @@
     mode: "0600"
   no_log: true
 
-# Every Compose invocation below needs this file, the teardown included, and
-# under --check the render above wrote nothing. roles/vaultwarden/tasks/deploy.yml
-# carries the measurement and the ordering argument: this read must follow the
-# render, or a live first converge reads "absent" and silently deploys nothing.
+# Must follow the render, or a live first converge reads "absent" and silently
+# deploys nothing (roles/vaultwarden/tasks/deploy.yml has the measurement).
 - name: Read whether a Karakeep runtime environment exists on this host
   ansible.builtin.stat:
     path: "{{ platform_runtime_dir }}/services/karakeep/.env"
@@ -82,11 +76,8 @@
       inventory/group_vars/all/service_karakeep.yml and merge.
   when: not karakeep_deployment_enabled | bool
 
-# BEFORE THE DEPLOYMENT, while there is still a healthy stack to protect. Both
-# images migrate their own store when they start -- the application's drizzle
-# migrations against db.db, and Meilisearch's index format -- so a pin older than
-# one that has already run here refuses inside the container, which is a crash
-# loop every converge repeats rather than a failure a play reports (#511).
+# Before the deployment: both images migrate their own store on start, so an
+# older pin crash-loops inside the container instead of failing a play (#511).
 - name: Refuse a Meilisearch image older than the index this host has migrated
   ansible.builtin.include_role:
     name: image_downgrade_guard
@@ -111,40 +102,12 @@
     - karakeep_deployment_enabled | bool
     - karakeep_runtime_env.stat.exists
 
-# After the application's guard and before the deployment, as roles/kapowarr
-# places its own: the guard refuses a pin older than the store, and this copies
-# db.db aside so a pin newer than it is reversible at all. roles/pre_upgrade_backup
-# carries the argument for the stop, the copy and the rescue, and
-# roles/vaultwarden/tasks/deploy.yml says why it is included rather than imported.
-#
-# BOTH GUARDS RUN FIRST, under the same conditions and tags as this copy, so a
-# downgrade is refused before anything is stopped: a copy ahead of the
-# application's guard would stop Karakeep for a pin the guard then refuses, and
-# leave it stopped. tests/policy_test.rb holds the order. The role reads the
-# karakeep service's pin from this stack's compose.yml itself (#858), so
-# Meilisearch's pin beside it is never compared with the application container.
-#
-# WHAT IS COPIED. db.db, which the application opens in rollback-journal mode:
-# upstream's DB_WAL_MODE defaults to false at this pin and this stack does not set
-# it, so a hot db.db-journal is what an unclean stop leaves. The role reads -wal,
-# -shm and -journal alike, so the copy is right in either mode.
-# queue.db beside it is the job queue, and liteque migrates it on start too, so a
-# rollback that restored db.db alone would hand the older image a queue schema it
-# may not know. ponytail: queue.db's own journal is not carried -- the role prunes
-# only the store's -- so after an unclean stop delete the restored queue.db
-# instead, and the old image recreates it empty at the cost of the queued jobs.
-# The archived assets are not copied: no migration touches them, and they are
-# the bulk of the data root.
-#
-# THE MEILISEARCH INDEX IS NOT COPIED. It is recovery: cache -- the admin
-# "reindex all bookmarks" action clears it and re-queues every bookmark from
-# db.db -- so an index stranded by a bad pin is emptied and rebuilt, not restored.
-#
-# The copy holds every account's bcrypt hash, so it is secret-bearing exactly as
-# db.db is; the role writes it 0600 in a 0700 directory. Ownership follows the
-# host_prep form this data root is created with: set on the NAS or where Linux
-# ownership is managed, and left alone on Docker Desktop, where the Mac lifecycle
-# converges this role and a non-root controller cannot chown.
+# After both guards (tests/policy_test.rb holds the order), so a refused
+# downgrade never leaves Karakeep stopped. Copies db.db and queue.db (liteque
+# migrates it too); not the assets or the rebuildable Meilisearch index. The copy
+# holds bcrypt hashes: 0600 in a 0700 directory.
+# ponytail: queue.db's journal is not carried; after an unclean stop delete the
+# restored queue.db and lose queued jobs.
 - name: Guard the Karakeep store before a pinned upgrade
   ansible.builtin.include_role:
     name: pre_upgrade_backup
@@ -161,10 +124,8 @@
     - karakeep_deployment_enabled | bool
     - karakeep_runtime_env.stat.exists
 
-# The block exists for one thing the rescue does with the failure: it hands the
-# deployment's own message to roles/container_health, which either explains it in
-# terms of the container state Docker reports or re-raises it unchanged.
-# roles/bindery/tasks/main.yml carries the long form of this argument.
+# The rescue hands the failure to roles/container_health, which explains it from
+# Docker's container state or re-raises it.
 - name: Deploy Karakeep, catching a container that runs but never serves
   when:
     - karakeep_deployment_enabled | bool
@@ -202,9 +163,8 @@
     - karakeep_deployment_enabled | bool
     - karakeep_runtime_env.stat.exists
 
-# Exactly one force-recreate, of only the services Docker says are stuck, and
-# skipped on every run with nothing to repair -- roles/vaultwarden/tasks/deploy.yml
-# carries the idempotence argument.
+# Exactly one force-recreate of only the stuck services, skipped when there is
+# nothing to repair.
 - name: Recreate a Karakeep container that runs but never serves
   when:
     - karakeep_deployment_enabled | bool
@@ -275,9 +235,7 @@
     - karakeep_deployment_enabled | bool
     - karakeep_runtime_env.stat.exists
 
-# A readiness probe, not the verification: /api/health answers as soon as the web
-# service is up, which is before it has ever reached Meilisearch or chrome.
-# tasks/verify.yml is what proves the wiring.
+# Readiness only: /api/health answers before Meilisearch or chrome are reached.
 - name: Wait for Karakeep application readiness
   ansible.builtin.uri:
     url: "{{ karakeep_url }}/api/health"

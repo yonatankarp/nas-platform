@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 
-"""Behavioural tests for the deployment lock probe deployment_bundle runs.
+"""Behavioural tests for the deployment lock probe deployment_bundle runs (#326).
 
-The probe is what turns issue #326's late, misleading failure -- a containment
-refusal 1463 tasks into a run whose real problem was a second converge -- into a
-refusal at the first task of the role that would have raced. It has exactly two
-ways to be wrong, and both are silent: reporting a held lock as free disarms the
-guard, and reporting a free lock as held stops every deployment on the host.
+Both failure modes are silent: a held lock read as free disarms the guard, and
+a free lock read as held stops every deployment on the host.
 """
 
 import fcntl
@@ -87,16 +84,12 @@ class DeploymentLockProbeTest(unittest.TestCase):
         )
 
     def test_a_held_lock_without_a_legible_record_is_still_held(self):
-        # A holder that crashed before writing, or an older poller that wrote
-        # nothing at all. The flock is the liveness truth; the record is a
-        # courtesy, and losing it must not lose the refusal.
+        # The flock is the liveness truth; a missing record must not lose the refusal.
         self.hold(b"not json at all\n")
         self.assertEqual(self.report(), {"state": "held", "held": True})
 
     def test_a_stale_record_under_a_free_lock_is_not_reported_as_a_holder(self):
-        # The record outlives its holder: nothing truncates it on release, and a
-        # crashed holder leaves it behind. Reporting it would stop every
-        # deployment on the host until somebody deleted a file by hand.
+        # A stale record from a crashed holder must not block every deployment.
         self.lock.write_bytes(json.dumps({"pid": 4711, "holder": "poll"}).encode("ascii"))
         self.assertEqual(self.report(), {"state": "free", "held": False})
 

@@ -1,10 +1,6 @@
 #!/usr/bin/env ruby
-# Mac proof-harness policy.
-#
-# The Mac lane is an orchestration contract: each service plugs its fixture, drift
-# and verification behaviour into stable phases, and the runner must isolate every
-# Compose project, propagate failures, redact its logs and clean up after itself.
-# Split out of policy_test.rb: these checks police tests/mac/ and change with it.
+# Mac proof-harness policy: phases, Compose isolation, failure propagation, log
+# redaction and cleanup. Split out of policy_test.rb.
 
 require "open3"
 require "rbconfig"
@@ -17,8 +13,6 @@ include TestScaffold
 
 failures = []
 
-# The Mac proof harness is an orchestration contract: each service plugs its
-# fixture, drift, and verification behavior into these stable phases.
 mac_harness_files = %w[
   lib.sh run.sh cleanup.sh fixtures.sh verify.sh drift.sh run-contract.sh report.rb
   sanitize-logs.rb manual-review.md manual-validation-handoff.rb
@@ -63,13 +57,9 @@ check(failures, mac_run.include?('if [ "$manual_validation" = true ] && [ "$phas
                 mac_run.include?("remove_manual_vault_plaintext"),
       "Mac manual validation must stop through the preserved-sandbox EXIT trap after verify")
 
-# The protected-input pin is the Mac proof's trust boundary, and it was a
-# 313-line Ruby program inside a heredoc in run.sh until #147 -- unreachable by
-# sh -n, by a linter and by any unit test. These three checks are what stop it
-# from drifting back: the runner must call the program, the runner must not carry
-# the program, and the program must still hold the source through a directory
-# descriptor rather than by name. Losing the last one loses the TOCTOU property
-# without changing a single diagnostic.
+# The protected-input pin is the Mac proof's trust boundary (#147): run.sh must
+# call the program and not carry it, and the program must hold the source through
+# a directory descriptor, or the TOCTOU property is lost silently.
 pin_path = File.join(ROOT, "tests", "mac", "pin-protected-input.rb")
 pin_source = File.file?(pin_path) ? File.read(pin_path) : ""
 check(failures, mac_run.include?('"$mac_script_dir/pin-protected-input.rb" "$pin_source"') &&
@@ -83,11 +73,8 @@ check(failures, File.executable?(pin_path) &&
                 pin_source.scan(/in_directory\(parent_directory\)/).length >= 4,
       "Mac protected-input pin must hold its source through a directory descriptor")
 
-# The rest of #315's batch, held to the same three properties the pin is: the
-# script calls the sibling, the script no longer carries the body, and the
-# sibling is an executable program. Each pair also fixes which root the program
-# is resolved from -- the script's own directory, never the tree it inspects,
-# which is the defect #147 measured and that no ladder step catches.
+# The rest of #315's batch, held to the same three properties. Each program is
+# resolved from the script's own directory, never the tree it inspects (#147).
 mac_ports_path = File.join(ROOT, "tests", "mac", "read-integration-ports.rb")
 check(failures, mac_run.include?('"$mac_script_dir/read-integration-ports.rb" ' \
                                  '"$integration_ports_file" "$mac_repo_dir"') &&
@@ -139,9 +126,7 @@ verify_play_path = File.join(ROOT, "verify.yml")
 check(failures, File.file?(verify_play_path), "Mac proof harness must provide verify.yml")
 verify_play_data = File.file?(verify_play_path) ? YAML.safe_load_file(verify_play_path).first : {}
 verification_roles = Array(verify_play_data["roles"])
-# What verify.yml runs, read off the play. The three negatives used to be matched
-# against the file's text, where a comment naming a converging role — the header
-# of this very playbook names them — is indistinguishable from running one.
+# Read off the play: the playbook's own header comment names converging roles.
 verification_role_names = verification_roles.map do |role|
   role.is_a?(Hash) ? role["role"] || role["name"] : role
 end
@@ -200,41 +185,9 @@ check(failures, mac_run.include?('export PLATFORM_MEDIA_NETWORK=$project_name-me
         "Mac lifecycle must export #{variable}")
 end
 
-# The service ports are no longer literal exports: run.sh derives them from
-# MAC_SERVICE_PORT_ORDER through mac_export_service_ports. Grepping for eleven
-# literal `export PLATFORM_<SERVICE>_PORT=` strings is not available any more,
-# and it was never the stronger check: it pinned ten of the fifteen services --
-# Komga, Jellyfin, Immich, Pinchflat and Kapowarr were never named -- and it
-# proved only that the text existed, never that a port reached the variable.
-# Running the real derivation over a seeded roster proves both, for all fifteen.
-#
-# THE FLOOR IS THE ONLY THING HOLDING THIS ROSTER, which is why it is the real
-# count and not comfortably under it. Nothing ties MAC_SERVICE_PORT_ORDER to
-# services/manifest.yml and nothing can: five of its entries are containers
-# inside a manifest service rather than services -- radarr, sonarr, prowlarr and
-# bazarr under `arr`, sabnzbd under `downloaders` -- so there is no set to
-# compare it against in either direction. It was written `>= 15` when the roster
-# held nineteen, so four names could be deleted with this check still green and
-# nothing else in the repository to notice (#512). Raising it costs one edit here
-# when a service that publishes a host port is added or removed, which is a
-# visible diff in a file a reviewer is already reading for that change.
-#
-# The floor has been wrong on main twice, which is the other half of "the real
-# count": #512 found it at 15 against a roster of nineteen, and #575 added
-# `vaultwarden` and left it at 21 against a live 22, so #577 re-derived it from
-# the tree rather than decrementing what was there.
-#
-# The name pattern admits an underscore, and the reason is the one the paragraph
-# above already gives for the roster not being holdable to services/manifest.yml:
-# an entry is a PORT NAME, not a service. It was `[a-z][a-z0-9]*` while every
-# entry happened to be one word, and #548's flip added `adguard_dns` -- a second
-# port of a service already on the roster, spelled so that the derivations in
-# tests/mac/lib.sh produced `adguard_dns_port` and PLATFORM_ADGUARD_DNS_PORT, the
-# names the role and tests/mac/run-contract.sh already carried. #577 removed that
-# service and with it the only entry that has ever used the spelling; the pattern
-# and the respelling check below stay, because the rule is what a second port of
-# an existing service will need again and an unexercised rule is cheaper to keep
-# than to rediscover.
+# Run the real port derivation over a seeded roster. The floor is the real count,
+# because nothing else holds MAC_SERVICE_PORT_ORDER: some entries are containers,
+# not manifest services (#512). Entries are port names, hence the underscore.
 MAC_PORT_ROSTER_FLOOR = 20
 mac_port_roster = mac_lib[/^MAC_SERVICE_PORT_ORDER='([^']*)'/m, 1].to_s.split
 check(failures, mac_port_roster.length >= MAC_PORT_ROSTER_FLOOR &&
@@ -271,9 +224,7 @@ check(failures, !mac_lib.empty? && mac_port_probe_status.success? &&
 check(failures, mac_run.match?(/^mac_export_service_ports$/),
       "Mac lifecycle must export the roster ports it derives")
 
-# The roster and report.rb's validated port fields are two lists that must name
-# the same services. Nothing else notices a service added to one and not the
-# other until a full Mac run fails on an unrecognised option.
+# The roster and report.rb's validated port fields must name the same services.
 mac_report_path = File.join(ROOT, "tests", "mac", "report.rb")
 mac_report = File.file?(mac_report_path) ? File.read(mac_report_path) : ""
 mac_report_port_fields = mac_report[/service_port_fields = %w\[(.*?)\]/m, 1].to_s.split
@@ -282,16 +233,8 @@ check(failures, !mac_report_port_fields.empty? &&
                   mac_port_roster.map { |service| "#{service}_port" }.sort,
       "Mac report input must validate exactly the roster's service ports")
 
-# The third list in that chain, and the one nothing held until #548. run.sh
-# builds report.rb's flags from the roster rather than writing them out, and it
-# respells an underscore as a hyphen because a long option must not carry one --
-# so `adguard_dns` reached report.rb as `--adguard-dns-port` while that entry
-# existed, and any future two-port entry will do the same. The field check
-# above says nothing about the option parser: a roster entry whose flag report.rb
-# does not declare is rejected by OptionParser as unrecognised, and the only
-# place that appears is a full Mac run, which no CI job performs. Held from the
-# roster through the same respelling run.sh performs, so the two cannot disagree
-# about a name and cannot disagree about the transformation either.
+# The third list (#548): run.sh builds report.rb's flags from the roster, respelling
+# `_` as `-`, and OptionParser rejects an undeclared flag only in a full Mac run.
 mac_report_flags = mac_report.scan(/opts\.on\("(--[a-z0-9-]+-port) PORT"/).flatten
 missing_report_flags = mac_port_roster.map { |service| "--#{service.tr('_', '-')}-port" } -
                        mac_report_flags
@@ -378,11 +321,8 @@ check(failures, media_report_fields.length == 4 && media_report_fields.uniq.leng
         "Mac #{group} must register an executable media acquisition foundation hook")
 end
 
-# The Mac contract wrapper and four of the six hook groups were one file per
-# service until they were driven from tests/contracts/registry.yml. What that
-# collapse can lose is a whole suite, quietly: mac_run_hooks refuses a group with
-# no hook files at all, not a group whose single hook forgot a service. These
-# checks police the guards that replaced the missing-file signal.
+# Registry-driven hooks can lose a service quietly: mac_run_hooks refuses only an
+# empty group. These checks police the guards that replaced the missing-file signal.
 mac_runner_path = File.join(ROOT, "tests", "mac", "run-contract.sh")
 mac_runner = File.file?(mac_runner_path) ? File.read(mac_runner_path) : ""
 check(failures, mac_runner.include?('mac_contract_path=$(mac_registry_contract_path "$mac_service")') &&
@@ -396,37 +336,14 @@ check(failures, mac_runner.include?("usage: run-contract.sh SERVICE PHASE") &&
                 ),
       "Mac contract runner must refuse an unknown service or phase rather than dispatch nothing")
 
-# That refusal is real and it is also the wrong place to find this out. It fires
-# when the per-service table has no arm for a registered service -- but only
-# inside a lane that takes hours of Docker Desktop and that no CI job runs, so
-# the first thing to notice a service added to tests/contracts/registry.yml and
-# not to the table was a human, hours in. #500 is what made that concrete: the
-# Nextcloud contract was registered and four Mac hooks called it, and every one
-# of those calls died on the default arm.
-#
-# So the table is held to the registry statically, in both directions. The arms
-# are parsed out of the script rather than restated here, because a Ruby list of
-# the same thirteen names is a second copy that nothing makes agree with the
-# first -- exactly the drift this check exists to catch, one level up.
-#
-# The two directions guard each other's parse: an expression that silently
-# matched nothing would fail the registry direction for every service at once,
-# so neither needs a separate floor under the arm count.
+# The per-service table is held to the registry statically, both ways (#500), so a
+# missing arm is not first found hours into a Mac run. Arms are parsed from the
+# script, and each direction guards the other's parse, so no floor is needed.
 mac_contract_table = mac_runner[/^case \$mac_service in$(.*?)^esac$/m, 1].to_s
 mac_contract_arms = mac_contract_table.scan(/^ {2}([a-z0-9][a-z0-9-]*)\)$/).flatten
 
-# Two services this table has no arm for, each a decision rather than the gap
-# above, so the gap is stated instead of left silent.
-#
-# arr and downloaders are registered contracts whose Phase 1 runtime is
-# default-disabled in the Mac lane and proved by their Docker integration suites.
-# Nothing dispatches them through this wrapper, so an arm would have to invent an
-# environment no caller ever supplies.
-#
-# A policy mutation row that registers a contract for a service with no arm here
-# needs that service exempted too: an expect_success row requires all eight
-# policy scripts to pass on the tree it built, and this check would fail it on a
-# defect it is not testing.
+# Deliberate gaps. A mutation row registering a contract for an armless service
+# needs it exempted here too, or this check fails an expect_success row.
 MAC_CONTRACT_TABLE_EXEMPTIONS = {
   "arr" => "its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker " \
            "integration suite",
@@ -434,23 +351,12 @@ MAC_CONTRACT_TABLE_EXEMPTIONS = {
                    "Docker integration suite"
 }.freeze
 
-# Held to EXPECTED_SERVICES rather than to the registry, which is the point of
-# the paragraph above read once more: the registry is a file the mutation harness
-# rewrites, so an exemption checked against it would be a standing excuse that a
-# sandbox can grant and revoke. The platform roster is the stable authority, it
-# names both, and it still refuses the defect this direction exists for --
-# a service deleted from the platform leaving its excuse behind for the next one
-# to inherit, the same rule MAC_REVIEW_EXEMPTIONS is held to at the end of this
-# file.
+# Held to EXPECTED_SERVICES, not the registry, which the mutation harness rewrites:
+# a service deleted from the platform must not leave its exemption behind.
 mac_platform_services = PolicySupport::EXPECTED_SERVICES.map { |name| contract_basename(name) }
 
-# Read fail-soft and, when it does not read, skip rather than report. A missing
-# or malformed registry is diagnosed by name in tests/policy_test.rb and
-# tests/run_contracts.rb; raising here would replace their named failure with a
-# stack trace out of this script, and reporting here would make this script a
-# second detector of their defect -- which is the declared-set drift
-# tests/policy_manifest_test.rb --audit refuses. The parse of run-contract.sh is
-# a different matter and is reported, because this script owns that file.
+# Fail-soft: policy_test.rb and run_contracts.rb diagnose a bad registry by name,
+# and a second detector here is drift --audit refuses. run-contract.sh is ours.
 mac_registry_path = File.join(ROOT, "tests", "contracts", "registry.yml")
 mac_registered_aliases = begin
   document = File.file?(mac_registry_path) ? YAML.safe_load_file(mac_registry_path, aliases: false) : nil
@@ -485,23 +391,8 @@ check(failures, mac_lib.include?("mac_assert_service_coverage()") &&
                 mac_lib.include?("mac_registry_services()") &&
                 mac_lib.include?("MAC_UNREGISTERED_SERVICES='vaultwarden karakeep'"),
       "Mac lifecycle must be able to hold a hook group to the contract registry")
-#
-# Drift, the fifth group, never collapsed and does not need to: no two services
-# drift alike. It needs the accounting for the opposite reason. A per-service
-# group loses a service by losing a file, and that is not a hypothetical — the
-# five acquisition services were promoted with a drift hook each while nothing in
-# the repository named them, so the group could have dropped any of them and
-# still reported a full pass. Its hook runs no service and pins the exact roster
-# instead, which fails in both directions: a hook deleted and a hook added.
-#
-# Pre-converge is the sixth group and the smallest. It is not a coverage group in
-# drift's sense: a service belongs there only when its converge reads fixture
-# state off disk, which is Audiobookshelf and nothing else. A one-hook group is
-# already safe against deletion, because mac_hook_count refuses an empty group,
-# so what its roster adds is the other direction -- a hook added outside the
-# roster runs before every Mac converge -- and the fourteen named exemptions,
-# which are what asks a newly promoted service whether its converge needs a
-# fixture placed first.
+# Drift and pre-converge hooks pin their exact roster instead of running every
+# service, so a hook deleted or added outside the roster fails either way.
 {
   "fixtures-seed" => "00-services.sh",
   "fixtures-persistence" => "00-services.sh",
@@ -528,50 +419,24 @@ check(failures, mac_policy_runner.lines.map(&:strip).include?("tests/mac/hook-co
   check(failures, mac_policy_runner.lines.map(&:strip).include?(command),
         "validate-policy.sh must run #{command}")
 end
-# The Paperless restore recovery path used to start redis and flush the valkey
-# queue in one breath, which raced the socket and failed a clean restore about
-# once in eight CI runs. The wait that fixes it is only provable behaviourally,
-# so the proof has to stay wired in: a race that is no longer exercised is a
-# race that comes back without any check going red.
+# The Paperless restore's redis wait fixed a socket race (about 1 in 8 runs) that
+# is only provable behaviourally, so the proof must stay wired in.
 check(failures,
       mac_policy_runner.lines.map(&:strip).include?("tests/mac/snapshot-paperless-recovery-test.sh"),
       "validate-policy.sh must run tests/mac/snapshot-paperless-recovery-test.sh")
-# The Paperless rollback drill used to log in on every pass of the poll that waits
-# for its deletion to settle, which is about sixty logins against an endpoint
-# Paperless throttles, and it failed the suite on a 429 rather than on anything
-# about the restore. Whether the throttle is reached depends on what the run
-# before it spent, so the same code passes cold and fails warm; only a stub with a
-# fixed login allowance turns that into something a check can see.
+# The Paperless rollback drill's login throttle (429) depends on the prior run, so
+# only a stub with a fixed login allowance makes it checkable.
 check(failures,
       mac_policy_runner.lines.map(&:strip)
         .include?("tests/mac/snapshot-paperless-drill-throttle-test.sh"),
       "validate-policy.sh must run tests/mac/snapshot-paperless-drill-throttle-test.sh")
-# The rest of the Mac gate, held to the manifest for the same reason the four
-# above are. #315 audited every line of tests/validate-policy.sh against the
-# policy scripts and found six Mac checks in the manifest that no script
-# required -- the same shape as tests/mac/snapshot-immich.sh --self-test, which
-# #334 found in the manifest and asserted nowhere. A check that only the
-# manifest names is a check the next person to prune the manifest may delete
-# with every gate still green, which is exactly what these lines exist to
-# prevent for the scripts they run.
-#
-# tests/mac/dozzle-drift-hook-test.sh is the clearest case: its Audiobookshelf
-# twin was required in tests/policy_ci_test.rb from the day it landed and the
-# Dozzle one never was, so the pair drifted apart with nothing to say so.
-#
-# tests/mac/snapshot-paperless.sh --self-test is the sixth, and it was not in
-# the manifest at all: the Immich snapshot's offline self-test has been a gate
-# check since #334, its Paperless twin has existed the whole time, and the gate
-# has never run it.
+# The rest of the Mac gate, required here so a manifest prune cannot drop them
+# with every gate still green (#315).
 [
   "tests/mac/config-isolation.sh",
   "tests/mac/run-phase-status-test.sh",
   "tests/mac/dozzle-drift-hook-test.sh",
-  # The third drift-hook regression, and the only one whose hook reads a
-  # diagnostic out of a task carrying no_log: true. Its guard-passed case is the
-  # plant that #428 needed and the sweep could not run: without this line the
-  # manifest is the only thing naming it, which is the very state the comment
-  # above exists to prevent.
+  # The only drift hook reading a diagnostic out of a no_log task (#428).
   "tests/mac/immich-drift-hook-test.sh",
   "tests/mac/integration-context-test.sh",
   "tests/mac/snapshot-paperless-context-test.sh",
@@ -581,15 +446,8 @@ check(failures,
         "validate-policy.sh must run #{command}")
 end
 
-# The manual review is where a human exercises the credentials nothing automated
-# can hold: a sign-in with the deployed identity, and the refusal of anything
-# else. Both lists were maintained by hand, and both silently fell behind the
-# roster -- Pinchflat and Kapowarr deployed, got sandbox ports and were verified
-# for two phases with no review entry at all, and the omission was invisible
-# because nothing compared the lists to the manifest. Compare them here, the way
-# tests/mac/hooks/verify/30-services.sh compares its dispatch table, so a
-# promotion that forgets the review is a red check rather than a gap discovered
-# later.
+# The manual review lists are compared to the roster so a promotion that
+# forgets the review is a red check.
 MAC_REVIEW_EXEMPTIONS = {
   "arr" => "its Phase 1 runtime is default-disabled in the Mac lane and " \
            "proved by its Docker integration suite",
@@ -597,9 +455,8 @@ MAC_REVIEW_EXEMPTIONS = {
                    "proved by its Docker integration suite"
 }.freeze
 
-# One bullet may cover several services -- "Audiobookshelf, Jellyfin, and Komga"
-# is one check with one procedure -- so the subject is the label before the first
-# colon, split on the separators a reader already reads as a list.
+# One bullet may cover several services; the subject is the label before the
+# first colon, split on list separators.
 def mac_review_subjects(text, marker)
   found = marker.match(text)
   return unless found
@@ -627,17 +484,11 @@ def mac_review_subjects(text, marker)
      .reject(&:empty?)
 end
 
-# Read the roster through the shared reader rather than parsing the manifest a
-# second time: a second copy is a copy no test says must agree with the first,
-# and it would miss "accepted", which counts as deployed. The reader is fail-soft
-# by design -- policy_test.rb owns the diagnosis of a missing, malformed or
-# heterogeneous manifest, and raising here would replace its named failure with a
-# stack trace from this script, which tests/policy_manifest_test.rb refuses.
+# The shared reader counts "accepted" as deployed and is fail-soft: policy_test.rb
+# owns diagnosing a bad manifest.
 mac_implemented_services = implemented_services(ROOT)
-# A stale exemption is the same defect one step later: a service removed from the
-# roster must not leave behind a standing excuse for the next one to inherit.
-# Skipped when the roster did not load, so an unreadable manifest is reported
-# once, by the check that owns it, rather than echoed here as a second cause.
+# A removed service must not leave a stale exemption; skipped when the roster
+# did not load, so that failure is reported once.
 check(failures, (MAC_REVIEW_EXEMPTIONS.keys - mac_implemented_services).empty?,
       "Mac review exemptions must name implemented services") unless mac_implemented_services.empty?
 {

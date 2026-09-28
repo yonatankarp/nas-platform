@@ -1,15 +1,6 @@
 ---
-# Deployment. Revalidates the release paths this role touches, refuses a
-# credential the env file cannot carry, renders the environment, and then takes
-# one of two branches: tear the project down, or bring the data services up and
-# let the application follow.
-#
-# Everything up to and including the render runs on both branches. The
-# deployment_bundle re-include is the containment guard every service role owes
-# the platform, and it is not conditional on whether this particular service is
-# switched on; the render is what lets the teardown below interpolate the
-# project's own volume paths at all.
-
+# Everything through the render runs even when disabled: the containment re-include
+# is owed regardless, and the teardown needs the rendered .env.
 - name: Revalidate deployment paths before Nextcloud runtime use
   ansible.builtin.include_role:
     name: deployment_bundle
@@ -21,13 +12,8 @@
       - "{{ nextcloud_data_host_path }}"
       - "{{ nextcloud_postgres_host_path }}"
 
-# The file format, and nothing the credential contract already owns. Compose
-# reads the rendered .env one line per key, so a value carrying a newline
-# truncates the credential silently rather than failing. The shapes themselves
-# are pinned once, in filter_plugins/vault_credential_schema.py, and are
-# deliberately not restated here -- a second, stricter copy of the database
-# identifier rule would refuse a vault the contract accepts, and the failure
-# would name Nextcloud rather than the rule it disagreed with.
+# Only the file format: a newline in a .env value truncates it silently. Shapes are
+# owned by filter_plugins/vault_credential_schema.py and not restated.
 - name: Require env-safe Nextcloud credentials
   ansible.builtin.assert:
     that:
@@ -45,12 +31,6 @@
       can log into.
   no_log: true
 
-# A trusted domain list that cannot do its job is refused before anything is
-# deployed, because the symptom otherwise is HTTP 400 on every request and it
-# reads as a client problem. 127.0.0.1 is the address verify.yml polls and
-# localhost is what the application container's own health check requests, so an
-# instance missing either reports itself broken for reasons that have nothing to
-# do with the cause.
 - name: Require a usable Nextcloud trusted domain set
   ansible.builtin.assert:
     that:
@@ -74,12 +54,7 @@
     mode: "0600"
   no_log: true
 
-# The switched-off branch. Mirrors roles/downloaders: the
-# project is removed rather than merely left alone, so flipping the flag back off
-# is a converge that actually undoes the deployment instead of leaving four
-# containers running that nothing in the repository claims. remove_orphans
-# reaches the ones a previous revision of the Compose file declared and this one
-# no longer does.
+# Disabled means removed (with orphans), not left running unclaimed.
 - name: Stop the disabled Nextcloud project
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/nextcloud"
@@ -103,17 +78,8 @@
       poller brings the stack up on its next five-minute tick.
   when: not nextcloud_deployment_enabled | bool
 
-# Before any Compose operation, because recreating the application from an
-# older image is the act being refused. The entrypoint runs `occ upgrade`
-# against the database and the data directory before Apache starts, and
-# Nextcloud refuses to run against a store a newer version wrote, so a reverted
-# pin is a container that exits on every restart rather than a failure a play
-# reports (#511, #826). The nextcloud service and not cron: cron shares its pin
-# but only the application's entrypoint migrates. Gated like the deployment,
-# because a disabled project is torn down and has nothing left to protect. The
-# five paths this reads are the ones the containment re-include at the top of
-# this file already declared through deployment_target_service, so it needs no
-# extra_paths.
+# Before any Compose operation: Nextcloud refuses a store a newer version wrote, which
+# is a crash loop, not a play failure (#511, #826). Only the app entrypoint migrates.
 - name: Refuse a Nextcloud image older than the store this host has migrated
   ansible.builtin.include_role:
     name: image_downgrade_guard
@@ -125,10 +91,7 @@
       {{ nextcloud_data_host_path }} and {{ nextcloud_postgres_host_path }}
   when: nextcloud_deployment_enabled | bool
 
-# Two phases, because the application's installer runs against a database that
-# has to be accepting connections before its container starts. Postgres and the
-# cache both reach their health checks quickly and neither performs an in-place
-# migration, so this wait is the short one.
+# Two phases: the installer needs a database already accepting connections.
 - name: Deploy the Nextcloud data services
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/nextcloud"
@@ -142,26 +105,10 @@
   register: nextcloud_data_deploy
   when: nextcloud_deployment_enabled | bool
 
-# After the data services and before the application, so the database is up and
-# healthy and the migration has not run: roles/pre_upgrade_backup's pg_dump entry
-# stops the application and cron -- cron shares the pin and writes to the
-# database every five minutes -- and dumps the database from inside the db
-# container. That file carries the argument, including why maintenance mode is
-# not used. Gated like the guard above, which runs first so a downgrade is
-# refused before anything stops; the role reads the pin itself (#858).
-#
-# THE DUMP IS NOT A ROLLBACK ON ITS OWN. The entrypoint refuses to start when
-# the data root's version.php is newer than the image, and the upgrade rsyncs
-# the new code over /var/www/html and rewrites config.php's version. So the
-# same window also archives the data root minus data/ -- code, version.php,
-# config/, custom_apps/ -- as code.tar.gz beside the dump (#884).
-# docs/dossier-nextcloud.md carries the restore order.
-#
-# The dump holds every account's password hash and the application's secrets
-# tables, and the archive holds config.php, so both are secret-bearing; they
-# are written 0600 in a 0700 directory, as
-# {{ nextcloud_postgres_host_path }}/pre-upgrade-backup on the host -- outside
-# the data root, which the next upgrade's rsync --delete would empty of them.
+# Between data services and application, so the database is up and not yet migrated
+# (#858). The dump alone is no rollback: the data root's code and version.php are
+# archived too (#884); docs/dossier-nextcloud.md has the restore order. Both hold
+# secrets and sit outside the data root, which the next upgrade's rsync would empty.
 - name: Dump the Nextcloud database before a pinned upgrade
   ansible.builtin.include_role:
     name: pre_upgrade_backup
@@ -176,23 +123,8 @@
     pre_upgrade_backup_code_archive_dir: "{{ nextcloud_postgres_host_path }}/pre-upgrade-backup"
   when: nextcloud_deployment_enabled | bool
 
-# The application and its cron sidecar. No rescue here, and that is a deliberate
-# decision rather than an omission.
-#
-# The platform's one wedged-boot rescue lived in roles/seafile until #501 removed
-# it, and it existed for a specific upstream defect: enterpoint.sh launched
-# start.py in the background and then idled for ever, so a setup that raised or
-# stalled left a container that ran and never served, which no restart policy
-# can see. Nextcloud's entrypoint is not that shape -- it runs the install and
-# the upgrade in the foreground and then execs apache2-foreground, so a failure
-# during either ends PID 1 and the container exits. An exited container is
-# something `restart: unless-stopped` acts on and something Compose reports, so
-# the failure mode that needed a recovery there reports itself here.
-#
-# If that turns out to be wrong in practice, the pattern to copy is
-# roles/seafile/tasks/recover_wedged_boot.yml as it stood before #501 removed
-# it; #500 records that the structure is reusable and #509 proposes generalising
-# it, because no service on this platform carries that recovery any more.
+# No wedged-boot rescue: the entrypoint installs and upgrades in the foreground, so a
+# failure exits PID 1, which restart policy and Compose both see.
 - name: Deploy Nextcloud
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/nextcloud"

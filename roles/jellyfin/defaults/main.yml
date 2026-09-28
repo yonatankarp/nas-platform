@@ -4,19 +4,15 @@ jellyfin_api: "http://127.0.0.1:{{ jellyfin_port }}"
 jellyfin_compose_project_name: >-
   {{ (platform_project_name ~ '-jellyfin')
      if platform_project_name | default('') | length > 0 else 'jellyfin' }}
-# Jellyfin authenticates every call with this header rather than a bearer token,
-# and it registers the caller as a device, so the identity stays stable across
-# runs instead of accumulating one session per converge.
+# Jellyfin registers the caller as a device from this header, so a stable
+# identity avoids one new session per converge.
 jellyfin_client_header: >-
   MediaBrowser Client="nas-platform", Device="ansible",
   DeviceId="nas-platform-jellyfin-role", Version="1.0.0"
 
 # Jellyfin's container health check passes as soon as /health answers, well
-# before the server can serve its own startup API, and a plugin restart makes it
-# rebuild its plugin state before answering again. Both take longer than the
-# platform default, so the waits are declared here rather than as bare numbers
-# in the tasks. Reading back a library identity is a different shape of wait: the
-# write has already been accepted and is only not visible yet, so it polls fast.
+# before its startup API or a post-restart plugin rebuild, so waits are longer.
+# The identity read-back polls fast: the write is accepted, just not yet visible.
 jellyfin_compose_wait_timeout: 300
 jellyfin_startup_retries: 60
 jellyfin_plugin_restart_retries: 100
@@ -36,39 +32,16 @@ jellyfin_encoding_profiles:
     HardwareDecodingCodecs: [h264, hevc, mpeg2video, vc1, vp8, vp9]
     EnableDecodingColorDepth10Hevc: true
     EnableDecodingColorDepth10Vp9: true
-    # Hardware DECODE only. This host's iGPU exposes encode solely as
-    # VAEntrypointEncSliceLP -- VDENC, whose bitrate control lives in HuC
-    # firmware -- and with that firmware absent the driver offers exactly one
-    # rate-control mode: CQP. Jellyfin only ever emits bitrate-based rate
-    # control (-b:v N -maxrate N+1 -bufsize ...) and exposes no knob to change
-    # it, so every hardware encoder fails to *open*: hevc_qsv, h264_qsv and
-    # h264_vaapi alike, each with "Selected ratecontrol mode is unsupported"
-    # (VAAPI states it outright: "supported modes: CQP"). Measured 2026-09-10.
-    #
-    # NOT RE-MEASURED SINCE, and the 12.1 bump is the reason to say so rather
-    # than leave it implied: 12.0 ships a new upstream FFmpeg 8.1, and both
-    # halves of the finding -- which rate-control modes the driver offers and
-    # which ones Jellyfin emits -- are properties of the binary that changed.
-    # The value below stays false because a stale false costs software encoding
-    # that already works, while a stale true costs playback that fails
-    # invisibly; re-measuring is its own job.
-    #
-    # The failure is invisible from the server log and looks like a hung client:
-    # ffmpeg dies before frame 1, the browser retries every 5-6 seconds, and
-    # each attempt leaves an identical FFmpeg.Transcode-* log. Decode is
-    # unaffected and stays on, which is why HardwareAccelerationType is still
-    # qsv above.
+    # Hardware DECODE only: the iGPU offers only CQP for encode and Jellyfin
+    # only emits bitrate control, so every hardware encoder fails to open, which
+    # looks like a hung client. Measured 2026-09-10, not re-measured since the
+    # 12.x FFmpeg change; a stale false only costs working software encoding.
     EnableHardwareEncoding: false
-    # Software encode now, so this chooses libx265 over libx264 rather than
-    # choosing between hardware encoders. x265 on three pinned cores of an
-    # N5105 is far slower than x264 at the same quality, and no client here
-    # requires HEVC.
+    # Software encode, so this picks libx265 over libx264; x265 is far slower
+    # on three N5105 cores and no client here requires HEVC.
     AllowHevcEncoding: false
     AllowAv1Encoding: false
-    # Inert while EnableHardwareEncoding is false: both only qualify a hardware
-    # encoder that is never opened. Kept true so the pinned document still
-    # records what the hardware would want, since LP is the only entrypoint the
-    # iGPU has and would be required again the moment encode becomes usable.
+    # Inert while hardware encoding is off; records what the LP-only iGPU needs.
     EnableIntelLowPowerH264HwEncoder: true
     EnableIntelLowPowerHevcHwEncoder: true
     EnableVppTonemapping: true
@@ -100,12 +73,8 @@ jellyfin_plugins:
   - Intro Skipper
   - Open Subtitles
 jellyfin_plugin_packages:
-  # The repository URL is version-aware and that is why it is not a dead link:
-  # intro-skipper.org/manifest.json 302s to the GitHub org in a browser and
-  # serves a manifest only when the requester states a Jellyfin version, so it
-  # returned the 10.11 branch under the old pin and returns the 12.0 branch under
-  # this one. Upstream publishes both (12.0/v12.0.4.0 alongside 10.11/v1.10.11.24)
-  # under this same assembly GUID, so nothing here moves with the server bump.
+  # The manifest URL is version-aware (it serves the branch matching the
+  # requester's Jellyfin version), so it is not a dead link.
   - Name: Intro Skipper
     AssemblyGuid: c83d86bb-a1e0-4c35-a113-e2101cf4ee6b
     RepositoryUrl: https://intro-skipper.org/manifest.json
@@ -136,21 +105,10 @@ jellyfin_libraries:
 jellyfin_library_options:
   # /media is mounted read-only, so writing NFOs beside the media would fail.
   SaveLocalMetadata: false
-  # Deprecated and inert -- measured against 10.11.11 and NOT re-measured on 12.1,
-  # which is worth knowing before trusting the assembly counts below. The
-  # string occurred in exactly one assembly that image shipped,
-  # MediaBrowser.Model.dll, which is the one that declares the property; a .NET
-  # assembly names the members it calls, so nothing on the server reads it.
-  # EnableRealtimeMonitor below occurs in two assemblies and SaveLocalMetadata
-  # above in five, which is what a honoured option looks like. jellyfin-web no
-  # longer offers a checkbox either and hardcodes true. It is pinned here only
-  # so the stored value is this repository's rather than Jellyfin's own; it
-  # disables nothing. What actually selects metadata providers in 10.11 is the
-  # per-type TypeOptions, which this platform does not declare.
+  # Deprecated and inert (measured on 10.11.11): nothing on the server reads it.
+  # Pinned only so the stored value is this repository's.
   EnableInternetProviders: false
-  # Watching a large NAS share for changes costs inotify handles for no gain;
-  # the library is scanned on the jellyfin_scheduled_task_triggers interval
-  # below instead.
+  # Watching a large share costs inotify handles; the scheduled scan covers it.
   EnableRealtimeMonitor: false
   EnableChapterImageExtraction: false
   EnableTrickplayImageExtraction: false
@@ -159,44 +117,17 @@ jellyfin_library_options:
   MetadataCountryCode: DE
 
 # Scheduled task triggers this platform owns, keyed by Jellyfin's task Key.
-#
-# Jellyfin holds every one of its twenty tasks' triggers as a compiled in-memory
-# default and writes nothing to /config for them until a trigger set is posted,
-# so a schedule this repository does not declare is one it cannot see and would
-# not notice changing under a version bump. Measured against 10.11.11 on a
-# /config that was empty seconds earlier, and not re-measured on 12.1 -- what a
-# stale default would cost here is a scan interval reverting to Jellyfin's, not a
-# failed converge, because the POST below replaces whatever set is there:
-# RefreshLibrary ships one
-# IntervalTrigger of 432000000000 ticks, exactly twelve hours. POST
-# /ScheduledTasks/{id}/Triggers replaces that set, persists it to
-# /config/config/ScheduledTasks/<id>.js -- a sibling of the
-# /config/data/ScheduledTasks/<id>.js that holds only last-execution results --
-# and it survives a container restart.
-#
-# RefreshLibrary is the only one of the twenty declared here, because it is the
-# only one that decides how long imported media stays invisible: with
-# EnableRealtimeMonitor false, nothing else looks at /media, and the role's own
-# POST /Library/Refresh fires only when Ansible changed a managed library. One
-# hour is the interval roles/komga settled on for the same failure one service
-# over, where six-hour polling hid a working Kapowarr download for an evening
-# and read as a failed import rather than as a schedule. No StartupTrigger, for
-# the same reason Komga declares scanOnStartup false; an interval's phase is set
-# at server start, so an hour is a ceiling measured from the last start rather
-# than a wall-clock schedule.
-#
-# A tick is 100ns, so 36000000000 is one hour.
+# Undeclared triggers are in-memory defaults this repository cannot see. Only
+# RefreshLibrary matters: with realtime monitoring off it alone decides how long
+# imported media stays invisible. A tick is 100ns, so 36000000000 is one hour.
 jellyfin_scheduled_task_triggers:
   RefreshLibrary:
     - Type: IntervalTrigger
       IntervalTicks: 36000000000
 
-# Jellyfin's half of roles/managed_users. tasks/managed_users.yml maps these onto
-# that role's parameters one for one; roles/komga, roles/audiobookshelf and
-# roles/beszel carry the blocks to compare it against.
-#
-# The four relative paths are asserted against config/managed-user-capabilities.yml
-# on the deployed release before any request is sent.
+# Jellyfin's half of roles/managed_users, mapped one for one in
+# tasks/managed_users.yml; the four paths are asserted against
+# config/managed-user-capabilities.yml before any request.
 jellyfin_managed_users_identity_attribute: username
 # The vault authors the identity as `username`; Jellyfin lists it as `Name`.
 jellyfin_managed_users_listed_identity_attribute: Name
@@ -207,14 +138,11 @@ jellyfin_managed_users_create_path: Users/New
 jellyfin_managed_users_reconcile_interface: Users/{id}/Policy
 jellyfin_managed_users_create_status: [200]
 jellyfin_managed_users_repair_status: [204]
-# Jellyfin user ids are GUIDs, with or without hyphens. Narrower than
-# platform_safe_api_identifier_pattern, so it is kept rather than widened.
+# Jellyfin user ids are GUIDs, with or without hyphens.
 jellyfin_managed_users_id_pattern: '^[A-Fa-f0-9-]{32,36}$'
 
-# Policy keys, compared lowercased, that must never appear in a complete policy
-# this role is about to POST back. Jellyfin's policy endpoint replaces the whole
-# policy, so the listed policy is the body, and a credential-shaped key in it
-# would be sent.
+# Lowercased policy keys that must never appear in a policy about to be POSTed:
+# the endpoint replaces the whole policy, so the listed policy is the body.
 jellyfin_managed_users_forbidden_policy_fields:
   - password
   - passwordhash
@@ -228,15 +156,11 @@ jellyfin_managed_users_forbidden_policy_fields:
   - api_key
   - apikey
 
-# The Jellyfin-only refusals roles/managed_users runs between its own steps:
-# the complete-policy preflight before creation, and the created-identity and
-# refreshed-policy refusals after the re-list. Relative to roles/managed_users/tasks.
+# Jellyfin-only refusals run between roles/managed_users' own steps.
 jellyfin_managed_users_before_create_tasks: ../../jellyfin/tasks/managed_users_existing_policies.yml
 jellyfin_managed_users_after_creation_tasks: ../../jellyfin/tasks/managed_users_refreshed_policies.yml
 
-# Evaluated inside the shared role's loops, against its own names: the listing it
-# registered, the single match it bound, `item`, and the declared user it binds
-# as managed_users_authenticating_user for both authenticate requests.
+# Evaluated inside the shared role's loops, against its own names.
 jellyfin_managed_users_list_json: "{{ managed_users_listing.json }}"
 jellyfin_managed_users_authenticate_body:
   Username: "{{ managed_users_authenticating_user.username }}"
@@ -244,24 +168,20 @@ jellyfin_managed_users_authenticate_body:
 jellyfin_managed_users_authenticate_identity: "{{ item.json.User.Name | default('') }}"
 jellyfin_managed_users_reconcile_path: >-
   Users/{{ managed_users_match[managed_users_id_attribute] | urlencode }}/Policy
-# Creation grants no policy: only repair, after the new credential is proved and
-# the re-read policy is proved complete, sets it.
+# Creation grants no policy; only repair, after the credential is proved, sets it.
 jellyfin_managed_users_create_body:
   Name: "{{ item.username }}"
   Password: "{{ item.password }}"
-# The complete current policy with the declared fields merged over it, because
-# the endpoint replaces the whole policy. The defaults make the body evaluable
-# with no match bound, which is how the shared role's credential-key refusal
-# reads it before the listing: its keys are then the declared policy's.
+# The complete current policy with declared fields merged over it (the endpoint
+# replaces the whole policy); defaults keep it evaluable with no match bound.
 jellyfin_managed_users_repair_body: >-
   {{ (managed_users_match | default({})).Policy | default({}) |
      combine(item.policy, recursive=false) }}
 jellyfin_managed_users_repair_condition: >-
   {{ (managed_users_match.Policy | dict2items |
       selectattr('key', 'in', item.policy.keys()) | items2dict) != item.policy }}
-# Brace-free; the first condition is what makes the rest safe, because
-# managed_users_match is an empty mapping for an identity with no match. The last
-# compares against the complete policy this play's reconcile phase expected.
+# Brace-free; the first condition guards the rest, since managed_users_match is
+# empty for an identity with no match.
 jellyfin_managed_users_verify_conditions:
   - managed_users_matches[item.username] | length == 1
   - managed_users_match.Name | trim | lower == item.username | trim | lower

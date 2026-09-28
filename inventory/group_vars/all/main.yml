@@ -1,21 +1,12 @@
 ---
-# Non-secret facts shared by every service. Per-service settings and the storage
-# each service owns live in service_<role>.yml beside this file; secrets live in
-# vault_<role>.yml beside it, one file per service, and vault.yml.example is the
-# shape they take.
+# Non-secret facts shared by every service. Per-service settings live in
+# service_<role>.yml beside this file; secrets in vault_<role>.yml.
 
 nas_timezone: Europe/Berlin
 
-# Read by roles/arr AND roles/downloaders, which is why it is here rather than in
-# service_arr.yml, where it sat until #650. A group_vars value outranks every role
-# default, so one service's settings file was deciding the other service's
-# behaviour with nothing saying so -- and a change to it selected the arr lane
-# only, leaving the downloaders half of what it gates untested. Both roles keep
-# their own `false` default; this is the host's answer, and it is shared.
-#
-# Phase 1 media acquisition stays inert until a host enables Usenet. Adoption is a
-# one-convergence escape hatch for the existing Movies and Series trees; neither
-# role persists it.
+# Shared by roles/arr and roles/downloaders, so it lives here rather than in one
+# service's file (#650). Acquisition stays inert until a host enables Usenet;
+# adoption is a one-convergence escape hatch neither role persists.
 media_acquisition_adopt_existing_libraries: false
 nas_uid: 1000
 nas_gid: 100
@@ -44,93 +35,29 @@ nas_python_minimum: "3.8"
 # community.docker.docker_compose_v2 documents this floor.
 nas_compose_minimum: "2.18.0"
 
-# Timing policy. How long the platform waits is a platform decision, not a
-# per-role one, so the ordinary stack wait and the ordinary readiness poll are
-# declared once here and every role reads them. group_vars outranks role
-# defaults, so a role cannot quietly redefine these: a service that genuinely
-# needs to wait longer declares its own variable in roles/<name>/defaults with
-# the reason beside it, which is what makes a deviation visible as a deviation.
-# tests/policy_test.rb refuses a bare number for retries, delay, or wait_timeout
-# in any role task -- quoted or templated too -- and requires retries and delay
-# to read a *_retries/*_delay variable declared here or in that role's defaults,
-# so a new literal cannot reintroduce the drift.
-#
-# platform_readiness_retries x platform_readiness_delay is a minute of patience,
-# which is what a container that has already reported healthy needs to answer
-# its own API.
+# Timing policy, declared once; group_vars outranks role defaults, so a service
+# that must wait longer declares its own variable with the reason beside it.
+# tests/policy_test.rb refuses literal retries/delay/wait_timeout in role tasks.
 platform_compose_wait_timeout: 180
 platform_readiness_retries: 20
 platform_readiness_delay: 3
 
-# The same policy for the other kind of waiting: a fetch from a third party on
-# the public internet. Two tasks do that -- the Hebrew OCR model and the pinned
-# yt-dlp build -- and neither had a retry or a timeout, so one blip on
-# raw.githubusercontent.com failed the whole converge (#330). On the NAS that
-# compounds: scripts/production_auto_deploy.py records the revision as attempted
-# and failed and will not retry it without an operator, so a ten-second network
-# hiccup stalls automatic deployment.
-#
-# These are deliberately not the readiness numbers, because they are patience
-# for a different thing. Readiness waits on a container here that is already
-# healthy and will answer shortly, so it polls often and briefly. A download
-# waits on a host somewhere else that is either momentarily unreachable or
-# genuinely down, and a short read timeout is what turns the first case into the
-# second -- the failure in #330 reported elapsed: 10, which is get_url's own
-# default. So the ladder is few attempts with a generous timeout rather than
-# many attempts with a tight one. Ansible attempts an until loop `retries` times
-# in total, so the worst case is five timeouts and the four delays between them,
-# 5 x 30 + 4 x 5 = 170 seconds, before the run is allowed to fail for real.
-#
-# tests/policy_test.rb requires every get_url task to carry all four keywords
-# and refuses a literal for any of them. It enforces the timeout there rather
-# than through literal_wait_timeout, because `timeout` is an ordinary module
-# argument that several local tasks pass legitimately, while `wait_timeout` only
-# ever means this policy.
+# Third-party downloads (#330): few attempts with a generous timeout, because a
+# short read timeout turns a blip into a failure. Worst case 5 x 30 + 4 x 5 = 170s.
+# tests/policy_test.rb requires all four keywords on every get_url task.
 platform_download_retries: 5
 platform_download_delay: 5
 platform_download_timeout: 30
 
-# The shape every identifier a service API hands back must have before a role
-# interpolates it into a URL, a body or a comparison: an ASCII alphanumeric
-# first character, then at most 127 more drawn from alphanumerics and `_.:-`.
-# It was a literal in fifteen places across six roles, so tightening it was a
-# fifteen-file edit with nothing holding the copies together (#647). A service
-# whose identifiers are narrower -- a UUID -- asserts its own pattern instead of
-# this one; this is the platform's floor, not a type.
+# The platform's floor for any identifier a service API hands back before a role
+# interpolates it (#647). Narrower identifiers (UUIDs) assert their own pattern.
 platform_safe_api_identifier_pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
 
 # Storage inventory, composed from every nas_storage_* contributor in this
-# directory. host_prep creates ordinary entries and validates preservation-only
-# entries, the policy test cross-checks them against Compose volume sources, and
-# the recovery class drives the disaster-recovery documentation.
-#
-# recovery: critical  irreplaceable service state, must be backed up
-#           user      NAS-managed user files, owned outside this repository
-#           cache     regenerable, safe to lose
-#
-# owner and group are optional. Omitting them creates the directory without
-# claiming ownership, which is required under the media root where the NAS owns
-# the files and access is granted through its own permission controls.
-#
-# The composition is derived rather than listed: a service contributes by
-# defining nas_storage_<role> in its own file and nothing here changes. The
-# `vars` dictionary is deprecated and removed in ansible-core 2.24, and
-# `hostvars` is undefined while group_vars are still being assembled, so the
-# varnames/vars lookup pair is the supported way to do this.
-#
-# Losing every contributor is silent -- nas_storage evaluates to [] and the play
-# reports ok -- so host_prep asserts a floor before it creates anything, and
-# tests/nas_storage_support.rb checks contributor membership against
-# services/manifest.yml in both directions.
-# The final sort is load-bearing rather than tidy. host_prep loops over this list
-# in order, and a parent must be created before its leaves: ansible.builtin.file
-# applies a declared mode to an intermediate parent only at the moment it creates
-# it, so a leaf reached first leaves its root holding whatever the umask gave it
-# until that root's own entry repairs it. A lexicographic sort on the expanded
-# path puts every parent ahead of its children by construction, because a parent
-# path is a prefix of them. The hand-written order carried that invariant by hand;
-# sorting makes it a property of the composition rather than something the next
-# person to add a path has to notice.
+# directory. recovery: critical (back up) / user (NAS-owned files) / cache.
+# Omit owner/group under the media root. varnames/vars is the only supported
+# composition (vars is removed in ansible-core 2.24); the path sort is
+# load-bearing: parents must be created before their leaves.
 platform_storage_names: "{{ q('varnames', '^nas_storage_') | sort }}"
 nas_storage: >-
   {{ q('vars', *platform_storage_names) | flatten(levels=1) | sort(attribute='path') }}

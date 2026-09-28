@@ -1,106 +1,11 @@
 #!/usr/bin/env ruby
-# What a service must already have before its deployment gate is allowed to be on.
-#
-# THE HOLE THIS CLOSES (#512). Flipping `<role>_deployment_enabled` to true in
-# inventory is what converges a stack on the NAS, and until this file no check
-# read that value at all. The registrations that make a service *provable* --
-# an integration lane that converges it, a Mac lifecycle that recreates and
-# verifies it -- were held only by pairwise agreement between hand-maintained
-# literals: tests/ci/suites.conf against SERVICE_NAMES in
-# tests/ci/classify_changes.rb, against the LANES/expected-output
-# blocks in tests/ci/classify_changes_test.rb, against INTEGRATION_SUITES in
-# tests/ci/workflow_test.rb. Every one of those agrees with its neighbour and
-# none of them is anchored to services/manifest.yml, so a service that was never
-# written into any of them is invisible to all of them rather than failing any.
-#
-# That was demonstrated rather than argued, on this tree: removing Nextcloud
-# consistently from all four literals -- leaving `status: implemented` and
-# `nextcloud_deployment_enabled: true` exactly as they are -- left
-# tests/policy_test.rb, tests/policy_ci_test.rb, tests/policy_mac_test.rb,
-# tests/policy_platform_test.rb, tests/ci/workflow_test.rb and
-# tests/gate_manifest_coverage_test.rb all green. The one objection came from
-# tests/ci/classify_changes_test.rb's harness-closure check, and it was
-# incidental: it fires because tests/expected/nextcloud.yml is reached from a
-# contract, so a service with no contract escapes it. The alerting sink #558
-# removed was the control that proved so -- implemented, deployed on every lane,
-# and its expectations file classified to no suite with every check green. No
-# live service reproduces that today: vaultwarden and karakeep have no contract
-# but each has a lane that classification reaches, so the hole is argued from
-# that history rather than demonstrated on this tree.
-#
-# THE SUBJECT IS THE GATE, NOT THE MANIFEST, and that distinction is the whole
-# design. Requiring a lane of every implemented service would forbid the
-# land-dark-then-flip idiom that .claude/skills/implement-issue/SKILL.md
-# prefers and that both Seafile and Nextcloud were promoted through: step 1
-# lands the entire stack with the gate false and no registrations anywhere,
-# step 2 adds the lane and the contract, step 3 flips the gate. What was missing
-# was any reason step 2 had to happen before step 3. So a service whose gate is
-# off is deliberately out of scope here, and a service with no gate variable at
-# all is in scope: no gate means it converges unconditionally, which is the same
-# position as a gate that is on.
-#
-# WHAT IS REQUIRED, AND WHY EACH ONE AND NOT THE OTHERS.
-#
-#   1. An integration lane converges its Ansible tag. This is the property that
-#      means "CI has deployed this and watched it come up": tests/integration.sh
-#      asserts of every lane that the run converges, that a second run changes
-#      nothing, and that --check --diff works. Membership is by *tag* rather than
-#      by a lane of its own, because a service every lane converges as a shared
-#      dependency needs no lane of its own -- the alerting sink #558 removed was
-#      one, converged by every service lane until then. Deriving the requirement
-#      from the tags rather than from lane names is what lets such a service pass
-#      without an exemption list, and an exemption list is the defect this file
-#      exists to remove.
-#
-#   2. The Mac lifecycle accounts for it. tests/mac/lib.sh builds every coverage
-#      roster as `mac_registry_services + MAC_UNREGISTERED_SERVICES`, and
-#      MAC_UNREGISTERED_SERVICES is the literal string 'vaultwarden' with nothing tying
-#      either half to the manifest. Asserting that roster against the gate-on
-#      services closes it in both directions: a gate-on service missing from both
-#      halves fails, and a name in either half that is not an implemented service
-#      fails too.
-#
-#   3. Its role default declares the gate OFF. Not a coverage requirement like
-#      the two above -- it holds of every gate, lit or dark -- but the same
-#      subject read from the same scan, so it lives here rather than in a
-#      per-service contract that two of the three gates do not have. The reason
-#      is at the check itself.
-#
-#   4. Inventory declares it in inventory/group_vars/all/service_<role>.yml and
-#      nowhere else (#680). Also not a coverage requirement, and the pair to 3:
-#      that one holds the floor under the decision, this one holds the file the
-#      decision is made in. Every other check here -- DECISION_FILES most
-#      directly -- assumes that file is where the gate is, and until this one
-#      nothing required it. The reason is at the check itself.
-#
-# NOT REQUIRED HERE, deliberately, because each is already closed elsewhere and a
-# second copy of an assertion is a second thing to keep true:
-#
-#   - tests/expected/<service>.yml. tests/policy_support.rb pins those against
-#     the service roster in both directions already.
-#   - A contract of its own. tests/policy_test.rb requires every implemented
-#     service to carry `role_verification || contract_verification`, and
-#     demanding a registry row specifically would fail vaultwarden, which has no
-#     contract and verifies in its role -- and would therefore need the exemption list
-#     this file is here to delete. Requirement 2 above reaches the registry
-#     anyway: a gate-on service absent from MAC_UNREGISTERED_SERVICES has to be
-#     registered to satisfy it.
-#
-# WHY A FILE OF ITS OWN rather than a section of one of the eight scripts in
-# POLICY_SCRIPTS. The same reason tests/gate_manifest_coverage_test.rb states for
-# itself, and it is measured rather than aesthetic: this check reads
-# services/manifest.yml, tests/contracts/registry.yml, tests/ci/suites.conf,
-# tests/integration.sh and tests/mac/lib.sh, and tests/policy_mutation_support.rb
-# plants defects in several of those. Inside one of the eight, every such
-# mutation would newly be detected by that script, the per-site declared sets in
-# tests/policy_manifest_test.rb would drift, and `--audit` would fail. Outside
-# them, it cannot happen. The cost is one line in tests/validate-policy.sh and
-# the matching entry in tests/gate_manifest_coverage_test.rb's shard list.
+# What a service must have before its deployment gate may be on (#512): an integration
+# lane converging its tag, a Mac lifecycle entry, a role default of false, and the
+# inventory decision in its own service_<role>.yml (#680). A gate-off service is out of
+# scope, so land-dark-then-flip still works; no gate means always on. A file of its own
+# so policy mutations do not drift the manifest test's declared sets.
 
-# Explicitly, not transitively. permitted_classes below names Date, and on this
-# workstation `require "yaml"` happens to define it -- psych pulls it in -- while
-# on the CI runner's psych it does not, so the check died there with
-# `uninitialized constant Date (NameError)` on a tree that was green locally.
+# Explicit: on some psych versions `require "yaml"` does not define Date.
 require "date"
 require "yaml"
 
@@ -110,118 +15,10 @@ include TestScaffold
 
 ROOT = File.expand_path("..", __dir__)
 
-# The floors. Every list below is derived from the tree, so each one can go quiet
-# and take its assertions with it: a renamed variable empties the gate scan, a
-# regex that stops matching empties the roster, and the run reports success.
-#
-# They are today's counts rather than something comfortably below them, which is
-# the opposite of what TestScaffold.check_floor's own comment advises, and the
-# reason is that these lists have a second guard and mac_port_roster did not.
-# #512 objected to `mac_port_roster.length >= 15` over nineteen entries precisely
-# because the floor was the only thing holding that list, so four names could go
-# and nothing would say. Every list here is also closed in both directions
-# below, so a single deletion fails by name whatever the floor is; the floor's
-# job is only the collapse a set comparison cannot report usefully. Holding it at
-# the real count costs one visible edit when a service is genuinely removed --
-# #501 removed Seafile and rewrote some forty files to do it -- and buys a
-# failure that names the number rather than one that lists fifteen missing
-# services.
-#
-# SUBJECT_FLOOR is the one exception, and it is deliberate: it sits at the
-# implemented count minus the gated services, because turning a stack dark is an
-# operation this repository performs -- #528 switched Seafile's gate off four
-# days before this was written -- and a guard that refused it would be fighting
-# the very idiom the rest of this file exists to protect. It therefore does not
-# move when a service lands dark, and it does not move when one is turned on
-# either: #547 landed Vaultwarden dark and #548 flipped AdGuard on, which took
-# the implemented count to 18 and the gate count to 3, and 18 - 3 is the 15 that
-# was already there. #577 removed AdGuard again, taking those to 17 and 2, and
-# 17 - 2 is the same 15 -- so the rule has now survived a service arriving, a
-# gate flipping both ways and a service leaving without the number moving once.
-# It is 15 by that rule and not by coincidence -- it is the same arithmetic the
-# `subjects.length >= implemented.length - gate_names.length` check two hundred
-# lines below applies -- so do not "correct" it to today's subject count: that
-# would be a guard against turning a stack off, which is a thing this repository
-# does on purpose.
-#
-# THE FLOORS ARE `>=`, WHICH IS WHY THEY GO STALE QUIETLY, and it has now
-# happened twice, the second time in a merge. #548 landed AdGuard with the first
-# three left at their pre-AdGuard values and this file stayed green -- exactly
-# the collapse the paragraph above says the floor exists to report, since today's
-# counts are the point and a floor comfortably below them buys nothing. Fixing
-# those three left the other four: the registry had gained a sixteenth contract,
-# suites.conf a sixteenth tagged row and its seventeenth service tag, site.yml
-# more role tags, and every one of those floors went on passing over a larger
-# tree. Then #547 and #548 met in a merge and NEITHER SIDE'S NUMBERS WERE RIGHT
-# FOR THE MERGED TREE -- three each. #548 had the Mac roster, the tagged lanes
-# and the lane tags right at 17/16/17 and counted 17 implemented services behind
-# 2 gates; #547 had the implemented count, the gate count and the site tags right
-# at 18/3/33 and counted a 16-name Mac roster over 15 tagged lanes. Resolving
-# that conflict by picking a side would have shipped four stale floors whichever
-# side was picked. Every number below is therefore read off the merged tree
-# rather than carried over from either. Re-read this whole block when a service
-# is added, removed, gated or ungated, and re-derive rather than reason: the
-# summary line at the foot of this file prints four of the seven live counts, and
-# the other three are one instrumented run away.
-#
-# THE THIRD TIME, AND IT WAS THE SAME MERGE AGAIN. #547's second chunk rebased
-# onto the AdGuard flip above, and neither side's numbers were right for the
-# tree that came out: this file's own Mac roster, tagged lanes and lane tags
-# were AdGuard's counts, one short each, because Vaultwarden brings a lane, a
-# tag and a roster entry of its own. They were re-derived the way the paragraph
-# above prescribes rather than incremented -- each floor set to an impossible
-# value and the check run, which prints the count it found: 18 implemented, 3
-# gate variables, 18 subjects, an 18-name Mac roster, 17 tagged rows, 18 lane
-# tags, 33 site tags. SUBJECT_FLOOR is the one that did not move and the one
-# that must not: its rule is implemented minus gated, 18 - 3 is 15, and the
-# count being 18 today only means no stack is dark at the moment.
-#
-# THE FOURTH TIME WAS A REMOVAL, and it moved six of the seven. #577 deleted
-# AdGuard: the six below were each set to an impossible value and the check run,
-# which prints the count it found -- 17 implemented, 2 gate variables, a 17-name
-# Mac roster, 16 tagged rows, 17 lane tags, 31 site tags. Two of those are not
-# the decrement a reader would guess: the site tags fell by TWO, because
-# `network` was AdGuard's tag alone and went with it, and the Mac roster fell by
-# one rather than two because AdGuard held one registry entry and no
-# MAC_UNREGISTERED_SERVICES name. SUBJECT_FLOOR is again the one that did not
-# move, by the rule above.
-#
-# THE FIFTH TIME WAS AN ADDITION THAT LANDED DARK. #551 added Karakeep with its
-# gate false and its lane in the same change, and the floors were re-derived the
-# same way: 18 implemented, 3 gate variables, 17 tagged rows, 18 lane tags and 32
-# site tags (`documents` was already Nextcloud's, so only `karakeep` is new). The
-# Mac roster stays 17, because a dark stack is not a subject and Karakeep is in
-# neither half of it yet. SUBJECT_FLOOR stays 15 by its rule, 18 - 3.
-#
-# THE SIXTH TIME IS THE FIRST THAT MOVES SUBJECT_FLOOR DOWN, and the reason is
-# not the one a reader would guess. #558 stage 4a gave ntfy a gate and turned it
-# off, and it met #551 in a merge, so neither side's numbers were carried over:
-# every floor was set to an impossible value on the merged tree and the check
-# run: 18 implemented, 4 gate variables, 16 subjects, a 17-name Mac roster, 17
-# tagged rows, 18 lane tags, 32 site tags. GATE_VARIABLE_FLOOR moved on the
-# count, 3 to 4. SUBJECT_FLOOR moved by its RULE, 18 - 4 = 14, even though 16
-# subjects exist today: it moved because a gate VARIABLE appeared, not because a
-# stack went dark, and the rule is what lets the next gate go dark without a
-# guard fighting it. Do not "correct" it to 15 or 16.
-#
-# THE SEVENTH TIME WAS KARAKEEP TURNING ON, on top of that. #551's second chunk
-# flipped Karakeep's gate and rebased onto ntfy's, so the numbers were read off
-# the merged tree once more, every floor at 9999: 18 implemented, 4 gate
-# variables, 17 subjects (ntfy is the one dark gate now), a 18-name Mac roster, 17
-# tagged rows, 18 lane tags, 32 site tags. Only MAC_ROSTER_FLOOR moved, 17 to 18,
-# because Karakeep joined MAC_UNREGISTERED_SERVICES. SUBJECT_FLOOR stays 14 by
-# its rule, 18 - 4, although 17 subjects converge: a lit gate is not a reason to
-# raise it, for the same reason a dark one was not a reason to lower it.
-#
-# THE EIGHTH TIME IS THE REMOVAL THE SIXTH ANTICIPATED. #558 stage 4c deleted
-# ntfy after Karakeep was lit, and every floor was again set to an impossible
-# value on the merged tree and the check run: 17 implemented, 3 gate variables,
-# 17 subjects, a 17-name Mac roster, 17 tagged rows, 17 lane tags, 31 site tags.
-# IMPLEMENTED_FLOOR, GATE_VARIABLE_FLOOR, MAC_ROSTER_FLOOR and LANE_TAG_FLOOR each
-# fell by one, and SITE_TAG_FLOOR by one because `monitoring` is still Beszel's
-# and Dozzle's. The tagged rows did not move, because ntfy never had a row of its
-# own. SUBJECT_FLOOR did not move either, by its rule: a gate variable and an
-# implemented service left together, and 17 - 3 is the same 14 that 18 - 4 was.
+# Today's counts, not a margin below: every list is also closed both ways, so the floor
+# only has to report a collapse. Re-derive them (set to 9999, read the printed count)
+# whenever a service is added, removed or gated. SUBJECT_FLOOR is implemented minus gate
+# variables by rule, so a stack going dark never trips it; do not "correct" it.
 IMPLEMENTED_FLOOR = 17       # services/manifest.yml holds 17 implemented services
 GATE_VARIABLE_FLOOR = 3      # nextcloud, vaultwarden and karakeep _deployment_enabled
 SUBJECT_FLOOR = 14           # 17 implemented, of which at most the 3 gated ones may be dark
@@ -232,7 +29,6 @@ SITE_TAG_FLOOR = 31           # the role tags site.yml declares
 
 failures = []
 
-# ---------------------------------------------------------------------------
 # The roster, and each service's role and Ansible tag.
 
 manifest_document = begin
@@ -256,11 +52,7 @@ check(failures, missing_roles.empty?,
       "services/manifest.yml names no role for #{missing_roles.inspect}: this check resolves a " \
       "service's deployment gate through its role, and a service with no role has no gate to read")
 
-# The tag each service converges under. Read out of tests/integration.sh rather
-# than restated, because tests/policy_ci_test.rb already pins that table against
-# the manifest in both directions -- so it is the one tag/service mapping in the
-# repository that cannot drift from the roster, and a copy here would be a second
-# one that can.
+# Read from tests/integration.sh, which tests/policy_ci_test.rb pins against the manifest.
 integration_path = File.join(ROOT, "tests", "integration.sh")
 integration_body = File.file?(integration_path) ? File.read(integration_path) : ""
 service_tags = integration_body[/^service_image_sources='\n(.*?)'$/m].to_s
@@ -270,23 +62,12 @@ check(failures, !service_tags.empty?,
       "tests/integration.sh: service_image_sources could not be read, so no service's Ansible " \
       "tag is known and every lane requirement below would pass vacuously")
 
-# ---------------------------------------------------------------------------
-# The gates themselves, and how each one resolves.
-#
-# A gate is a role default that inventory may override, so both homes are read
-# and inventory wins. Nothing here reproduces Ansible's full precedence ladder:
-# what it needs to know is whether a stack converges, and a variable set in two
-# inventory files with different values is reported rather than resolved, because
-# guessing which one Ansible would pick is exactly the kind of quiet answer this
-# file exists to stop giving.
+# The gates: role default overridden by inventory. A gate set in two inventory files
+# with different values is reported, not resolved.
 GATE_SUFFIX = "_deployment_enabled"
 GATE_KEY = /\A([a-z][a-z0-9_]*)#{GATE_SUFFIX}\z/
 
-# Walks a loaded document for gate keys at any depth. Depth matters because
-# inventory/*.yml are inventory files whose variables sit under a group's `vars`
-# mapping, while group_vars and role defaults are flat: a scan that only read top
-# level keys would miss the first home entirely and report "no gates found",
-# which the floor below would catch but only after the reason had been lost.
+# Any depth: inventory/*.yml nest variables under a group's `vars`.
 def gate_keys(node, found = {})
   case node
   when Hash
@@ -300,31 +81,11 @@ def gate_keys(node, found = {})
   found
 end
 
-# A FILE THAT COULD NOT BE PARSED IS NOT A FILE THAT SAYS NOTHING (#593). This
-# rescued to nil, and the caller could not tell that apart from a document with
-# no gate keys in it -- so an unparseable inventory emptied the inventory scan,
-# both gates fell back to their role defaults, which every check below insists
-# ship `false`, and the run printed `15 of 17 ... 2 dark` and exited 0 over a
-# platform whose obligations it had not examined. +unparsed+ is what makes the
-# nil at every call site mean "absent" rather than "unknown"; the refusal is
-# asserted on the parse, before any gate resolves, because what went wrong is
-# upstream of what the gates then read.
-#
-# THE RESCUE STAYS ON Psych::Exception rather than narrowing to
-# Psych::SyntaxError: a document that cannot be loaded is a document no gate can
-# be resolved from, whatever the reason. What that breadth costs is a permitted
-# class list, because Psych::DisallowedClass is a Psych::Exception too -- an
-# unquoted `2026-09-08` is valid YAML, valid Ansible and forbidden nowhere in
-# this repository, and a dated memory measurement like docs/incident-history.md's
-# is what CLAUDE.md would put in inventory/group_vars/nas_hosts/main.yml. Left
-# out, it turned a legitimate edit into a gate failure blaming the wrong thing:
-# measured on this tree, `arr_measured_on: 2026-09-08` in a role default refused
-# the whole run. Errno::EACCES and Errno::EISDIR are deliberately not rescued --
-# a file that cannot be opened at all fails louder than this, not quieter.
+# An unparseable file is not an empty one (#593): +unparsed+ records it and the run is
+# refused. Rescues all Psych::Exception, hence the permitted classes (an unquoted date is
+# valid YAML). Unopenable files are not rescued.
 def load_plain_yaml(path, unparsed)
   source = File.read(path)
-  # An encrypted vault is not YAML and is not where a nonsecret policy switch
-  # belongs; tests/policy_vault_test.rb is what says it stays encrypted.
   return nil if source.start_with?("$ANSIBLE_VAULT")
 
   YAML.safe_load(source, aliases: true, permitted_classes: [Date, Time])
@@ -349,18 +110,8 @@ Dir[File.join(ROOT, "inventory", "**", "*.yml")].sort.each do |path|
     inventory_gates[key] << { "value" => value, "path" => path.delete_prefix("#{ROOT}/") }
   end
 end
-# EITHER OF THE TWO REFUSALS BELOW INVALIDATES THE REST OF THIS REPORT, and that
-# is stated rather than structured away. `check` accumulates -- it does not raise
-# and does not return -- because reporting every violation in one run is this
-# gate's design, so once a gate's file is unusable every property after this
-# point still resolves, against the `false` a role default fell back to. Some of
-# those then INVERT TO A PASS rather than merely passing vacuously: #564's
-# narrowing refusal 250 lines below asks `gate_states[prefix] == false`, so a
-# live narrowing violation disappears from the report while the decision file is
-# corrupt. Measured: the narrowing plant alone fails by name; the same plant with
-# an unparseable decision file prints these refusals and not the narrowing. The
-# run still exits nonzero, so nothing ships on it -- but when either of these
-# fires it is THE finding, and the absence of any other is not evidence.
+# Either refusal below invalidates the rest of this report: later checks resolve against
+# role-default `false` and some invert to a pass. When one fires, it is THE finding.
 check(failures, unparsed_yaml.empty?,
       "#{unparsed_yaml.uniq.inspect} could not be parsed, so no gate can be resolved from the " \
       "file that sets it and every requirement below would pass vacuously. A gate that is dark " \
@@ -368,56 +119,15 @@ check(failures, unparsed_yaml.empty?,
       "are different states, and only the first is a reason to assert nothing. Fix the file and " \
       "re-run: nothing else this run reports about a gate can be trusted")
 
-# AND THE FILE THE DECISION LIVES IN HAS TO HAVE SURVIVED, which the refusal
-# above cannot say on its own: `Dir[]` yields no entry for a file that is not
-# there, and a 0-byte file is valid YAML that parses to nil. Both of those took
-# the same route as the unparseable one -- measured on this tree, an unclosed
-# quote, a `mv` and a `: >` each printed `15 of 17 ... 2 dark` and exited 0 --
-# so the refusal is stated over the path as well as over the parse.
-#
-# DERIVED, NOT NAMED, and that is the correction #635 made. This was the literal
-# `inventory/group_vars/all/main.yml` until #602 split that file into one
-# service_<role>.yml per service and took both gates with it. The literal kept
-# passing and kept refusing -- over a file that, from that merge on, declared no
-# gate at all and could be emptied with no effect on anything below. Measured on
-# the split tree before the fix: gutting service_vaultwarden.yml or
-# service_nextcloud.yml, each of which holds a live gate, printed `16 of 17 ... 1
-# dark` and exited 0, while gutting main.yml still failed loudly. The guard fired
-# only for the file that could no longer cause the failure.
-#
-# So the subject is every file a gate could live in, derived from the manifest
-# the same way the rest of this check derives its subjects. A literal cannot
-# survive a file being renamed out from under it, and this one did not.
-#
-# Flooring the inventory scan instead would still be wrong rather than merely
-# blunt -- `inventory_gates` being empty for a gate is a LEGITIMATE state by this
-# file's own reasoning (the role default must ship `false` precisely so that
-# dark-by-deletion works, and `overrides.empty?` is handled as a resolution
-# rather than as a fault), so a floor there would fight the idiom the rest of
-# this file exists to protect. And GATE_VARIABLE_FLOOR does not reach any of
-# this: it counts gate NAMES, and the role defaults alone supply both of them,
-# so the count stays at 2 while every value has silently become `false`. It
-# guards the subject list's size and not its truth.
-#
-# WHAT THIS PROVES IS NARROW, deliberately: that each file parsed and is not
-# gutted. It does not prove any of them declares a gate, because that is the
-# floor rejected in the paragraph above -- a service with no gate is the normal
-# case, and its file still has to survive so that a gate landing there later is
-# read rather than silently missed.
-#
-# main.yml stays in the set. It no longer holds a gate, but the scan above still
-# sweeps it for one, and it is still the file the composition and the interpreter
-# floors live in.
+# The decision files must exist and be non-empty (a missing or 0-byte file once passed).
+# Derived from the manifest, not a literal (#635). Proves only that each survived, not
+# that it declares a gate. main.yml stays in the set.
 DECISION_FILES = ["main.yml"]
                  .concat(role_of.values.compact.uniq.sort.map { |role| "service_#{role}.yml" })
                  .map { |name| File.join("inventory", "group_vars", "all", name) }
-# No floor of its own: the list is derived from role_of, which IMPLEMENTED_FLOOR
-# already refuses to let collapse. A second number here would be one more thing
-# that has to be bumped when a service is added, and this file has enough of
-# those.
+# No floor of its own: derived from role_of, which IMPLEMENTED_FLOOR guards.
 DECISION_FILES.each do |relative|
-  # The accumulator is thrown away: the inventory scan above has already recorded
-  # this path if it failed to parse, and reporting it twice would name it twice.
+  # Accumulator discarded: the inventory scan already recorded a parse failure.
   decision_document = load_plain_yaml(File.join(ROOT, relative), [])
   check(failures, decision_document.is_a?(Hash) && !decision_document.empty?,
         "#{relative} is one of the files a deployment decision on this platform is made and " \
@@ -432,12 +142,8 @@ gate_names = (role_gates.keys + inventory_gates.keys).uniq.sort
 check_floor(failures, gate_names.length, GATE_VARIABLE_FLOOR,
             "#{GATE_SUFFIX} variables found under roles/ and inventory/")
 
-# Both directions on the gate scan itself. A gate whose prefix is not a manifest
-# role is either a typo -- in which case the switch the operator edits is read by
-# nothing -- or a gate on something this file cannot reason about; and a gate
-# that inventory sets with no role default behind it is a switch with no declared
-# off position, which is how a role ends up depending on a variable that is
-# simply undefined on some other host.
+# Both directions: a gate whose prefix is not a manifest role is read by nothing; one
+# with no role default has no declared off position.
 roles_by_name = role_of.values.compact.to_h { |role| [role, true] }
 gated_off = []
 gate_states = {}
@@ -451,27 +157,9 @@ gate_names.each do |name|
         "#{name} must be declared in roles/#{prefix}/defaults/main.yml: a gate that only " \
         "inventory sets has no declared off position")
 
-  # AND IT MUST BE DECLARED OFF. A role default is what a caller gets with no
-  # inventory at all, so this line is the FLOOR under the deployment decision
-  # rather than a mirror of it: the decision lives in
-  # inventory/group_vars/all/service_<role>.yml, which wins on every run any
-  # playbook here makes, and turning it back off there must not leave the stack
-  # converging on the strength of a role default nobody edited.
-  #
-  # Stated repo-wide rather than per-service because the tree already satisfies
-  # it in full -- nextcloud, vaultwarden and karakeep are the three gates
-  # that exist, and all three ship false -- and because the harm is worst exactly where a per-service
-  # check is most likely to be missing. AdGuard used to be the only one carrying
-  # its own assertion, in tests/contracts/adguard-static.rb, and #577 removed
-  # that contract with the service; neither survivor has a static contract to
-  # carry one, and Vaultwarden is the starker case, since a caller with no
-  # inventory would stand up a password manager whose registration door is open.
-  # A rule that reaches every gate reaches the ones nobody thought to guard, and
-  # after #577 it is the only thing reaching any of them.
-  #
-  # If a service ever needs a true role default, this is the check to argue with
-  # rather than to route around: the argument belongs here, beside the other
-  # things a gate must be.
+  # The role default must be false: it is the floor under the inventory decision, so
+  # turning the gate off in inventory really stops the stack. Repo-wide, so every gate is
+  # reached; argue a true default here rather than routing around it.
   check(failures, declaration.nil? || declaration["value"] == false,
         "roles/#{prefix}/defaults/main.yml ships #{name}: #{declaration&.fetch('value').inspect}, " \
         "and a role default must ship the gate OFF. It is the floor under the deployment " \
@@ -483,38 +171,9 @@ gate_names.each do |name|
 
   overrides = inventory_gates[name]
 
-  # AND INVENTORY MUST MAKE THE DECISION IN THE SERVICE'S OWN FILE (#680). The
-  # pair to the role-default rule above: that one holds the floor under the
-  # decision, this one holds the file the decision is made in. Every check here
-  # assumes inventory/group_vars/all/service_<role>.yml is that file --
-  # DECISION_FILES is built from exactly that name -- and until this line
-  # nothing required a gate to be there. Move one to any other inventory file
-  # and every check still passes: the gate resolves, the stack converges, and
-  # DECISION_FILES is satisfied because that loop asserts each file parses to a
-  # non-empty mapping, not that it holds the decision. Gutting the file it moved
-  # to then reproduces #635's symptom exactly -- the gate falls back to a role
-  # default this check requires to ship OFF, the stack reads as deliberately
-  # dark, and every requirement below it holds vacuously. So the guard was sound
-  # for the layout in use and silent about a layout change that would break it,
-  # which is the same family as #635 itself.
-  #
-  # THE EXPECTED PATH IS BUILT THE WAY DECISION_FILES BUILDS ITS ENTRIES, from
-  # the gate's own prefix rather than from a literal, so the two cannot drift
-  # apart -- and a literal is what #635 was.
-  #
-  # THE ALTERNATIVE WAS REJECTED RATHER THAN MISSED: accept a gate wherever it
-  # is found and derive the decision file from there, which is what the closed
-  # #668 did. It buys a flexibility nothing here wants. All three gates sit in
-  # their own service file, #602's split is what made that the convention, and
-  # both switches say so in their own words -- service_nextcloud.yml and
-  # service_vaultwarden.yml each record why the gate lives in the service file
-  # rather than in a host group.
-  #
-  # IT IS SILENT FOR A GATE INVENTORY DOES NOT SET, and that is a resolution
-  # rather than a gap: a role default with no override is dark-by-deletion,
-  # which the paragraph above DECISION_FILES argues must stay legitimate. No
-  # floor over `overrides` for the same reason it refuses one there -- an empty
-  # inventory scan for a gate is a state this platform performs on purpose.
+  # Inventory must decide in the service's own file (#680), built from the prefix like
+  # DECISION_FILES, or gutting another file reproduces #635 silently. Silent for a gate
+  # inventory does not set: that is dark-by-deletion, which is legitimate.
   decision_file = File.join("inventory", "group_vars", "all", "service_#{prefix}.yml")
   stray_declarations = overrides.map { |entry| entry["path"] }.reject { |path| path == decision_file }
   check(failures, stray_declarations.empty?,
@@ -530,10 +189,7 @@ gate_names.each do |name|
         "#{name} is set to conflicting values by #{overrides.map { |entry| entry['path'] }.inspect}: " \
         "which stack converges must not depend on reproducing Ansible's precedence ladder here")
   value = values.first
-  # Anything that is not a YAML boolean stops the run by name. Reading an
-  # unrecognised value as "off" would drop the service out of the subject list,
-  # and every requirement below would then hold for it vacuously -- the exact
-  # failure the floors are here to make impossible.
+  # Non-boolean values stop the run by name rather than reading as "off".
   check(failures, value == true || value == false,
         "#{name} resolves to #{value.inspect}, which is not a YAML boolean; this check cannot " \
         "say whether the stack converges and will not guess")
@@ -541,7 +197,6 @@ gate_names.each do |name|
   gated_off << prefix if value == false
 end
 
-# A service with no gate variable converges unconditionally, so it is a subject.
 subjects = implemented.reject { |name| gate_states[role_of[name]] == false }
 check_floor(failures, subjects.length, SUBJECT_FLOOR,
             "implemented services whose deployment gate is on")
@@ -550,7 +205,6 @@ check(failures, subjects.length >= implemented.length - gate_names.length,
       "read as gated off, but only #{gate_names.length} gate variable(s) exist: the resolution " \
       "above has broken rather than that many stacks having been turned dark")
 
-# ---------------------------------------------------------------------------
 # Requirement 1: an integration lane converges the service's tag.
 
 suite_table_path = File.join(ROOT, "tests", "ci", "suites.conf")
@@ -575,12 +229,7 @@ check_floor(failures, (lane_tags & manifest_tags).length, LANE_TAG_FLOOR,
 
 subjects.each do |name|
   tag = service_tags[name]
-  # Reported rather than skipped. A subject with no tag would otherwise drop out
-  # of the requirement below and take its assertion with it -- the exact shape
-  # this file exists to remove -- and the emptiness check above says nothing
-  # about one missing row. tests/policy_ci_test.rb does hold that table against
-  # the manifest, but a check that relies on another check to notice its own
-  # subject going quiet is relying on a coupling nothing states.
+  # Reported rather than skipped, so a subject with no tag cannot drop out silently.
   check(failures, !tag.nil?,
         "#{name} has no tests/integration.sh service_image_sources entry, so this check " \
         "cannot say which lane would converge it and would otherwise pass it over in silence")
@@ -592,16 +241,8 @@ subjects.each do |name|
         "lane before turning it on, or turn the gate back off")
 end
 
-# The other direction: a lane that converges a tag nothing answers to. A tag no
-# role carries selects no role, so the lane runs a shorter play than its row
-# claims and still reports success -- which is the same defect as a missing lane,
-# arrived at from the other side. The comparison is against site.yml's own role
-# tags rather than a list of foundation tags written here, so `host_prep`,
-# `deployment_bundle` and the `media_acquisition_foundation` a planned
-# acquisition lane converges are admitted by being real rather than by being
-# named. Held against every manifest service and not only the gate-on ones,
-# because a lane landed ahead of the flip -- the sequence this file exists to
-# require -- is correct and must not fail here.
+# The other direction: a lane tag no site.yml role carries runs a shorter play and still
+# passes. Checked for every manifest service, since a lane may land before the flip.
 site_play = begin
   Array(YAML.safe_load_file(File.join(ROOT, "site.yml"))).first
 rescue Errno::ENOENT, Psych::Exception
@@ -618,7 +259,6 @@ tagged_rows.each do |suite, _kind, tags|
         "lane runs a shorter play than its row claims and reports success anyway")
 end
 
-# ---------------------------------------------------------------------------
 # Requirement 2: the Mac lifecycle accounts for the service.
 
 registry_document = begin
@@ -634,9 +274,6 @@ end
 mac_lib_path = File.join(ROOT, "tests", "mac", "lib.sh")
 mac_lib = File.file?(mac_lib_path) ? File.read(mac_lib_path) : ""
 unregistered = mac_lib[/^MAC_UNREGISTERED_SERVICES='([^']*)'/m, 1].to_s.split
-# The Mac lane's own spelling of a service, which tests/mac/lib.sh derives from
-# the registry with exactly the paperless-ngx exception PolicySupport applies to
-# a contract basename.
 mac_roster = (registry_services.map { |name| PolicySupport.contract_basename(name) } +
               unregistered).uniq
 check_floor(failures, mac_roster.length, MAC_ROSTER_FLOOR,
@@ -651,46 +288,10 @@ subjects.each do |name|
         "reports clean having skipped the service entirely")
 end
 
-# ---------------------------------------------------------------------------
-# Requirement 3: CI converges the service's DISABLED path too.
-#
-# A gate is a deployment decision in both directions -- every inventory comment
-# beside one says so -- and while a stack is dark the `state: absent` branch is
-# converged by every lane on every run without anybody asking for it. Turning the
-# switch on takes that proof away, because CI then requests what production runs
-# and nothing requests the other state. AdGuard hit it first and #569 closed it
-# with a lane step; #547 rebased onto that and reintroduced it for Vaultwarden,
-# which is what makes this a rule rather than a second copy of one service's fix.
-#
-# The cost of an unexercised way back is not hypothetical for this pair. The
-# switch is the documented emergency exit -- for a resolver answering a whole
-# household, and for a password manager whose door is open -- and
-# roles/vaultwarden/tasks/deploy.yml shipped with its config.json refusal ahead
-# of the tear-down, so the exit was blocked in precisely the state that motivates
-# using it. Nothing noticed, because nothing ran it.
-#
-# ONE FORM COUNTS: the step `run_play --tags <tag> -e <gate>=false` inside the
-# lane, which converges the disabled path against a stack that exists. It is read
-# out of the harness rather than listed here.
-#
-# A SECOND FORM USED TO COUNT and no longer may, which is the other half of #564.
-# `integration_<role>_deployment_enabled=false` at the top of the controller
-# withholds the gate from every lane but the service's own, and while a stack is
-# dark that really does converge the disabled branch on every run -- so it was
-# admitted here. What it ALSO does is keep the stack out of smoke and
-# idempotence-check, the two lanes that converge the platform as a whole, and
-# the controller's own comment said in prose that it therefore had to go the day
-# inventory turned the switch on. PROSE DOES NOT FAIL. `3a7f75af` turned
-# nextcloud's switch on on 2026-09-09, the narrowing stayed, and for three days
-# the broadest lanes converged a platform the NAS does not have -- passing, and
-# faster than they would otherwise. The check below is what would have refused
-# that commit, and it is why the step above is now the only admitted form.
-#
-# BOTH HALVES OF THE CONTROLLER ARE READ, not just the program. `run_play` itself
-# lives in tests/integration_controller_lib.sh, so that is where a narrowing
-# would most naturally be written next -- and one written there would escape a
-# scan of the program alone while working perfectly, which is this check's own
-# failure mode rather than a hypothetical.
+# Requirement 3: CI converges the DISABLED path too, via a lane step
+# `run_play --tags <tag> -e <gate>=false`; otherwise turning a gate on leaves the way back
+# untested (#569). A controller-wide narrowing no longer counts (#564). Both controller
+# files are read, since run_play lives in integration_controller_lib.sh.
 INTEGRATION_CONTROLLER = [File.join(ROOT, "tests", "integration_controller.sh"),
                           File.join(ROOT, "tests", "integration_controller_lib.sh")].freeze
 controller_source = INTEGRATION_CONTROLLER
@@ -717,31 +318,9 @@ subjects.each do |name|
         "present before and absent after, and converge it back on afterwards")
 end
 
-# THE NARROWING IS FORBIDDEN TO A GATE INVENTORY TURNS ON. #564's first half.
-#
-# THE SUBJECT LIST IS `gate_names`, NOT THE NARROWINGS FOUND, and that is what
-# keeps this from passing vacuously the way a scan would. The correct state of
-# this repository is that no narrowing exists at all, so a regex looking for one
-# has an empty result set on a clean tree and would go on reporting success after
-# it stopped matching anything. Looping the gates instead gives a non-empty
-# subject list -- every gate variable in the tree, floored at GATE_VARIABLE_FLOOR
-# above, so an emptied gate scan fails there rather than passing over nothing
-# here -- and asks a literal `include?` of each, which cannot rot: the string is
-# built from the gate's own name. An empty finding set below is the pass, not the
-# check being dead.
-#
-# ANY ASSIGNMENT, NOT `=false`, and that is the rule rather than a stricter
-# version of one. Whatever this variable is set to, both controller halves hand
-# it to ansible-playbook as `-e`, which outranks group_vars -- so an
-# `integration_<gate>=true` diverges CI from inventory exactly as `=false` does,
-# in the other direction, and it is precisely what the deleted line would have
-# become if #564 had been "fixed" by flipping it instead of deleting it. The
-# prefix is also what closes the spelling hole: `="false"` and `='false'` are the
-# same assignment to a shell and were invisible to a check that matched `=false`
-# literally, while direction 2 below exempts a KNOWN gate by construction, so the
-# quoted forms escaped both. `integration_<gate>=` is the one string every
-# spelling of every value begins with, and `foo = bar` is not a shell assignment
-# at all, so there is no whitespace form to allow for.
+# Narrowing is forbidden to any gate (#564). Looped over gate_names, not over narrowings
+# found, so a clean tree is a non-empty pass. Any assignment `integration_<gate>=` counts,
+# since -e outranks group_vars whichever value it sets.
 gate_names.each do |name|
   assignment = "integration_#{name}="
   next unless controller_source.include?(assignment)
@@ -758,12 +337,8 @@ gate_names.each do |name|
         "other lane, and leaves inventory the single source of which stacks exist")
 end
 
-# The other direction. A narrowing naming a variable no role and no inventory
-# declares is a switch the controller believes it is setting and nothing reads:
-# the lane converges the stack it meant to withhold, or withholds one that no
-# longer exists, and reports success either way. Scanned rather than looped,
-# because the whole point is to find a name the gate scan does not know -- so
-# this one CAN go quiet if the regex rots, and the loop above is what does not.
+# The other direction: a narrowing of an undeclared variable. Scanned, so it can go
+# quiet if the regex rots; the loop above cannot.
 narrowed_gates = controller_source
                  .scan(/\bintegration_([a-z][a-z0-9_]*#{GATE_SUFFIX})\s*=/)
                  .flatten.uniq

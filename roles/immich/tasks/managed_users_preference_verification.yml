@@ -1,11 +1,6 @@
 ---
-# The preference and avatar verdicts, over whichever reads the includer names:
-# immich_managed_user_preference_checks and immich_managed_user_avatar_checks.
-# tasks/managed_users.yml includes this after its reconcile read-backs, naming
-# those; in the verify phase roles/managed_users includes it immediately before
-# its exact verification (managed_users_before_verify_tasks), naming the reads
-# managed_users_effective_targets.yml registered, because verify repairs and
-# re-reads nothing.
+# Preference and avatar verdicts over the reads the includer names; verify
+# repairs and re-reads nothing.
 - name: Verify exact Immich managed user preferences
   ansible.builtin.assert:
     that:

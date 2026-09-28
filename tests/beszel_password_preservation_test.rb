@@ -193,12 +193,8 @@ def changed_count(output)
   output.scan(/changed=(\d+)/).flatten.last.to_i
 end
 
-# Read through static_role_tasks: the role is one stage per file and main.yml is
-# an index of static imports, so the superuser lifecycle this contract pins lives
-# in superuser.yml. Assembling the role the way Ansible does keeps the whole
-# lifecycle in one ordered list -- the ordering check below indexes into it -- and
-# keeps the self-test's own mutant fixture, a single flat file, readable the same
-# way.
+# Assembled via static_role_tasks: main.yml only imports stages, and the ordering
+# checks below index into the whole lifecycle as one list.
 tasks = PolicySupport.static_role_tasks(TASKS_PATH, aliases: false)
 failures = []
 
@@ -291,9 +287,7 @@ check(failures,
       "superuser preservation must require exact post-create authentication outside check mode")
 check(failures, !superuser_conditions.join(" ").match?(/std(out|err)/),
       "superuser create-result classification must not parse brittle command output")
-# The assertion itself renders nothing but its own condition source and a static
-# fail_msg, so redacting it would only hide which condition failed. The reads it
-# gates carry the redaction; see the no_log contracts checked above.
+# The assert renders no secret; no_log here would only hide which condition failed.
 check(failures, superuser_assert && !superuser_assert.key?("no_log"),
       "the superuser preservation assertion must stay readable on failure")
 check(failures, Array(superuser_assert&.fetch("tags", nil)).include?("platform_verify_beszel"),

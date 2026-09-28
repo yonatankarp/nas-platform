@@ -1,16 +1,6 @@
 ---
-# Nothing here is create-if-absent. POST /api/v1/settings/radarr and /sonarr
-# compute the new id from the last element and append unconditionally, with no
-# duplicate check and no connectivity test — measured, two identical posts
-# produced rows 0 and 1 and answered 201 both times. So each row is read,
-# matched on name, and either created once or repaired in place by id.
-#
-# Radarr and Sonarr are addressed by their Compose service alias on the shared
-# media-control network, which is why this whole file is gated on the host's
-# Usenet flag: on a host that runs neither arr, a declared server would name a
-# host that does not resolve and every request would be approved into nothing.
-#
-# Redacted: the request carries the API key.
+# POST /settings/radarr|sonarr appends unconditionally, so rows are matched on
+# name and created once or repaired by id. Redacted: carries the API key.
 - name: Read the declared Seerr Radarr servers
   ansible.builtin.uri:
     url: "{{ seerr_api }}/settings/radarr"

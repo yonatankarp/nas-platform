@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 """Every owned field must be visible in its relationship's projection.
 
-Drift is detected by comparing projections, so a field that the projection
-drops is a field whose drift is silently accepted. The reconciliation fixture
-proves this per field with a full Ansible round-trip, which costs seconds each
-and proves the same pure property every time: mutate one owned field and the
-projection must change. That property is checked here directly against the real
-filters, so the fixture only has to keep one round-trip per behavioural class.
+A field the projection drops is a field whose drift is silently accepted.
 """
 
 from __future__ import annotations
@@ -160,12 +155,8 @@ CASES = [
     ),
 ]
 
-# A hand-written mutation list goes stale the moment a relationship gains an
-# attribute, and it goes stale silently: the new attribute is simply never
-# mutated. Adding `appProfileId` and `redirect` to `_INDEXER` turned this file
-# red only because the canonical body then failed to project at all, and the
-# complaint named a coercer rather than the missing keys. Pin every attribute of
-# every spec to a mutation of the same name so the next added attribute says so.
+# Every attribute of every spec is pinned to a mutation of the same name, so a
+# newly added attribute cannot go unmutated silently.
 SPECS = {
     "Prowlarr application": plugin._APPLICATION,
     "Servarr download client": plugin._SERVARR_CLIENT,

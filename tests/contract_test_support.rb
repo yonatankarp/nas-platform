@@ -1,14 +1,7 @@
 # frozen_string_literal: true
 #
-# The scaffolding the tests/*_contract_test.rb files drive their wrappers and
-# their self-tests with. Until #835 each file carried its own copy of every
-# helper here, and copies drift: #352 found the judge in seven bodies, two of
-# them accepting a refusal for the wrong reason. One copy cannot drift from
-# itself.
-#
-# What stays in each test file is what genuinely differs per contract: which
-# programs sit beside its wrapper, how its fixture repository is built, and which
-# invocations its stdin rows probe.
+# Shared helpers the tests/*_contract_test.rb files drive their wrappers and
+# self-tests with (#835); per-file copies drifted (#352).
 
 require "fileutils"
 require "open3"
@@ -22,10 +15,8 @@ module ContractTestSupport
     exit 1
   PROBE
 
-  # Applies one mutation to a program's source and returns [planted, nil], or
-  # [nil, why] when the mutation cannot be planted exactly as written. A plant
-  # that matches a different number of times than it declares, or that changes
-  # nothing, would test some other program than the one its label names.
+  # Returns [planted, nil], or [nil, why] when the plant does not match exactly
+  # the declared number of times or changes nothing.
   def plant_or_error(source, mutation, occurrences: mutation.fetch(:occurrences, 1))
     from = mutation.fetch(:from)
     found = source.scan(from).length
@@ -40,16 +31,14 @@ module ContractTestSupport
     [planted, nil]
   end
 
-  # plant_or_error, aborting with its reason. An abort inside a pool worker kills
-  # the thread before it records a result, so call this on the main thread.
+  # Aborts; call on the main thread (an abort in a pool worker loses the result).
   def plant(source, mutation, occurrences: mutation.fetch(:occurrences, 1))
     planted, error = plant_or_error(source, mutation, occurrences: occurrences)
     abort "self-test #{error}" if error
     planted
   end
 
-  # The rows a mutation names, as [rows, nil], or [nil, why] when a name matches
-  # no row -- a misspelt name would otherwise select fewer rows and still pass.
+  # [rows, nil], or [nil, why] when a name matches no row (a typo would still pass).
   def rows_named_or_error(rows, names)
     selected = rows.select { |row| names.include?(row.fetch(:name)) }
     unless selected.length == names.length
@@ -67,10 +56,7 @@ module ContractTestSupport
     selected
   end
 
-  # Builds a sandbox repository with the calling file's own
-  # build_fixture_repository, writes the wrapper as tests/contracts/<service>.sh
-  # and each program as tests/contracts/<service>-<name>.rb beside it, and yields
-  # the wrapper's path and the sandbox root.
+  # Builds the sandbox and writes the wrapper and programs into tests/contracts/.
   def with_contract_sandbox(service, wrapper, programs)
     Dir.mktmpdir("nas-platform-#{service}-wrapper.") do |raw|
       root = File.realpath(raw)
@@ -89,13 +75,9 @@ module ContractTestSupport
     end
   end
 
-  # Runs `<contract> <args>; printf 'left:'; cat` with a payload on stdin, where
-  # the contract's program has been replaced by STDIN_PROBE, and returns what
-  # went wrong: the program was handed the payload, or the contract swallowed it
-  # before the shell's own `cat` could read it back. `status:` also requires the
-  # probing shell to succeed; that status is `cat`'s, so it says nothing about a
-  # run that ends in an exec'd probe. A block receives the combined output and
-  # returns any further failures.
+  # Runs the contract with STDIN_PROBE as its program and a payload on stdin;
+  # fails if the program got the payload or the contract swallowed it. `status:`
+  # checks the trailing `cat`, not the contract.
   def stdin_probe_failures(contract, args, env, prefix: "stdin", subject: "the program", status: true)
     command = "#{contract.shellescape} #{args.map(&:shellescape).join(' ')}; printf 'left:'; cat"
     stdout, stderr, result = Open3.capture3(env, "/bin/sh", "-c", command, stdin_data: "caller-payload\n")
@@ -110,10 +92,8 @@ module ContractTestSupport
     failures
   end
 
-  # For probes that keep the real program below them rather than replacing it:
-  # runs `<contract> <args>` with a payload on stdin and returns
-  # [stdout, stderr, status, survived], where status is the contract's own and
-  # survived says whether the payload was still there for the caller afterwards.
+  # Like stdin_probe_failures but keeps the real program; returns
+  # [stdout, stderr, status, payload_survived].
   def run_with_caller_stdin(env, contract, args)
     command = "#{contract.shellescape} #{args.map(&:shellescape).join(' ')}; " \
               "rc=$?; printf 'left:'; cat; exit $rc"

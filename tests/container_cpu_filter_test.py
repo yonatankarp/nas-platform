@@ -6,10 +6,8 @@ import pathlib
 
 from ansible.errors import AnsibleFilterError
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PLUGIN_PATH = ROOT / "filter_plugins" / "container_cpu.py"
-
 
 def load_plugin():
     spec = importlib.util.spec_from_file_location("container_cpu", PLUGIN_PATH)
@@ -19,14 +17,12 @@ def load_plugin():
     spec.loader.exec_module(module)
     return module
 
-
 def require_rejected(function, *arguments):
     try:
         function(*arguments)
     except AnsibleFilterError:
         return
     raise AssertionError(f"accepted invalid CPU policy: {arguments!r}")
-
 
 plugin = load_plugin()
 derive = plugin.platform_container_cpuset
@@ -82,11 +78,8 @@ assert errors == [
     "worker: effective CPU set is 0-3, expected 0-2",
 ]
 
-# Docker returns `"Labels": null` for an image declaring none, and `"HostConfig":
-# null` in some inspect shapes. `.get(key, {})` substitutes only for an absent
-# key, so each of these reached `None.get` and raised AttributeError — a raw
-# traceback out of a preflight task, where every other malformed input here is
-# refused by name (#648).
+# Docker returns `"Labels": null` (and sometimes a null HostConfig); `.get(k, {})`
+# does not cover null, so these must be refused by name, not crash (#648).
 for null_shape in [
     {"Config": {"Labels": None}, "HostConfig": {"CpusetCpus": "0-2", "NanoCpus": 3_000_000_000}},
     {"Config": None, "HostConfig": {"CpusetCpus": "0-2", "NanoCpus": 3_000_000_000}},

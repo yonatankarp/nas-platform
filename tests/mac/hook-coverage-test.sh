@@ -1,42 +1,6 @@
 #!/bin/sh
-# Regression proof for the collapsed Mac hook groups and the shared contract
-# runner.
-#
-# Four hook groups that used to be one file per service are now one table-driven
-# file each. The failure that collapse makes possible is silent: a service
-# dropped from a table stops being proved while the lane still reports success,
-# because mac_run_hooks only refuses a group with no hook files at all. The hooks
-# answer that with mac_assert_service_coverage, and this is what proves the
-# answer is live rather than decorative. Each group runs against a stub contract
-# runner, and the test requires that
-#
-#   - the group accounts for every service in tests/contracts/registry.yml plus
-#     the one Mac-only service the registry does not list,
-#   - the stub log names each service with the exact phase and, for the recreate
-#     group, the exact Compose bundle and container set the old per-service hooks
-#     used, so a table row cannot be quietly rewritten, and
-#   - a service added to the registry, a row removed from a table, a delegated
-#     hook file deleted, or the Mac-only service list emptied all make the group
-#     fail.
-#
-# The drift group is here for the mirror-image reason. It never collapsed — no
-# two services drift alike, so it is still one file per service — and that is
-# precisely how it lost five services from every roster in the repository: a
-# per-service group loses a service by losing a file, which mac_run_hooks cannot
-# see. Its accounting hook runs no contract and is credited from its siblings, so
-# what has to fail there is a hook deleted and a hook added outside the roster.
-#
-# The pre-converge group is the same accounting on a group of one. Its
-# membership rule is narrow — a service belongs there only when its converge
-# reads fixture state off disk — so its roster names Audiobookshelf and its
-# exemptions name the other fifteen. A group of one is already safe against a
-# deletion, since mac_run_hooks refuses an empty group; the cases here are the
-# two it was blind to, a hook added outside the roster and a service registered
-# without anyone deciding whether its converge needs a fixture placed first.
-#
-# The runner's own refusals are proved here too: an unknown service and a
-# missing or malformed phase must both stop the lane instead of dispatching
-# nothing and reporting success.
+# Proves the collapsed Mac hook groups, the drift and pre-converge rosters and the
+# shared contract runner account for every registered service and fail on drops.
 set -eu
 set +x
 umask 077
@@ -51,8 +15,7 @@ fail() {
   exit 1
 }
 
-# A fresh copy of the harness under $1, so each mutation starts from the real
-# files rather than from a previous case's leftovers.
+# A fresh copy of the harness under $1 for each mutation.
 build_tree() {
   tree=$1
   mkdir -p "$tree/tests/contracts" "$tree/tests/mac/hooks/fixtures-seed" \
@@ -66,11 +29,7 @@ build_tree() {
   done
   cp "$repo_dir/tests/mac/hooks/verify/30-services.sh" "$tree/tests/mac/hooks/verify/"
 
-  # The drift group never collapsed, so its accounting hook runs no service and
-  # is credited entirely from its sibling filenames. Those siblings are stubbed
-  # from the real directory rather than from a second literal roster here: the
-  # roster under test is the one inside 00-coverage.sh, and a copy of it in this
-  # file would be one more thing to drift.
+  # Drift siblings are stubbed from the real directory; the roster under test is 00-coverage.sh's.
   cp "$repo_dir/tests/mac/hooks/drift/00-coverage.sh" "$tree/tests/mac/hooks/drift/"
   chmod 0755 "$tree/tests/mac/hooks/drift/00-coverage.sh"
   for drift_hook in "$repo_dir"/tests/mac/hooks/drift/*.sh; do
@@ -80,8 +39,7 @@ build_tree() {
     chmod 0755 "$tree/tests/mac/hooks/drift/$drift_basename"
   done
 
-  # Pre-converge is the same shape one size smaller, and stubbed the same way,
-  # from the real directory rather than from a literal roster here.
+  # Pre-converge is stubbed the same way.
   cp "$repo_dir/tests/mac/hooks/pre-converge/00-coverage.sh" \
     "$tree/tests/mac/hooks/pre-converge/"
   chmod 0755 "$tree/tests/mac/hooks/pre-converge/00-coverage.sh"
@@ -93,16 +51,14 @@ build_tree() {
     chmod 0755 "$tree/tests/mac/hooks/pre-converge/$preconverge_basename"
   done
 
-  # The runner is stubbed: this test is about which services and phases the hooks
-  # dispatch, not about what the contracts then do.
+  # The runner is stubbed: this test is about dispatch, not contract behaviour.
   cat > "$tree/tests/mac/run-contract.sh" <<'STUB'
 #!/bin/sh
 set -eu
 printf '%s %s\n' "$1" "$2" >> "${HOOK_LOG:?}"
 STUB
 
-  # Hook files the collapsed groups delegate to. Only their names carry meaning
-  # for coverage.
+  # Hook files the collapsed groups delegate to; only their names matter.
   cat > "$tree/tests/mac/hooks/verify/15-media-acquisition-foundation.sh" <<'STUB'
 #!/bin/sh
 exit 0
@@ -148,10 +104,7 @@ STUB
     "$tree/tests/mac/hooks/fixtures-persistence/80-paperless.sh"
 }
 
-# A runnable copy of the real verify wrapper. Its infrastructure hooks and
-# Ansible are stubbed because this test is about dispatch and coverage, not
-# service behaviour, but verify.sh itself and the coverage-bearing services hook
-# are the repository versions.
+# A runnable copy of the real verify wrapper, with infrastructure hooks and Ansible stubbed.
 build_verify_tree() {
   tree=$1
   build_tree "$tree"
@@ -214,8 +167,7 @@ expect_log() {
 tree=$fixture/accepted
 build_tree "$tree"
 
-# Every group must account for every registered contract plus vaultwarden, which
-# has no contract of its own and so is never in the registry.
+# Every group accounts for every registered contract plus the Mac-only services.
 summary=$(run_group "$tree" fixtures-seed 00-services.sh)
 expect_summary "$summary" \
   'mac fixtures-seed hooks: covered 17 of 17 registered services (ran 7, delegated 0, exempt 10)'
@@ -274,8 +226,6 @@ bindery run
 trailarr run
 seerr run
 nextcloud run' 'fixtures-recreate'
-# The recreate table also carries the deployed bundle directory and the Compose
-# container set, which no other assertion here would notice going wrong.
 # Paperless is the one service whose bundle directory is not its Mac alias.
 expect_log "$(cat "$tree/log/docker")" 'proof-beszel |runtime/services/beszel/.env |current/services/beszel/compose.yml |hub agent-portable socket-proxy
 proof-dozzle |runtime/services/dozzle/.env |current/services/dozzle/compose.yml |alert-relay dozzle socket-proxy
@@ -292,30 +242,19 @@ proof-seerr |runtime/services/seerr/.env |current/services/seerr/compose.yml |se
 proof-nextcloud |runtime/services/nextcloud/.env |current/services/nextcloud/compose.yml |nextcloud cron db cache' \
   'fixtures-recreate compose'
 
-# Drift is the group that never collapsed: one file per service, because no two
-# services drift alike. That is exactly why it needs this — a per-service group
-# loses a service by losing a file, and mac_run_hooks cannot tell thirteen hooks
-# from eight. Its accounting hook runs no contract of its own and is credited
-# entirely from the sibling filenames its roster pins.
+# Drift never collapsed; its accounting hook is credited from sibling filenames.
 summary=$(run_group "$tree" drift 00-coverage.sh)
 expect_summary "$summary" \
   'mac drift hooks: covered 17 of 17 registered services (ran 0, delegated 13, exempt 4)'
 expect_log "$(cat "$tree/log/hooks")" '' 'drift'
 
-# Pre-converge is the sixth group and the smallest: one hook, because a service
-# belongs there only when its converge reads fixture state off disk, which is
-# Audiobookshelf and nothing else. Sixteen exemptions against one delegation is
-# the honest shape of that rather than a coverage gap, and the exemptions are
-# what a newly registered service has to answer to -- the question mac_hook_count
-# could not ask.
+# Pre-converge holds only Audiobookshelf; every other service is exempt.
 summary=$(run_group "$tree" pre-converge 00-coverage.sh)
 expect_summary "$summary" \
   'mac pre-converge hooks: covered 17 of 17 registered services (ran 0, delegated 1, exempt 16)'
 expect_log "$(cat "$tree/log/hooks")" '' 'pre-converge'
 
-# A drift hook deleted must fail the group. This is the regression the group had
-# no defence against: the five acquisition services were promoted with a drift
-# hook each and named nowhere, so any of them could have been dropped in silence.
+# A drift hook deleted must fail the group.
 tree=$fixture/dropped-drift-hook
 build_tree "$tree"
 unlink "$tree/tests/mac/hooks/drift/58-seerr.sh"
@@ -323,8 +262,7 @@ if run_group "$tree" drift 00-coverage.sh >/dev/null 2>&1; then
   fail 'drift accepted a deleted service hook'
 fi
 
-# And a drift hook added outside the roster must fail it too, so promoting a
-# service cannot leave the roster behind.
+# A drift hook added outside the roster must fail too.
 tree=$fixture/extra-drift-hook
 build_tree "$tree"
 printf '%s\n' '#!/bin/sh' 'exit 0' > "$tree/tests/mac/hooks/drift/90-newcomer.sh"
@@ -333,9 +271,6 @@ if run_group "$tree" drift 00-coverage.sh >/dev/null 2>&1; then
   fail 'drift accepted a service hook outside its exact roster'
 fi
 
-# A group of one is already safe against deletion -- mac_run_hooks refuses an
-# empty group -- but only the roster says so in the words of this group rather
-# than as an accident of it having exactly one file left.
 tree=$fixture/dropped-preconverge-hook
 build_tree "$tree"
 unlink "$tree/tests/mac/hooks/pre-converge/30-audiobookshelf.sh"
@@ -343,8 +278,7 @@ if run_group "$tree" pre-converge 00-coverage.sh >/dev/null 2>&1; then
   fail 'pre-converge accepted a deleted service hook'
 fi
 
-# The direction mac_hook_count could never see: a hook added outside the roster
-# runs before every Mac converge with nothing anywhere naming it.
+# A hook added outside the roster must fail pre-converge.
 tree=$fixture/extra-preconverge-hook
 build_tree "$tree"
 printf '%s\n' '#!/bin/sh' 'exit 0' > "$tree/tests/mac/hooks/pre-converge/90-newcomer.sh"
@@ -353,9 +287,7 @@ if run_group "$tree" pre-converge 00-coverage.sh >/dev/null 2>&1; then
   fail 'pre-converge accepted a service hook outside its exact roster'
 fi
 
-# The lifecycle calls verify.sh, not the collapsed hook directly. Keep that
-# wrapper on the same coverage-asserting path so its explicit infrastructure
-# hooks cannot accidentally replace registry-backed service accounting.
+# The lifecycle calls verify.sh, so the wrapper must stay on the coverage-asserting path.
 tree=$fixture/verify-wrapper
 build_verify_tree "$tree"
 summary=$(run_verify_wrapper "$tree")
@@ -413,9 +345,7 @@ if run_verify_wrapper "$tree" >/dev/null 2>&1; then
   fail 'verify wrapper accepted a missing media acquisition foundation hook'
 fi
 
-# A service registered after a table was written must fail every group rather
-# than be silently skipped, which is the whole point of asserting against the
-# registry instead of against the table.
+# A service registered after a table was written must fail every group.
 tree=$fixture/registered-surplus
 build_tree "$tree"
 printf '%s\n' '  - service: newcomer' '    path: tests/contracts/newcomer.sh' >> \
@@ -440,11 +370,7 @@ if run_group "$tree" fixtures-seed 00-services.sh >/dev/null 2>&1; then
   fail 'fixtures-seed accepted a table with a service removed'
 fi
 
-# The recreate table is a list of calls rather than a loop, so the seed plant
-# above says nothing about it. Dropping one of its rows must fail the group too.
-# Dozzle is the row planted because, like Beszel, the seed and persistence
-# groups reach it through verify rather than through a phase of its own, so the
-# recreate row is the one place its recreated containers are reasserted.
+# The recreate table is a list of calls rather than a loop, so plant a row drop there too.
 tree=$fixture/dropped-recreate-row
 build_tree "$tree"
 ruby -e 'path = ARGV.fetch(0)
@@ -457,8 +383,7 @@ if run_group "$tree" fixtures-recreate 00-services.sh >/dev/null 2>&1; then
   fail 'fixtures-recreate accepted a table with dozzle removed'
 fi
 
-# Delegation is credited from the sibling hook filenames, so deleting the file a
-# group delegates to must fail the group rather than leave the service unproved.
+# Delegation is credited from sibling filenames, so deleting the delegate must fail.
 tree=$fixture/dropped-delegate
 build_tree "$tree"
 unlink "$tree/tests/mac/hooks/fixtures-persistence/80-paperless.sh"
@@ -466,9 +391,7 @@ if run_group "$tree" fixtures-persistence 00-services.sh >/dev/null 2>&1; then
   fail 'fixtures-persistence accepted a missing delegated hook'
 fi
 
-# The exemptions are held to the same standard: with the Mac-only service no
-# longer named, the exemptions that name it are stale and must fail. This is
-# also what keeps a one-member list able to fail.
+# With the Mac-only service list emptied, the exemptions naming it are stale.
 tree=$fixture/stale-exemption
 build_tree "$tree"
 ruby -e 'path = ARGV.fetch(0)
@@ -480,8 +403,7 @@ if run_group "$tree" fixtures-seed 00-services.sh >/dev/null 2>&1; then
   fail 'fixtures-seed accepted a stale exemption'
 fi
 
-# The runner's own refusals. These stop before any environment is read, so they
-# need no sandbox.
+# The runner's own refusals stop before any environment is read.
 runner=$repo_dir/tests/mac/run-contract.sh
 for lifecycle_hook in \
     tests/mac/hooks/drift/15-media-acquisition-foundation.sh \

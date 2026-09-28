@@ -1,45 +1,11 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#
-# Behaviour of the Jellyfin service contract's two Ruby programs.
-#
-# Until #147 both lived in `<<'RUBY'` heredocs inside
-# tests/contracts/jellyfin.sh -- 1,276 of that file's 1,353 lines. `sh -n` reads
-# a quoted heredoc as opaque text, so nothing but an integration lane with
-# Docker, a converged Jellyfin and a real vault ever executed either one.
-# tests/contracts/jellyfin-static.rb and tests/contracts/jellyfin-runtime.rb are
-# files now, so both are reachable here.
-#
-# Four layers, because the contract has four kinds of property:
-#
-#   Static -- build a fixture repository out of the files the contract reads,
-#   break exactly one thing in it, and require the program to name that thing.
-#   The assertion text is the interface: a guard that fails for the wrong reason
-#   has stopped guarding what it names, so every row pins the exact diagnostic.
-#   This layer also covers the platform axis, which is jellyfin's own: the same
-#   program judges three different capability contracts depending on ARGV[1].
-#
-#   Runtime -- the one mode that reaches the runtime half's own code without a
-#   vault, a container or a network. `seed-fixture-only` runs seed_fixture and
-#   exits before the vault read, so the video fixture's own refusals move one at
-#   a time here. Everything past that read needs a served Jellyfin interface;
-#   tests/jellyfin_transcode_contract_test.rb already drives the transcode and
-#   renamed-library proofs in process by loading this same file.
-#
-#   Wrapper -- tests/contracts/jellyfin.sh is what turns a mode into two
-#   invocations. Its rows prove both programs are reached, that each is resolved
-#   from the script's own checkout while the tree to inspect is passed in, and
-#   that neither can consume the caller's stdin.
-#
-#   Self-read -- the static half reads the RUNTIME half's source for six
-#   sentinels it cannot observe statically. Those six were partly vacuous while
-#   both halves shared one file, because three of them quote their own subject
-#   verbatim and so matched the assertion's own text; they are load-bearing for
-#   the first time now. A row per sentinel, plus rows that the source is read out
-#   of the INSPECTED tree and not out of the checkout.
-#
-# Run with --self-test to plant a regression in each program and prove the rows
-# above detect it.
+
+# Behaviour of the Jellyfin contract's two programs (jellyfin-static.rb and
+# jellyfin-runtime.rb) and their wrapper, in four layers: static rows pinning
+# exact diagnostics per platform, the Docker-free seed-fixture-only runtime mode,
+# wrapper rows, and self-read rows for the runtime sentinels the static half
+# reads from source. --self-test plants regressions and proves the rows detect them.
 
 require "digest"
 require "fileutils"
@@ -58,17 +24,11 @@ CONTRACT = File.join(ROOT, "tests", "contracts", "jellyfin.sh")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "jellyfin-static.rb")
 RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "jellyfin-runtime.rb")
 
-# The `-ryaml -rdigest` preloads tests/contracts/jellyfin.sh carries, because
-# the static program requires neither itself. Every invocation of it here must
-# carry both or every row fails identically on an uninitialized constant, which
-# would read as the extraction having broken everything. Jellyfin is the first
-# contract in this series to need two.
+# The static program needs yaml and digest preloaded, as the wrapper does.
 STATIC_COMMAND = [RbConfig.ruby, "-ryaml", "-rdigest"].freeze
 
-# Exactly what the two halves read out of the tree they inspect. A fixture
-# holding only these is the proof that the list is the list they actually need --
-# tests/contracts/jellyfin-runtime.rb included, because the static half reads the
-# runtime half's source out of the inspected tree for its six runtime sentinels.
+# Exactly what the two halves read out of the inspected tree, the runtime source
+# included (the static half's sentinels read it).
 FIXTURE_FILES = %w[
   roles/jellyfin/tasks/main.yml
   roles/jellyfin/tasks/authentication.yml
@@ -94,14 +54,8 @@ FIXTURE_FILES = %w[
   tests/contracts/jellyfin-runtime.rb
 ].freeze
 
-# Deliberately absent from that list: tests/contracts/jellyfin.sh and
-# tests/contracts/jellyfin-static.rb. Neither program reads them out of the
-# inspected tree, and a fixture that carried them would shadow the defect #251
-# shipped -- a sibling resolved from $repo_dir finds a copy there and nothing
-# looks wrong. jellyfin-runtime.rb is present because the static half really does
-# read it from the tree it is inspecting; the direction absence cannot decide is
-# covered instead by planting a different program at that path.
-
+# Deliberately absent: jellyfin.sh and jellyfin-static.rb. Carrying them would
+# shadow #251 (a sibling resolved from $repo_dir).
 
 def build_fixture_repository(root)
   FIXTURE_FILES.each do |relative|
@@ -119,10 +73,7 @@ def edit_yaml(root, relative, aliases: true)
   File.write(path, YAML.dump(document))
 end
 
-# Every text substitution asserts its own match count. A `sub` that silently
-# matched nothing plants no defect and reports a pass that proves nothing, which
-# is the hazard #263 recorded and tests/policy_mutation_support.rb's mutate_text
-# now guards against. Rows here carry the same rule.
+# Every substitution asserts its match count, so a no-op plant cannot pass (#263).
 def edit_text(root, relative, from, to, expected: 1)
   path = File.join(root, relative)
   source = File.read(path)
@@ -139,10 +90,7 @@ end
 
 ROLE_STAGES = FIXTURE_FILES.grep(%r{\Aroles/jellyfin/tasks/}).freeze
 
-# Finds one task by name anywhere in the role -- any stage file, and through the
-# block/rescue/always sections a task list nests into -- and hands it to the
-# caller to edit in place. Locating the task rather than naming its file keeps a
-# row honest when a stage is split again, which #157 is still doing.
+# Finds a task by name anywhere in the role, so rows survive stage splits.
 def edit_role_task(root, name)
   ROLE_STAGES.each do |relative|
     path = File.join(root, relative)
@@ -177,15 +125,8 @@ def rename_role_task(root, name, replacement)
 end
 
 # --- static layer ----------------------------------------------------------
-#
-# One row per assertion family rather than one per abort site: the program has
-# 58 refuse() calls, and a family shares its read, its parse and its shape, so
-# covering each site individually would put this file on the policy gate's
-# critical path for no additional signal.
-#
-# `platform` defaults to nas. The mac and integration rows exist because the
-# override branch is the only part of the program that differs by platform, and
-# `nas` never enters it at all.
+# One row per assertion family, not per refuse() site. The mac and integration
+# rows exist because only the override branch differs by platform.
 
 STATIC_ROWS = [
   { name: "an intact repository", break: ->(_root) {}, expects: nil },
@@ -265,8 +206,7 @@ STATIC_ROWS = [
     expects: "NAS stop grace period differs"
   },
   {
-    # A scalar rather than an argv array: Compose accepts it, and the contract's
-    # point is that the check has to be a real command list.
+    # A scalar: Compose accepts it, but the check must be a real command list.
     name: "the health check reduced to a scalar",
     break: ->(root) { compose_service(root) { |spec| spec.fetch("healthcheck")["test"] = "CMD true" } },
     expects: "health check is absent"
@@ -287,10 +227,8 @@ STATIC_ROWS = [
     expects: "services/jellyfin/compose.mac.yml is absent"
   },
   {
-    # Compose appends sequences, so an untagged empty list silently keeps the NAS
-    # device. The !override tag is the only thing that actually replaces it, and
-    # this row is why the assertion reads the override's TEXT and not just its
-    # parse.
+    # Compose appends sequences, so only the !override tag replaces the device;
+    # hence the assertion reads the override's TEXT.
     name: "the mac override resetting devices without an explicit tag",
     platform: "mac",
     break: lambda { |root|
@@ -299,10 +237,7 @@ STATIC_ROWS = [
     expects: "mac override must reset devices with an explicit tag"
   },
   {
-    # Every mac-override row edits the file as TEXT rather than through
-    # edit_yaml. Re-dumping the document drops the !override tags, which makes
-    # the explicit-tag assertion fire first and every one of these rows report
-    # the wrong sentence -- a fixture artefact rather than the property.
+    # Mac-override rows edit TEXT: re-dumping YAML drops the !override tags.
     name: "the mac override resetting devices to something non-empty",
     platform: "mac",
     break: lambda { |root|
@@ -328,13 +263,10 @@ STATIC_ROWS = [
                 "    devices: !override []\n", "    image: jellyfin:local\n    devices: !override []\n")
     },
     # `image` is outside the allowance too, so the surplus refusal comes first.
-    # The row pins which sentence the program actually reaches rather than which
-    # one reads best.
     expects: "mac override may not redefine image"
   },
   {
-    # Only the mac override republishes a port -- the integration sandbox keeps
-    # the production one -- so this branch is reachable on mac alone.
+    # Only the mac override republishes a port.
     name: "the mac override republishing ports without an explicit tag",
     platform: "mac",
     break: lambda { |root|
@@ -379,10 +311,7 @@ STATIC_ROWS = [
     expects: "managed libraries differ"
   },
   {
-    # Collections is Jellyfin's own automatic library. Declaring it makes the
-    # platform fight the application for ownership, and the assertion that
-    # refuses it is separate from the exact-list one so it survives a
-    # deliberately widened list.
+    # Collections is Jellyfin's own automatic library; declaring it fights the app.
     name: "Collections declared as a managed library",
     break: lambda { |root|
       edit_yaml(root, "roles/jellyfin/defaults/main.yml", aliases: false) do |document|
@@ -390,9 +319,7 @@ STATIC_ROWS = [
           { "name" => "Collections", "collection_type" => "boxsets", "path" => "/media/Collections" }
       end
     },
-    # The exact-list assertion fires first; the row pins that, and the dedicated
-    # Collections refusal is covered by a self-test mutation that removes the
-    # exact-list check and requires the Collections sentence to appear.
+    # The exact-list assertion fires first; a self-test covers the dedicated refusal.
     expects: "managed libraries differ"
   },
   {
@@ -405,9 +332,7 @@ STATIC_ROWS = [
     expects: "managed library must not write metadata into read-only media"
   },
   {
-    # A task name that survives only inside a comment is not a task. The
-    # assertion reads parsed structure rather than source text precisely so this
-    # row fails.
+    # A task name surviving only inside a comment is not a task.
     name: "a required task surviving only as a comment",
     break: lambda { |root|
       rename_role_task(root, "Verify exact Jellyfin owned state",
@@ -416,12 +341,7 @@ STATIC_ROWS = [
     expects: "missing Verify exact Jellyfin owned state"
   },
   {
-    # A preflight read MOVED to after the mutations rather than renamed. Renaming
-    # it would be caught by the required-task sweep instead, which is a different
-    # assertion; relocating it keeps every required name present so the ordering
-    # check is the only thing that can refuse. preflight.yml is imported before
-    # identity.yml, so appending to identity.yml puts the read after every
-    # mutation task in the concatenation the contract builds.
+    # Moved, not renamed, so only the ordering check can refuse it.
     name: "an identity preflight read moved after the mutations",
     break: lambda { |root|
       moved = nil
@@ -471,9 +391,7 @@ STATIC_ROWS = [
     expects: "recovery marker privacy is not checked before reading"
   },
   {
-    # Merging onto an empty dictionary rather than onto the configuration the
-    # role read back. The merge is still there, so only the read clause can
-    # refuse this -- which is what gives that clause its own row.
+    # The merge remains, so only the read clause can refuse this.
     name: "a server configuration overwrite that reads nothing first",
     break: lambda { |root|
       edit_role_task(root, "Update the Jellyfin server name") do |task|
@@ -484,11 +402,8 @@ STATIC_ROWS = [
     expects: "server configuration update does not preserve unrelated fields"
   },
   {
-    # The other half of the same assertion, and the one that needs its own row:
-    # the read is still there and only the merge is gone, so a POST would
-    # replace the whole server configuration with one key. Without this row the
-    # `combine` clause could be deleted and the row above would still refuse,
-    # from the read clause, proving nothing.
+    # The read remains and only the merge is gone: a POST would replace the whole
+    # configuration with one key.
     name: "a server configuration overwrite whose merge is gone",
     break: lambda { |root|
       edit_role_task(root, "Update the Jellyfin server name") do |task|
@@ -569,13 +484,11 @@ STATIC_ROWS = [
     expects: "Open Subtitles configuration API GUID differs"
   },
   {
-    # A source-text count on purpose: no_log is a per-task directive with no
-    # runtime observable in a static contract.
+    # A source-text count: no_log has no observable in a static contract.
     name: "the Open Subtitles secret redaction floor lowered",
     break: lambda { |root|
-      # The floor is five and settings.yml carries 39, so every one of them has
-      # to go for the count to drop below it. The expected count is stated so a
-      # drifted fixture is a broken row rather than a silent no-op.
+      # Floor five, file carries 39: every one must go. The count is stated so a
+      # drifted fixture breaks the row rather than no-ops.
       edit_text(root, "roles/jellyfin/tasks/settings.yml",
                 "no_log: true\n", "no_log: false\n", expected: 39)
     },
@@ -590,9 +503,8 @@ STATIC_ROWS = [
     },
     expects: "role must not edit an opaque database"
   },
-  # Where the QSV proof runs, and that it can fail (#535). The first row
-  # reconstructs the pre-fix tree: the probe was included from deploy.yml, which
-  # is the convergence path, and jellyfin precedes four stacks in site.yml.
+  # Where the QSV proof runs, and that it can fail (#535). The first row rebuilds
+  # the pre-fix tree, where deploy.yml included the probe.
   {
     name: "the QSV proof restored to the convergence path",
     break: lambda { |root|
@@ -613,8 +525,7 @@ STATIC_ROWS = [
     expects: "QSV proof is not included exactly once from verification"
   },
   {
-    # `never` alone does not hold: a never task runs as soon as any tag it
-    # carries is requested, and site.yml gives the role a jellyfin tag.
+    # `never` alone runs when any carried tag (the role's jellyfin tag) is requested.
     name: "the QSV proof's converge tag gate dropped",
     break: lambda { |root|
       edit_text(root, "roles/jellyfin/tasks/verify.yml",
@@ -641,9 +552,7 @@ STATIC_ROWS = [
     expects: "QSV proof tolerates a nonzero exit"
   },
   {
-    # The half a reader would call a typo: failed_when replaces the module's own
-    # verdict, so a module that refused before running anything registers no rc,
-    # and default(0) reports that refusal as a passing probe.
+    # default(0) would read a module refusal (no rc) as a passing probe.
     name: "the QSV proof defaulting an absent exit code to success",
     break: lambda { |root|
       edit_text(root, "roles/jellyfin/tasks/qsv_probe.yml",
@@ -654,9 +563,7 @@ STATIC_ROWS = [
   }
 ].freeze
 
-# The static half's own refusal for an unreadable inspected tree: it requires
-# tests/policy_support.rb out of PLATFORM_CONTRACT_REPO_DIR, which is the
-# inspected tree and not the checkout.
+# Requires tests/policy_support.rb from the inspected tree, not the checkout.
 def run_static(program, root, platform, contract_repo_dir: root)
   Open3.capture3(
     { "PLATFORM_CONTRACT_REPO_DIR" => contract_repo_dir },
@@ -691,23 +598,9 @@ def static_failures(program = STATIC_PROGRAM, rows = STATIC_ROWS)
 end
 
 # --- self-read layer -------------------------------------------------------
-#
-# The six sentinels the static half reads out of the runtime half's SOURCE,
-# because a static contract cannot observe them any other way. Each row plants
-# the defect in the inspected tree's copy of jellyfin-runtime.rb and requires the
-# refusal.
-#
-# Three of these (marked `was_vacuous`) could not fail before #147: the static
-# half quotes its subject verbatim, and while both halves shared one file the
-# assertion's own text satisfied its own `include?`. Measured, not reasoned
-# about -- the capture harness recorded them passing against a planted defect.
-#
-# One of the six is STILL vacuous and this extraction does not change that:
-# `assert_acceleration_and_plugins(token, opensubtitles_username,
-# opensubtitles_password)` is also the def's own signature, so the include? holds
-# whether or not the seed path calls it. That is a pre-existing weakness in the
-# contract's own assertion, recorded here rather than silently fixed, and the row
-# below asserts the weakness so a later reader finds it stated.
+# The sentinels the static half reads from the runtime SOURCE; each row plants
+# the defect in the inspected tree's copy. `was_vacuous` rows could not fail
+# before #147, when both halves shared one file.
 SELF_READ_ROWS = [
   {
     name: "the fixture query dropping its runtime field",
@@ -743,22 +636,9 @@ SELF_READ_ROWS = [
   }
 ].freeze
 
-# The sixth sentinel has no row, deliberately.
-#
-# `refuse("seed does not verify that owned plugin and encoding policy survived")
-# unless contract.include?("assert_acceleration_and_plugins(token,
-# opensubtitles_username, opensubtitles_password)")` is satisfied by
-# jellyfin-runtime.rb:788 -- the def's own signature -- as well as by the seed
-# path's call at :1317. Deleting the call leaves the signature, so the assertion
-# holds either way and this extraction does not change that: it was vacuous
-# before the cut for the same reason it is vacuous after it, which is why no
-# declared difference covers it.
-#
-# It is recorded here rather than asserted. A row expecting success against the
-# planted defect would pin the weakness in place: anchoring the literal to a
-# call site (`/^  assert_acceleration_and_plugins\(/`) is the fix, and that fix
-# would then read as a regression. Fixing it is a repair rather than a move, so
-# it belongs to its own change and not to #147.
+# The sixth sentinel has no row, deliberately: its literal also matches the def's
+# own signature, so it is vacuous. Anchoring it to a call site is the fix, and
+# belongs to its own change.
 
 def self_read_failures(program = STATIC_PROGRAM, rows = SELF_READ_ROWS)
   in_parallel_case_results(rows) do |row|
@@ -782,18 +662,14 @@ def self_read_failures(program = STATIC_PROGRAM, rows = SELF_READ_ROWS)
   end
 end
 
-# The other half of the same property: the source is read out of the INSPECTED
-# tree, not out of the checkout the program was loaded from. Breaking the
-# checkout's own copy while pointing at a whole tree must change nothing, and
-# breaking the inspected tree's copy must refuse -- which is what says which file
-# was read.
+# The source is read from the INSPECTED tree: breaking the checkout's copy must
+# change nothing, breaking the inspected copy must refuse.
 def self_read_root_failures(program = STATIC_PROGRAM)
   failures = []
   Dir.mktmpdir("nas-platform-jellyfin-selfroot.") do |raw|
     root = File.realpath(raw)
     build_fixture_repository(root)
-    # A sentinel the checkout's copy does not have. If the program read the
-    # checkout it could never see it, so the refusal is proof of which tree won.
+    # A sentinel only the inspected copy has; refusal proves which tree was read.
     edit_text(root, "tests/contracts/jellyfin-runtime.rb",
               "fields=Path,MediaSources,RunTimeTicks", "fields=Path")
     _stdout, stderr, status = run_static(program, root, "nas")
@@ -807,14 +683,10 @@ def self_read_root_failures(program = STATIC_PROGRAM)
 end
 
 # --- runtime layer ---------------------------------------------------------
-#
-# seed-fixture-only is the whole Docker-free surface: it runs seed_fixture and
-# exits before the vault read at jellyfin-runtime.rb:1103. The video fixture's
-# own refusals are the interface, and they are what tests/integration.sh:1209
-# depends on before a container exists.
+# seed-fixture-only runs seed_fixture and exits before the vault read; the
+# fixture's refusals are what tests/integration.sh depends on.
 
-# PLATFORM_MEDIA_ROOT/Media is what jellyfin-runtime.rb:109 derives when
-# PLATFORM_JELLYFIN_MEDIA_ROOT is unset, which is every deployment.
+# What the runtime derives when PLATFORM_JELLYFIN_MEDIA_ROOT is unset.
 FIXTURE_RELATIVE = "Media/Movies/Task 11 Contract Movie (2026)/Task 11 Contract Movie (2026).mp4"
 
 def runtime_environment(media, docker, report)
@@ -850,13 +722,8 @@ RUNTIME_ROWS = [
       path = File.join(media, FIXTURE_RELATIVE)
       next "the fixture was not written" unless File.file?(path)
 
-      # Jellyfin reads the fixture as the container user, so seed_fixture opens
-      # it 0o644. What lands on disk is 0o644 masked by the process umask, and
-      # the umask belongs to the ENVIRONMENT rather than to the contract -- the
-      # same mistake as pinning a shell's wording. Deriving the expectation is
-      # what keeps this row about the mode the program asked for. Under an
-      # unusually tight umask (0o077) the mutation to 0o600 becomes invisible;
-      # the self-test then aborts with "was accepted", which is loud.
+      # 0o644 masked by the process umask, which belongs to the environment; under
+      # umask 0o077 the self-test aborts loudly with "was accepted".
       expected = 0o644 & ~File.umask
       actual = File.stat(path).mode & 0o777
       next format("the fixture was written with mode 0o%o, not the 0o%o that 0o644 masks to",
@@ -868,8 +735,7 @@ RUNTIME_ROWS = [
   {
     name: "an identical fixture is accepted unchanged",
     prepare: lambda { |media|
-      # Seeded by a first run, so the bytes are the program's own rather than
-      # this file's copy of them -- which would drift.
+      # Seeded by a first run, so the bytes are the program's own.
       nil
     },
     seed_first: true,
@@ -928,9 +794,8 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
   end
 end
 
-# The runtime half's argv and environment ABI, which the wrapper is the only
-# caller of. A missing PLATFORM_* variable must be a named KeyError rather than a
-# silent default, and the mode must come off ARGV[0].
+# The runtime argv/env ABI: a missing PLATFORM_* is a named KeyError, and the
+# mode comes off ARGV[0].
 def runtime_abi_failures(program = RUNTIME_PROGRAM)
   failures = []
   with_runtime_sandbox do |_root, environment, _media|
@@ -953,12 +818,8 @@ def runtime_abi_failures(program = RUNTIME_PROGRAM)
 end
 
 # --- wrapper layer ---------------------------------------------------------
-#
-# tests/contracts/jellyfin.sh resolves both programs from its own checkout
-# rather than from the tree it is inspecting, so a copy of the three files into a
-# throwaway tests/contracts/ is a whole working contract. That is what lets a row
-# point PLATFORM_CONTRACT_REPO_DIR at a broken fixture and still exercise the
-# real wrapper.
+# The wrapper resolves both programs from its own checkout, so a copy of the
+# three files into a throwaway tests/contracts/ is a whole working contract.
 
 def with_contract_copy(static: File.read(STATIC_PROGRAM), runtime: File.read(RUNTIME_PROGRAM),
                        wrapper: File.read(CONTRACT), &block)
@@ -982,8 +843,7 @@ def wrapper_static_mode_failures(contract, failures)
   failures << "wrapper: static mode did not report the property it proved" unless
     stdout.include?("Jellyfin static contract passed (nas)")
 
-  # The platform argument has to reach the static program, because that
-  # program judges a different capability contract for each value.
+  # The platform argument must reach the static program.
   %w[mac integration].each do |platform|
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, "--platform", platform, "static"
@@ -993,8 +853,7 @@ def wrapper_static_mode_failures(contract, failures)
     failures << "wrapper: --platform #{platform} did not reach the static program" unless
       stdout.include?("Jellyfin static contract passed (#{platform})")
   end
-  # ... and PLATFORM_KIND is the same argument off the environment, which is
-  # how the integration lane passes it.
+  # PLATFORM_KIND is the same argument off the environment (the integration lane).
   stdout, _stderr, _status = Open3.capture3(
     { "PLATFORM_CONTRACT_REPO_DIR" => ROOT, "PLATFORM_KIND" => "integration" },
     contract, "static"
@@ -1044,8 +903,7 @@ def wrapper_refusal_failures(contract, failures)
 end
 
 def wrapper_inspected_tree_failures(contract, copy_root, failures)
-  # The row that proves the wrapper still runs the static program at all: the
-  # tree under inspection is broken, the wrapper's own checkout is not.
+  # The inspected tree is broken, the wrapper's own checkout is not.
   broken_fixture_repository do |broken|
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => broken }, contract, "static"
@@ -1055,9 +913,7 @@ def wrapper_inspected_tree_failures(contract, copy_root, failures)
       (stdout + stderr).include?("restart policy differs")
   end
 
-  # ... and that it is the *inspected* tree that is read, not the checkout the
-  # programs came from. Breaking the copy's own compose.yml while pointing the
-  # variable at this repository must change nothing.
+  # Breaking the copy's compose.yml while pointing at this repository changes nothing.
   compose_service(copy_root) { |spec| spec["restart"] = "always" }
   stdout, stderr, status = Open3.capture3(
     { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, "static"
@@ -1066,10 +922,7 @@ def wrapper_inspected_tree_failures(contract, copy_root, failures)
               "#{(stdout + stderr).strip}" unless status.success?
 end
 
-# The branch every deployment actually takes. Neither tests/integration.sh nor
-# run_contracts.rb --execute sets PLATFORM_CONTRACT_REPO_DIR, so the default is
-# the only path in production -- and it is the one where resolving the programs
-# from the script's own checkout is load-bearing rather than shadowed.
+# The branch every deployment takes: PLATFORM_CONTRACT_REPO_DIR unset.
 def wrapper_default_repository_failures(failures)
   with_contract_copy do |contract, copy_root|
     stdout, stderr, status = Open3.capture3(
@@ -1091,9 +944,7 @@ def wrapper_default_repository_failures(failures)
   end
 end
 
-# The runtime half is reached, and reached with the mode. seed-fixture-only is
-# the mode that answers without Docker; every other mode reaches the vault
-# read, which is the second row below.
+# The runtime half is reached with the mode; seed-fixture-only needs no Docker.
 def wrapper_runtime_mode_failures(wrapper_source, failures)
   with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
     with_runtime_sandbox do |_root, environment, media|
@@ -1109,9 +960,8 @@ def wrapper_runtime_mode_failures(wrapper_source, failures)
       failures << "wrapper: seed-fixture-only did not seed the fixture" unless
         File.file?(File.join(media, FIXTURE_RELATIVE))
 
-      # A vault that cannot be read is the runtime half's first refusal, and it
-      # is the proof the mode argument reached it at all: `static` would have
-      # exited before this point.
+      # The vault refusal proves the mode reached the runtime half; `static` exits
+      # earlier.
       unreadable = sandbox.merge(
         "PLATFORM_CONTRACT_REPO_DIR" => copy_root,
         "PLATFORM_CONTRACT_VAULT_FILE" => File.join(media, "absent-vault.yml"),
@@ -1126,16 +976,8 @@ def wrapper_runtime_mode_failures(wrapper_source, failures)
   end
 end
 
-# The three `:?` environment refusals the wrapper makes before it execs the
-# runtime half. Each names itself, and static mode must reach none of them.
-#
-# `<NAME>: parameter` is the portable part of a POSIX `:?` diagnostic and the
-# only part this row may assert. The rest of the sentence belongs to the
-# SHELL, not to the contract: bash writes "parameter null or not set" and dash
-# writes "parameter not set or null", the same words in a different order. An
-# earlier version of this row pinned bash's order, passed on a macOS box whose
-# /bin/sh is bash, and failed CI's Ubuntu runner where /bin/sh is dash --
-# asserting which shell the machine had rather than what the contract did.
+# The three `:?` refusals, each named; static mode reaches none. Only
+# `<NAME>: parameter` is asserted: bash and dash word the rest differently.
 def wrapper_environment_failures(wrapper_source, failures)
   with_contract_copy(wrapper: wrapper_source) do |contract|
     with_runtime_sandbox do |_root, environment, _media|
@@ -1147,19 +989,14 @@ def wrapper_environment_failures(wrapper_source, failures)
         failures << "wrapper: #{name} unset was refused without naming it: " \
                     "#{output.strip.inspect}" unless
           status.success? || output.include?("#{name}: parameter")
-        # The substantive property the wording was standing in for, and the
-        # reason the guards are `:?` rather than `:-`: an unset root must stop
-        # the wrapper before it execs the runtime half, so the runtime program
-        # never starts against a relative or empty path. Both sentences below
-        # are the runtime half's own, so either one appearing means it ran.
+        # `:?`, not `:-`: an unset root must stop the wrapper before the runtime
+        # half starts against an empty path.
         failures << "wrapper: #{name} unset still reached the runtime half: " \
                     "#{output.strip.inspect}" if
           output.include?("encrypted vault could not be read") ||
           output.include?("Jellyfin video fixture prepared before deployment")
       end
-      # static mode exits before those three are demanded, which is what lets
-      # tests/contract_structure_mutation_test.rb run this contract with no
-      # sandbox at all.
+      # Static mode needs none of them, so it runs without a sandbox.
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, "static"
       )
@@ -1169,25 +1006,18 @@ def wrapper_environment_failures(wrapper_source, failures)
   end
 end
 
-# The programs themselves, in the direction absence cannot prove. A tree that
-# is pointed at holds a *different* program at each sibling path; running
-# either of them is the defect, and it is visible as a sentinel rather than as
-# a missing file, so it stays visible however the fixture is assembled.
+# Impostor programs at each sibling path of the inspected tree: running one is
+# the defect, visible as a sentinel.
 def wrapper_sentinel_failures(wrapper_source, failures)
   with_contract_copy(wrapper: wrapper_source) do |contract|
     Dir.mktmpdir("nas-platform-jellyfin-sentinel.") do |raw|
       inspected = File.realpath(raw)
       build_fixture_repository(inspected)
-      # The static impostor can be anything: no program reads
-      # jellyfin-static.rb out of the inspected tree.
+      # No program reads jellyfin-static.rb out of the inspected tree.
       File.write(File.join(inspected, "tests", "contracts", "jellyfin-static.rb"),
                  %(warn "IMPOSTOR jellyfin-static.rb ran"\nexit 3\n))
-      # The runtime impostor cannot. The static half reads that path as TEXT for
-      # its six sentinels, so a stub there refuses the tree before the runtime
-      # half is ever reached and the row would prove nothing about the runtime
-      # program path. Keep the real bytes and prepend the sentinel instead: the
-      # static half still finds every sentinel, and the warning appears if and
-      # only if this copy is what got executed.
+      # The static half reads this path as text for its sentinels, so keep the
+      # real bytes and prepend the sentinel.
       File.write(File.join(inspected, "tests", "contracts", "jellyfin-runtime.rb"),
                  %(warn "IMPOSTOR jellyfin-runtime.rb ran"\n) + File.read(RUNTIME_PROGRAM))
       with_runtime_sandbox do |_root, environment, media|
@@ -1205,10 +1035,8 @@ def wrapper_sentinel_failures(wrapper_source, failures)
   end
 end
 
-# PLATFORM_CONTRACT_REPO_DIR is what the static program requires
-# tests/policy_support from, and it too must name the inspected tree. An
-# inspected tree without that file has to be a LoadError naming *its* path, not
-# a silent fallback to the checkout's copy.
+# policy_support must come from the inspected tree: its absence is a LoadError
+# naming that path, not a fallback to the checkout.
 def wrapper_policy_support_failures(wrapper_source, failures)
   with_contract_copy(wrapper: wrapper_source) do |contract|
     Dir.mktmpdir("nas-platform-jellyfin-nosupport.") do |raw|
@@ -1243,10 +1071,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures
 end
 
-# Reports what each program saw on stdin and what the caller still has, which is
-# the only way the redirect is observable: neither real program reads stdin, so
-# the redirect is what keeps that true rather than something that changes an
-# outcome today.
+# Neither real program reads stdin, so the redirect is observable only here.
 def stdin_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   # The static invocation, which runs for every mode.
@@ -1255,8 +1080,7 @@ def stdin_failures(wrapper_source: File.read(CONTRACT))
                                          subject: "the static program"))
   end
 
-  # The runtime invocation, which is `exec`ed and so is the last thing the script
-  # does -- its redirect needs its own row because the static one cannot cover it.
+  # The runtime invocation is `exec`ed, so its redirect needs its own row.
   with_contract_copy(runtime: STDIN_PROBE, wrapper: wrapper_source) do |contract|
     with_runtime_sandbox do |_root, environment, _media|
       failures.concat(stdin_probe_failures(contract, %w[seed-fixture-only],
@@ -1268,10 +1092,7 @@ def stdin_failures(wrapper_source: File.read(CONTRACT))
 end
 
 # --- planted regressions ---------------------------------------------------
-#
-# Each entry removes one guard from one program and names the rows that must
-# catch it. A row that survives its own guard being deleted is proving nothing.
-# Every substitution asserts its own match count for the reason edit_text does.
+# Each entry removes one guard and names the rows that must catch it.
 
 PROGRAM_MUTATIONS = [
   {
@@ -1352,12 +1173,8 @@ PROGRAM_MUTATIONS = [
     rows: ["the mac override redefining a key outside its allowance"]
   },
   {
-    # The same mutation against the image row, which the allowance is only the
-    # first of two guards for: without it the row reaches the dedicated image
-    # refusal, so it still refuses and the sentence is the regression. Recorded
-    # as its own entry rather than folded into the row above, because the two
-    # outcomes are different and a single `detects` would have to be the weaker
-    # of them.
+    # Without the allowance the image row reaches the dedicated image refusal;
+    # the changed sentence is the regression.
     label: "the override key allowance, ahead of the image refusal",
     program: :static,
     from: '  refuse("#{platform} override may not redefine #{surplus.join(\', \')}") unless surplus.empty?',
@@ -1387,11 +1204,8 @@ PROGRAM_MUTATIONS = [
     rows: ["a managed library repointed"]
   },
   {
-    # The Collections row's cascade, recorded rather than tolerated: without the
-    # exact-list check it reaches the dedicated Collections refusal instead, so
-    # the row still refuses and the sentence is the regression. That refusal is
-    # the one the platform actually cares about -- Collections is Jellyfin's own
-    # automatic library -- so this entry is also the proof it is reachable.
+    # The cascade reaches the dedicated Collections refusal, which also proves
+    # that refusal is reachable.
     label: "the managed library list check, ahead of the Collections refusal",
     program: :static,
     from: 'refuse("managed libraries differ") unless defaults.fetch("jellyfin_libraries") == [',
@@ -1407,9 +1221,7 @@ PROGRAM_MUTATIONS = [
     rows: ["local metadata written into the read-only media mount"]
   },
   {
-    # There are two `refuse("missing ...")` sweeps in the program -- the identity
-    # and library one, and the settings/plugin one further down -- so the anchor
-    # has to carry the `each` above it to be unique.
+    # Two `refuse("missing ...")` sweeps exist, so the anchor carries its `each`.
     label: "the required-task sweep",
     program: :static,
     from: "required_tasks.each do |name|\n  refuse(\"missing \#{name}\") unless role_names.include?(name)",
@@ -1461,9 +1273,7 @@ PROGRAM_MUTATIONS = [
   {
     label: "the conditional avatar upload check",
     program: :static,
-    # The whole condition, because the row deletes the `when` clause outright:
-    # weakening only the predicate leaves `[].any?` false and the guard still
-    # refuses, which would have read as the row proving something it did not.
+    # The whole condition: weakening only the predicate leaves `[].any?` false.
     from: "refuse(\"avatar upload is unconditional\") unless\n  Array(role_task.call(\"Upload the Jellyfin primary administrator image\")[\"when\"])\n" \
           "    .map(&:to_s).any? { |that| that.include?(\"jellyfin_admin_avatar_upload_required\") }",
     to: 'refuse("avatar upload is unconditional") unless true',
@@ -1548,11 +1358,7 @@ PROGRAM_MUTATIONS = [
     rows: ["the Open Subtitles GUID comparison no longer normalizing"]
   },
   {
-    # The assertion #147 repointed. Restoring the old path is the exact
-    # regression the repoint exists to prevent: the wrapper is 102 lines now and
-    # holds none of the six sentinels, so the first of them would refuse every
-    # repository forever -- and the fixture carries no wrapper at all, so it is
-    # an Errno instead. Either way the intact-repository rows report it.
+    # The #147 repoint: restoring the wrapper path refuses every repository.
     label: "the runtime self-read pointed back at the wrapper",
     program: :static,
     from: 'contract = File.read(File.join(root, "tests", "contracts", "jellyfin-runtime.rb"))',
@@ -1567,11 +1373,8 @@ PROGRAM_MUTATIONS = [
     from: '  fail_contract("fixture path is a symlink") if FIXTURE_PATH.symlink?',
     to: "  nil if false",
     rows: ["a fixture path that is a symlink is refused"],
-    # A symlink pointing at other bytes is refused by the byte comparison one
-    # line down, so removing the symlink guard changes the sentence rather than
-    # the outcome. That the guard is still worth having is the point: a symlink
-    # pointing at a byte-identical copy would be accepted, and the platform
-    # would then be reading a file it does not own.
+    # The byte comparison also refuses, so only the sentence changes; the guard
+    # still matters for a symlink to a byte-identical copy.
     detects: "refused for the wrong reason"
   },
   {
@@ -1582,9 +1385,7 @@ PROGRAM_MUTATIONS = [
     rows: ["a fixture whose bytes drifted is refused"]
   },
   {
-    # 0o600 rather than a wider mode, because the umask masks the widening ones
-    # back to 0o644 and the mutation would plant nothing -- the silent-no-op
-    # hazard, in a place a match count cannot see.
+    # 0o600: the umask would mask a widening mode back to 0o644, planting nothing.
     label: "the fixture's create mode",
     program: :runtime,
     from: "    FIXTURE_PATH.open(File::WRONLY | File::CREAT | File::EXCL, 0o644) do |file|",
@@ -1619,10 +1420,7 @@ if ARGV.include?("--self-test")
                  runtime_failures(mutant, named)
                end
       abort "self-test failed: removing #{mutation.fetch(:label)} was accepted" if caught.empty?
-      # "was accepted" is the row's own wording for a mutant that let a broken
-      # repository through, which is the default expectation. `detects:` names a
-      # different wording where a mutation cascades into another assertion, and
-      # is documentation of a recorded cascade rather than an escape hatch.
+      # `detects:` documents a recorded cascade; it is not an escape hatch.
       detects = mutation.fetch(:detects, "was accepted")
       unless caught.all? { |failure| failure.include?(detects) }
         abort "self-test failed: removing #{mutation.fetch(:label)} was caught by the wrong " \
@@ -1632,11 +1430,8 @@ if ARGV.include?("--self-test")
     []
   end
 
-  # The redirects' own regression, one per invocation. Neither real program reads
-  # stdin, so dropping `</dev/null` changes no outcome today -- which is exactly
-  # why it needs a program that does read, and why the rule cannot be proven by
-  # the contract passing. The third drains the caller's stdin before the runtime
-  # exec, which only the check that the caller's input survived can see.
+  # Neither real program reads stdin, so dropping `</dev/null` needs a program
+  # that does. The third drains the caller's stdin before the runtime exec.
   planted_redirects = 0
   [
     ["  \"$repo_dir\" \"$platform\" </dev/null\n", "  \"$repo_dir\" \"$platform\"\n"],
@@ -1652,11 +1447,7 @@ if ARGV.include?("--self-test")
     planted_redirects += 1
   end
 
-  # The three `:?` guards, one at a time. `:-` in place of `:?` is the realistic
-  # weakening -- it leaves the variable unset instead of refusing -- and it is
-  # what proves those rows can still fail now that they no longer pin a shell's
-  # choice of words. Without this the portable assertion could have gone
-  # vacuously true and nothing would have said so.
+  # `:-` for `:?` is the realistic weakening; proves the portable rows can fail.
   planted_guards = 0
   %w[PLATFORM_MEDIA_ROOT PLATFORM_DOCKER_ROOT PLATFORM_REPORT_ROOT].each do |name|
     pristine = File.read(CONTRACT)
@@ -1669,11 +1460,8 @@ if ARGV.include?("--self-test")
     planted_guards += 1
   end
 
-  # The defect #251 shipped one version of and #259 found a second site for:
-  # resolving a program from the tree being inspected rather than from the
-  # script's own checkout, and the inverse -- rebinding to the checkout something
-  # that names the inspected tree on purpose. Jellyfin has three sites, and only
-  # the first two move.
+  # #251/#259: resolving a program from the inspected tree, and the inverse.
+  # Three sites; only the first two move.
   planted_roots = 0
   [
     ['ruby -ryaml -rdigest "$contract_repo_dir/tests/contracts/jellyfin-static.rb"',
@@ -1692,9 +1480,7 @@ if ARGV.include?("--self-test")
     planted_roots += 1
   end
 
-  # The static half's own self-read root, which is Ruby rather than shell and so
-  # is planted in the program instead of the wrapper. It must stay bound to the
-  # inspected tree; binding it to the checkout is the inverse defect.
+  # The static half's self-read root must stay bound to the inspected tree.
   misrooted_self_read = File.read(STATIC_PROGRAM).sub(
     'contract = File.read(File.join(root, "tests", "contracts", "jellyfin-runtime.rb"))',
     'contract = File.read(File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), ' \
@@ -1704,10 +1490,7 @@ if ARGV.include?("--self-test")
   Dir.mktmpdir("nas-platform-jellyfin-selfmutant.") do |directory|
     path = File.join(directory, "jellyfin-static.rb")
     File.write(path, misrooted_self_read)
-    # PLATFORM_CONTRACT_REPO_DIR and `root` are the same tree in every real
-    # invocation, so the rebinding has to be exercised with them deliberately
-    # apart: the tree under inspection is poisoned and the one policy_support
-    # comes from is not.
+    # The two trees are the same in real runs, so keep them apart deliberately.
     Dir.mktmpdir("nas-platform-jellyfin-selfmutant-tree.") do |raw|
       inspected = File.realpath(raw)
       build_fixture_repository(inspected)

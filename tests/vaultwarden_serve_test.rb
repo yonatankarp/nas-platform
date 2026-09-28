@@ -1,41 +1,9 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# What roles/vaultwarden/tasks/serve.yml does, proved by running it.
-#
-# WHY THIS FILE EXISTS. That stage places the tailnet HTTPS front Bitwarden
-# clients require, and until #547's review it had no test of any kind: `grep -rl
-# tailscale tests/` returned nothing across 253 lines of task file. The only
-# host that takes its present-Tailscale branch is the NAS, which no lane
-# reaches, so every property of the branch that actually runs in production was
-# resting on reading. That is precisely what it cost -- the case defect the
-# `case_variant` row below pins was in the shipped file and no check could have
-# said so.
-#
-# HOW IT RUNS THE REAL THING. Each case writes a one-task driver playbook that
-# includes the shipped tasks/serve.yml unmodified, points
-# vaultwarden_tailscale_binary at a stub CLI, and runs ansible-playbook against
-# localhost. Nothing here re-implements the stage; the stub only decides what
-# `tailscale serve status --json` says and records the argv of any mutation, so
-# a case's verdict is the stage's own behaviour.
-#
-# WHAT IS PROVED BY RUNNING VERSUS ASSUMED, stated because the distinction
-# matters here more than usual. Proved: everything the stub can answer, which is
-# every branch of the stage. Assumed: the exact bytes a real `tailscale serve
-# status --json` emits. The stub's configured shapes were taken from tailscale
-# 1.102.2's documented Web/Handlers/Proxy structure. The unconfigured shape was
-# modelled twice and guessed both times: `No serve config` on stderr at rc 1,
-# and `null` at rc 0 from a reading of tailscale's own runServeStatus.
-#
-# IT HAS NOW BEEN MEASURED AND IT IS NEITHER. `tailscale serve status --json` on
-# an unconfigured host emits `{}` at rc 0 (1.102.3), which is why
-# `unconfigured_empty` is the row that models the real client and the other two
-# are kept as what they are: shapes no observed build emits, retained because
-# the NAS runs whichever build App Central ships and the stage's own refusal
-# branch is cheap to keep exercised. The stage handles all three -- `{}` parses
-# to an empty document, so the proxy lookup finds nothing and the front is
-# placed -- and substituting the real shape changed no verdict, which is what
-# makes this a fidelity repair rather than a defect.
+# What roles/vaultwarden/tasks/serve.yml does, proved by running it: each case
+# includes the shipped stage against a stub tailscale CLI. The stub's output shapes
+# are assumed; `{}` at rc 0 is what a real unconfigured host emits (1.102.3).
 
 require "etc"
 require "fileutils"
@@ -52,28 +20,17 @@ include TestScaffold
 ROOT = File.expand_path("..", __dir__)
 SERVE_TASKS = File.join(ROOT, "roles", "vaultwarden", "tasks", "serve.yml")
 
-# The node's own name as tailscaled holds it: lowercased, because that is what
-# Self.DNSName carries. Cases vary only the operator's exported spelling.
+# Lowercased, as Self.DNSName carries it; cases vary only the operator's spelling.
 NODE_NAME = "as6704t-4043.tail4e1ae8.ts.net"
 SHOUTY_NAME = "AS6704T-4043.Tail4e1ae8.ts.net"
 SERVE_PORT = 8086
 
-# The account the run executes as, which is what the stage resolves the operator
-# remedy from. Taken from the process rather than from $USER, which a caller may
-# have exported to anything.
+# Taken from the process rather than $USER, which a caller may have exported.
 ACCOUNT = Etc.getpwuid(Process.uid).name
 
-# A stub `tailscale`. It answers `serve status --json` from TS_STATE and appends
-# the argv of anything else to TS_LOG, so a placement is observable as a line
-# rather than inferred from Ansible's own changed flag. TS_DENY then decides how
-# that mutation ends: the log line is written first either way, because "the
-# stage handed the CLI this argv and the CLI refused it" is exactly the state a
-# denial row has to observe.
-#
-# The `operator` text is the stderr a real tailscale 1.102.2 printed on the NAS
-# on 2026-09-11, transcribed from that run's failure. The `daemon` text stands
-# for every other way the command can fail and deliberately shares no word with
-# it.
+# A stub `tailscale`: answers `serve status --json` from TS_STATE, logs any other
+# argv to TS_LOG (before TS_DENY decides how it fails). The `operator` text is real
+# tailscale 1.102.2 stderr; `daemon` deliberately shares no word with it.
 STUB = <<~SH
   #!/bin/sh
   if [ "$1" = serve ] && [ "$2" = status ]; then
@@ -105,10 +62,7 @@ STUB = <<~SH
   exit 0
 SH
 
-# A server that answers /alive, so the stage's reachability probe -- which is a
-# real HTTP request to vaultwarden_domain -- has something to reach. Without it
-# every case would end at that assertion and no case could say anything about
-# the placement before it.
+# Answers /alive so the stage's reachability probe has something to reach.
 class AliveStub
   attr_reader :port
 
@@ -143,7 +97,6 @@ class AliveStub
   end
 end
 
-# One case: run the shipped stage and report what it did.
 def run_serve(state:, public_host: NODE_NAME, node_key: NODE_NAME, gate: true,
               binary: :stub, check_mode: false, alive: true, deny: "",
               gather: false, tags: nil, candidates: [], serve_tasks: SERVE_TASKS)
@@ -155,10 +108,7 @@ def run_serve(state:, public_host: NODE_NAME, node_key: NODE_NAME, gate: true,
     File.write(stub, STUB, mode: "w", perm: 0o700)
     resolved = binary == :stub ? stub : ""
     playbook = File.join(directory, "driver.yml")
-    # Facts are off by default because no case but the operator denial needs
-    # one: that row's message resolves the account to grant from
-    # ansible_facts['user_id'], and gathering is what makes the resolution live
-    # rather than a literal the stage could have written down.
+    # Facts only for the operator-denial row, which resolves ansible_facts['user_id'].
     File.write(playbook, YAML.dump([{
       "hosts" => "localhost", "gather_facts" => gather,
       "vars" => {
@@ -168,18 +118,14 @@ def run_serve(state:, public_host: NODE_NAME, node_key: NODE_NAME, gate: true,
         "vaultwarden_tailscale_serve_port" => 443,
         "vaultwarden_deployment_enabled" => gate,
         "vaultwarden_tailscale_binary" => resolved,
-        # Empty, so a case asking for the absent path finds nothing anywhere
-        # rather than finding whatever this machine happens to have installed.
-        # `candidates: :stub` lists only the stub, for the one case that must
-        # go through discovery the way production does, with the binary unset.
+        # Empty so an absent-path case finds nothing on this machine; `candidates: :stub`
+        # lists only the stub, for the discovery case with the binary unset.
         "vaultwarden_tailscale_binary_candidates" => candidates == :stub ? [stub] : candidates,
         "platform_readiness_retries" => 1,
         "platform_readiness_delay" => 0
       },
-      # `always` on the include, so a tag-selected case still reads the file and
-      # the selection is made by the stage's own task tags. A dynamic include's
-      # tags reach only the include itself, never the tasks it loads, so this
-      # changes nothing about which of them run.
+      # `always` on the include: a dynamic include's tags never reach its tasks, so
+      # tag selection is made by the stage's own task tags.
       "tasks" => [{ "ansible.builtin.include_tasks" => serve_tasks, "tags" => ["always"] }]
     }]), mode: "w", perm: 0o600)
     arguments = ["ansible-playbook", "-i", "localhost,", "-c", "local", playbook]
@@ -197,10 +143,7 @@ ensure
   stub_server&.close
 end
 
-# Each row states the whole outcome: did the run succeed, what argv did the
-# stage hand the CLI, and which report did it print. `mutations` is exact rather
-# than a count, because "it placed a front" and "it placed the RIGHT front" are
-# different claims and only the argv carries the second.
+# `mutations` is the exact argv, since only it shows the RIGHT front was placed.
 PLACEMENT = "MUTATE serve --bg --yes #{SERVE_PORT}"
 VERIFY_TAG = "platform_verify_vaultwarden"
 CASES = [
@@ -314,9 +257,8 @@ CASES = [
              "proved by using it, and the refusal names the setting",
     "run" => { state: :fronted, alive: false }, "ok" => false, "mutations" => [],
     "says" => "ENABLED FOR THE TAILNET" },
-  # THE verify.yml SELECTION (#610). verify.yml lists this role under [never],
-  # so --tags platform_verify_vaultwarden is exactly what reaches this stage
-  # there. These rows run the stage under that selection.
+  # verify.yml lists this role under [never], so these rows run under
+  # --tags platform_verify_vaultwarden (#610).
   { "name" => "verify_unreachable_front",
     "why" => "the monitor itself: under verification the probe of the HTTPS " \
              "front must run and a non-200 must fail. It is the failing stub on " \
@@ -368,10 +310,7 @@ def case_problems(row, serve_tasks: SERVE_TASKS)
   if says && !result.fetch("output").include?(says)
     problems << "#{row.fetch('name')}: the run never said #{says.inspect}"
   end
-  # The negative half. A row that only asserts "the run failed" cannot tell a
-  # narrow diagnosis from a maximally widened one -- both fail the run -- so the
-  # row that proves the operator is NOT blamed for an unrelated failure needs
-  # the absence stated rather than implied.
+  # Proves the operator is NOT blamed for an unrelated failure.
   says_not = row["says_not"]
   if says_not && result.fetch("output").include?(says_not)
     problems << "#{row.fetch('name')}: the run said #{says_not.inspect}, which " \
@@ -380,11 +319,7 @@ def case_problems(row, serve_tasks: SERVE_TASKS)
   problems
 end
 
-# The plants. Each is a one-edit regression in the shipped stage that a reader
-# could plausibly make, and the rows it must break. A checker that reports a
-# clean tree proves nothing until it has been shown a defect it is supposed to
-# find -- docs/ci-performance-history.md records what believing an unproven AST checker
-# cost.
+# Plants: one-edit regressions in the shipped stage, and the rows each must break.
 MUTATIONS = [
   { "name" => "the Serve lookup stops normalising case",
     "from" => "[(platform_public_host ~ ':' ~ vaultwarden_tailscale_serve_port) | lower]",
@@ -406,10 +341,7 @@ MUTATIONS = [
     "from" => "is match('^http://(127\\.0\\.0\\.1|localhost):' ~ vaultwarden_port ~ '/?$')",
     "to" => "is match('^http://127\\.0\\.0\\.1:' ~ vaultwarden_port ~ '/?$')",
     "breaks" => %w[localhost_spelling] },
-  # The denial detection is planted in both directions, because each direction
-  # is its own defect: narrowed to nothing it takes the legible refusal away,
-  # widened to everything it blames the operator for faults that have nothing to
-  # do with the grant. One plant proves only the half it breaks.
+  # Planted in both directions: too narrow loses the refusal, too wide blames the operator.
   { "name" => "the operator denial is no longer told apart from any other failure",
     "from" => "        - >-\n          'serve config denied'\n" \
               "          not in (vaultwarden_serve_placed.stderr | default('', true) | lower)\n" \
@@ -479,8 +411,7 @@ def self_test_problems
 end
 
 failures = []
-# A floor under the roster, because every list here is walked rather than
-# counted: a CASES that emptied would report success having run nothing.
+# Floor under the roster, so an emptied CASES cannot report success.
 check_floor(failures, CASES.length, 20, "Vaultwarden Serve cases")
 check_floor(failures, MUTATIONS.length, 12, "Vaultwarden Serve plants")
 check(failures, File.file?(SERVE_TASKS),

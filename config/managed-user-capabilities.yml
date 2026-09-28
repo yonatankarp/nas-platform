@@ -121,11 +121,8 @@ services:
       create: BASIC_AUTH_USERNAME/BASIC_AUTH_PASSWORD
       authenticate: Basic authentication
       reconcile: BASIC_AUTH_USERNAME/BASIC_AUTH_PASSWORD
-  # Trailarr has one identity and no user API. Both halves are os.getenv
-  # properties, so the environment is the whole mechanism — with the caveat
-  # that its own /config/.env is sourced over that environment at every start,
-  # which is why the role owns that file too. WEBUI_PASSWORD is a bcrypt hash
-  # compared with checkpw, never a plaintext.
+  # Trailarr: environment only, but its own /config/.env is sourced over it at
+  # every start, so the role owns that file too. WEBUI_PASSWORD is a bcrypt hash.
   trailarr:
     preserves_unmanaged_users: true
     password_rotation: refuse
@@ -136,10 +133,7 @@ services:
       create: WEBUI_USERNAME/WEBUI_PASSWORD
       authenticate: api/v1/auth/login
       reconcile: WEBUI_USERNAME/WEBUI_PASSWORD
-  # Seerr has a user API and no passwords at all. Both identities are Jellyfin
-  # identities: the owner is created by signing in to Jellyfin as the vault
-  # administrator, and the household member is imported by Jellyfin GUID. Seerr
-  # stores no local password for either, so there is nothing to rotate here —
+  # Seerr stores no passwords: both identities are Jellyfin identities, so
   # rotating the Jellyfin password rotates both.
   seerr:
     preserves_unmanaged_users: true
@@ -151,18 +145,9 @@ services:
       create: api/v1/user/import-from-jellyfin
       authenticate: X-Api-Key
       reconcile: api/v1/user/{id}/settings/permissions
-  # Nextcloud has one identity and no managed non-administrator users. The
-  # administrator is declared entirely in the environment and consumed narrowly:
-  # the entrypoint's install block runs only while the volume holds no
-  # version.php. Unlike a service whose environment is the only path -- Seafile,
-  # removed in #501, was this platform's example -- occ can reset the password of
-  # an account that already exists, so this service has a real reconcile
-  # interface rather than none.
-  #
-  # It is named as conditional because that is what roles/nextcloud does.
-  # Resetting a password re-hashes it and invalidates the sessions derived from
-  # it, and the poller converges every five minutes, so the role presents the
-  # vault credential over OCS first and repairs only on a 401.
+  # Nextcloud: the install block runs only while the volume has no version.php;
+  # occ resets an existing password afterwards. Conditional because a reset
+  # invalidates sessions, so the role tries the vault credential first (OCS).
   nextcloud:
     preserves_unmanaged_users: true
     password_rotation: refuse
@@ -173,14 +158,8 @@ services:
       create: NEXTCLOUD_ADMIN_USER/NEXTCLOUD_ADMIN_PASSWORD
       authenticate: ocs/v2.php/cloud/user
       reconcile: occ user:resetpassword, on an authentication failure only
-  # Karakeep has one platform identity, its administrator, and no managed
-  # non-administrator users. Karakeep makes its first registered account the
-  # administrator and cannot seed one from the environment, so the identity is
-  # created through the API: roles/karakeep registers it on the converge that
-  # first starts the stack, with signups open only while the listener is on
-  # loopback. Nothing reconciles it afterwards -- a password that stops signing
-  # in fails the converge rather than being reset, because the only reset path
-  # needs the administrator session the failure means we do not have.
+  # Karakeep cannot seed its administrator from the environment: the role
+  # registers it through the API on first start, and never resets it afterwards.
   karakeep:
     preserves_unmanaged_users: true
     password_rotation: refuse
@@ -191,34 +170,9 @@ services:
       create: api/trpc/users.create, first account only, signups open on loopback
       authenticate: api/auth/callback/credentials
       reconcile: none; a password that no longer signs in fails the converge
-  # THE ONE SERVICE WHERE THIS PLATFORM MANAGES NO IDENTITY AT ALL, and the
-  # register has to be able to say so. Every other row here describes how Ansible
-  # declares an identity and what it will and will not do to reconcile one.
-  # Vaultwarden inverts that: a master password is user-owned by construction,
-  # the server never learns it, and that zero-knowledge property is the entire
-  # reason to run the service. There is no account for Ansible to declare, no
-  # credential in the vault, and nothing for a reconciliation to compare against.
-  #
-  # `mode: user_owned` is a new value rather than a stretch of an existing one,
-  # and the stretch was the temptation. `declarative_environment` -- Pinchflat's,
-  # Trailarr's, Nextcloud's -- would claim the identity is declared in the
-  # environment, and here the environment declares only the DOOR:
-  # SIGNUPS_ALLOWED, INVITATIONS_ALLOWED and DOMAIN. Reusing it would be a false
-  # statement about what roles/vaultwarden does, which is precisely what this
-  # register exists to prevent.
-  #
-  # The three shared verdicts are true for the ordinary reason and not by
-  # accident. preserves_unmanaged_users is true because this platform removes no
-  # account it did not create, and it created none. password_rotation is refuse
-  # and existing_identity_password_update is forbidden because Ansible cannot
-  # rotate what it cannot read -- here that is not a policy this platform chose
-  # to adopt, it is a property of the service, and adopting the opposite would
-  # mean the server learning a master password.
-  #
-  # There is no ADMIN_TOKEN either, which is what would otherwise give this row
-  # an administrative interface. Omitting it disables the /admin panel, whose
-  # config.json would outrank every value the role renders;
-  # services/vaultwarden/compose.yml carries that measurement.
+  # Vaultwarden: no managed identity at all. Master passwords are user-owned and
+  # never reach the server, so `user_owned` rather than `declarative_environment`,
+  # whose environment here declares only the door (SIGNUPS_ALLOWED and friends).
   vaultwarden:
     preserves_unmanaged_users: true
     password_rotation: refuse

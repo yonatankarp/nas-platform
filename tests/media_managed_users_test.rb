@@ -1,8 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 #
-# Media managed-user probes. Fixtures and helpers live in
-# media_managed_users_support.rb.
+# Media managed-user probes; fixtures and helpers in media_managed_users_support.rb.
 
 require_relative "media_managed_users_support"
 require_relative "media_probes_fail_closed"
@@ -15,11 +14,8 @@ require_relative "policy_support"
 
 include TestScaffold
 
-# The behavioural probes, in the order they are reported, each with the
-# MEDIA_MANAGED_USERS_PROBES selectors that ask for it. They were a run of
-# `exercise_x(failures) if selected_probes.intersect?(...)` statements; naming
-# them as data is what lets the pool below place them, and it keeps the
-# selectors readable next to each other rather than repeated down a column.
+# The behavioural probes, in report order, each with the
+# MEDIA_MANAGED_USERS_PROBES selectors that ask for it.
 PROBES = [
   [%w[all audiobookshelf], method(:exercise_audiobookshelf)],
   [%w[all audiobookshelf], method(:exercise_audiobookshelf_converged)],
@@ -75,8 +71,7 @@ SERVICES.each do |service|
     failures << "#{service} managed-user tasks are invalid YAML: #{error.message.lines.first.strip}"
   end
 
-  # The shim's own obligations, which the lifecycle above no longer covers for a
-  # service that has adopted the shared role.
+  # The shim's own obligations, for a service on the shared role.
   if SHARED_MANAGED_USER_TITLES.key?(service)
     failures.concat(shim_failures(
                       service,
@@ -86,8 +81,7 @@ SERVICES.each do |service|
                     ))
   end
 
-  # An include has to be declared by a task, not merely mentioned. The source-text
-  # form accepted a commented-out include and a task file named in prose.
+  # An include must be declared by a task; text matching accepted commented-out ones.
   included_files = nested_tasks(YAML.safe_load_file(main_path, aliases: false)).filter_map do |task|
     include = task["ansible.builtin.include_tasks"]
     include.is_a?(Hash) ? include["file"] : include
@@ -103,11 +97,7 @@ failures << "media managed-user mutation self-test is not registered" unless
   policy.lines.include?("ruby tests/media_managed_users_test.rb --self-test\n")
 
 if ARGV == ["--self-test"] && failures.empty?
-  # What this run proves, said out loud. Every plant below used to record only
-  # its own survival, so a passing --self-test printed the same line as a plain
-  # run -- and a plant that stopped biting, or one nobody noticed had been
-  # skipped, read as the contract holding. The tally is the difference between
-  # the two runs.
+  # Tally the plants that bit, so a --self-test output differs from a plain run.
   detected = []
   plant = lambda do |label, found|
     found ? detected << label : failures << "#{label} mutant survived"
@@ -130,7 +120,6 @@ if ARGV == ["--self-test"] && failures.empty?
 
     next unless SHARED_MANAGED_USER_TITLES.key?(service)
 
-    # The shim's two halves of the vault-password route, each planted on its own.
     title = SHARED_MANAGED_USER_TITLES.fetch(service)
     shim = YAML.safe_load_file(File.join(ROOT, "roles", service, "tasks", "managed_users.yml"),
                                aliases: false)
@@ -165,15 +154,12 @@ if ARGV == ["--self-test"] && failures.empty?
                end)
 
     if service == "jellyfin"
-      # The complete-policy merge, which used to be read off the task body.
       unmerged = Marshal.load(Marshal.dump(defaults))
       unmerged["jellyfin_managed_users_repair_body"] = "{{ item.policy }}"
       plant.call("Jellyfin declared complete-policy merge",
                  shim_failures(service, shim, unmerged).any? do |failure|
                    failure.include?("complete current policy")
                  end)
-      # The hooks: one that no longer reaches its file, and a file that lost
-      # the refusal it exists for.
       unhooked = Marshal.load(Marshal.dump(defaults))
       unhooked["jellyfin_managed_users_before_create_tasks"] = ""
       plant.call("Jellyfin before-create hook path",
@@ -219,14 +205,8 @@ if ARGV == ["--self-test"] && failures.empty?
   end
 
   detected.each { |label| puts "self-test detected: #{label}" }
-  # A stated count rather than non-emptiness: each of the three services plants a
-  # password-update and a final-verification; each shim service (all three now)
-  # adds three shim plants; audiobookshelf adds its declared pinned repair body,
-  # jellyfin its declared complete-policy merge and two hook plants, and Komga
-  # its two authenticate expressions. A service the loop stopped reaching would still
-  # leave this list non-empty, and the first draft of this line said 17 against
-  # an actual 13 -- which is the whole reason the tally is printed rather than
-  # counted in a comment.
+  # A stated count rather than non-emptiness, so a service the loop stopped
+  # reaching is caught.
   failures << "media managed-user self-test planted #{detected.length} defects, expected 21" unless
     detected.length == 21
 end
@@ -237,13 +217,8 @@ if ARGV.empty?
   else
     selected_probes = ENV.fetch("MEDIA_MANAGED_USERS_PROBES", "all").split(",")
     selected = PROBES.select { |scopes, _probe| selected_probes.intersect?(scopes) }
-    # Every probe stands up its own stub server on an OS-assigned port and runs
-    # its own ansible-playbook in its own temporary directory, so they share
-    # nothing but the failure list -- and almost all of their wall time is spent
-    # waiting on that subprocess, which releases the GVL. Run one after another
-    # this was the gate's slowest single check; run through the pool the probes
-    # are placed alongside each other and their failures are still reported in
-    # the order they are declared above.
+    # Probes share nothing but the failure list and mostly wait on a subprocess, so
+    # they pool; failures still report in declared order.
     in_parallel_cases(failures, selected) do |(_scopes, probe), collected|
       probe.call(collected)
     end

@@ -1,14 +1,6 @@
 #!/usr/bin/env ruby
-# The stack half of the Dozzle service contract: the Compose definition, the
-# role's relay-state safety ordering, and the rendered environment file.
-#
-# Runs in every mode, not only `static`, because these are the properties the
-# live modes below assume: a relay that cannot see the Docker socket, a state
-# child prepared before anything is moved into it, and an environment that
-# carries the one declared listener port to both of its consumers.
-#
-# Refusals here are `abort`, but the parsed-document fetches are not guarded:
-# a Compose file without a `services` key raises KeyError and names this file.
+# Stack half of the Dozzle contract: Compose definition, relay-state ordering and
+# the rendered environment. Runs in every mode, since the live modes assume it.
 compose = YAML.safe_load_file(ARGV.fetch(0), aliases: true)
 services = compose.fetch("services")
 abort "Dozzle contract failed: stack must define exactly alert-relay, dozzle, and socket-proxy" unless
@@ -65,15 +57,13 @@ abort "Dozzle contract failed: alert relay mounts differ" unless relay["volumes"
   "${PLATFORM_CURRENT_DIR:?}/services/dozzle/alert_relay.py:/app/alert_relay.py:ro",
   "${DOZZLE_STATE_ROOT:?}/alert-relay:/state"
 ]
-# Loopback only and the listener port only: golem's agent reaches it through the
-# NAS's Tailscale Serve TCP forward (roles/dozzle/tasks/serve.yml), and the LAN
-# must not reach it at all. The Mac override resets it; nothing else may widen it.
+# Loopback and the listener port only: golem's agent arrives through the NAS's
+# Tailscale Serve TCP forward, and the LAN must not reach it.
 abort "Dozzle contract failed: alert relay must publish only its listener port, on loopback" unless
   relay["ports"] == ["127.0.0.1:${ALERT_RELAY_PORT:?}:${ALERT_RELAY_PORT:?}"] &&
   !relay.key?("network_mode")
-# The relay alone joins the external bridge host_prep creates for Beszel's hub,
-# and names default beside it, or Dozzle loses alert-relay:8081. The socket proxy
-# shares only the internal docker-api network, and only with Dozzle (#829).
+# The relay joins default and the external alert-relay bridge; the socket proxy
+# shares only docker-api, and only with Dozzle (#829).
 abort "Dozzle contract failed: alert relay must join default and the external alert-relay bridge, and nothing else may" unless
   relay["networks"] == %w[default alert-bridge] &&
   compose["networks"] == { "default" => {},
@@ -99,9 +89,7 @@ abort "Dozzle contract failed: deployment inputs do not validate the alert relay
 abort "Dozzle contract failed: immutable release does not include the alert relay" unless
   deployment_bundle.include?("services/dozzle/alert_relay.py") &&
     deployment_bundle.include?("alert_relay.py")
-# Parsed rather than substring-matched: byte offsets do not track task order once
-# a task name appears in a comment or a when: expression, and a field found by
-# slicing the file between two names is not necessarily on the task that needs it.
+# Parsed, not substring-matched: byte offsets do not track task order.
 role_tasks = YAML.safe_load_file(ARGV.fetch(1), aliases: false)
 role_task = lambda { |name| role_tasks.find { |task| task["name"] == name } }
 role_at = lambda { |name| role_tasks.index { |task| task["name"] == name } }
@@ -172,17 +160,11 @@ abort "Dozzle contract failed: role does not safely relocate the legacy relay st
 abort "Dozzle contract failed: environment does not render the selected state and script roots" unless
   env_template.include?("PLATFORM_CURRENT_DIR={{ platform_current_dir }}") &&
   env_template.include?("DOZZLE_STATE_ROOT={{ dozzle_state_root }}")
-# The third leg of the single listener port: the rendered environment file is how
-# the value in inventory/group_vars/all/service_dozzle.yml reaches both consumers inside the
-# container. The rendered Compose document is checked against a probe port above,
-# and the live modes below dispatch through the URL built from the same default.
+# The rendered env file carries the one declared listener port to both consumers.
 abort "Dozzle contract failed: environment does not render the single relay listener port" unless
   env_template.include?("ALERT_RELAY_PORT={{ dozzle_alert_relay_port }}")
-# The separation #172 was filed for, asserted in the one file that renders both
-# credentials side by side. The relay's shared secret ends up at rest in Dozzle's
-# /data volume and in a second container's `docker inspect` environment; the
-# Pushover application token must reach neither, so these lines have to name
-# different vault credentials rather than the same one twice.
+# #172: the relay secret and the Pushover token must be different vault
+# credentials, since the secret lands in /data and `docker inspect`.
 abort "Dozzle contract failed: the relay secret is not a credential of its own" unless
   env_template.include?("ALERT_RELAY_TOKEN={{ vault_dozzle_alert_relay_token }}") &&
   env_template.include?(
@@ -198,23 +180,14 @@ abort "Dozzle contract failed: the relay secret is not a credential of its own" 
     "PUSHOVER_USER_KEY={{ vault_pushover_user_key | replace('$', '$$') }}"
   )
 
-# The publish endpoint is a variable in every layer it passes through, and that
-# is a safety property rather than tidiness: a literal here would mean every
-# lane that converges this stack POSTs its own container churn at the
-# household's real Pushover account. Read from the defaults as well as the
-# template, because a template reading a variable that no longer exists renders
-# empty and the relay then refuses to start -- which is the loud failure, but
-# only after a deployment.
+# A literal endpoint would send every lane's container churn to the household's
+# real Pushover account; check defaults too, since a missing variable renders empty.
 relay_defaults = File.read(ARGV.fetch(5))
 abort "Dozzle contract failed: the relay publish endpoint is not redirectable" unless
   env_template.include?("PUSHOVER_API_URL={{ dozzle_pushover_api_url }}") &&
   relay_defaults.match?(/^dozzle_pushover_api_url:\s+https:\/\/api\.pushover\.net\/1\/messages\.json$/)
 
-# The tap-through link goes to the address clients already reach Dozzle at, from
-# the two values that define it, rather than a literal host a lane or a rename
-# would leave pointing somewhere else.
-# A Beszel alert's button opens only Beszel's own app URL, the shared inventory
-# value roles/beszel renders as APP_URL, never a literal or a Dozzle default.
+# Link bases come from the defining values, never literals.
 abort "Dozzle contract failed: the Beszel link base is not Beszel's app URL" unless
   env_template.include?("BESZEL_LINK_BASE={{ beszel_app_url }}")
 
@@ -222,10 +195,7 @@ abort "Dozzle contract failed: the alert link is not built from the public host 
   env_template.include?("ALERT_RELAY_LINK_BASE={{ dozzle_alert_relay_link_base }}") &&
   relay_defaults.include?(%(dozzle_alert_relay_link_base: "http://{{ platform_public_host }}:{{ dozzle_port }}"\n))
 
-# The ceiling reaches the relay from one home apiece, the way the listener port
-# does. A literal in the environment file would be a second copy of a number the
-# role documents, and a ceiling nobody can change without editing a template is
-# a ceiling that gets edited in the running container instead.
+# The ceiling has one home in the role defaults, like the listener port.
 abort "Dozzle contract failed: the alert ceiling is not rendered from the role defaults" unless
   %w[
     ALERT_DAILY_CONTAINER_CEILING=dozzle_alert_daily_container_ceiling

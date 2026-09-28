@@ -1,18 +1,7 @@
 ---
-# Storage comes from the nas_storage inventory, which also drives the policy
-# test's cross-check against Compose volume sources and the recovery
-# classification. Previously this was a directory list, a set of chown
-# instructions in prose, and a hand-maintained recovery table: three places to
-# forget.
-#
-# It is composed in inventory/group_vars/all/main.yml from every nas_storage_*
-# contributor rather than written in one place, and the composition is silent
-# when it matches nothing: with every contributor removed, nas_storage evaluates
-# to [] and every task below becomes a no-op loop that reports success. Measured
-# 2026-09-12. tests/nas_storage_support.rb checks contributor membership against
-# services/manifest.yml in both directions, but Ansible cannot read that manifest
-# here, so this is the collapse floor and nothing finer. It is deliberately well
-# below the real count so that adding or removing a service never touches it.
+# The nas_storage composition is silent when it matches nothing, turning every
+# task below into a passing no-op loop. This is a collapse floor, kept well
+# below the real count so adding or removing a service never touches it.
 - name: Require a composed storage inventory
   ansible.builtin.assert:
     that:
@@ -97,9 +86,7 @@
       handling.
   when: not ansible_check_mode or host_prep_media_control_existing.exists
 
-# The alert relay bridge, handled exactly as the media control bridge above:
-# Beszel's hub and Dozzle's alert-relay are two Compose projects sharing it,
-# so neither may create it or remove it on teardown.
+# Shared by Beszel and Dozzle, so neither Compose project may own it.
 - name: Inspect an existing exact-name alert relay network
   community.docker.docker_network_info:
     name: "{{ platform_alert_relay_network }}"

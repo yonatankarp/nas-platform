@@ -1,25 +1,8 @@
 ---
-# Jellyfin, one stage per file, in the order they run. This file is the index:
-# what the role does, and nothing about how.
-#
-# The stages are imported statically. verify.yml lists this role with
-# tags: [never], and a role-level tag reaches a statically imported task exactly
-# as it reaches an inline one, so each verification task still carries
-# [never, platform_verify_jellyfin] and --tags platform_verify_jellyfin selects
-# the same eighteen tasks it selected when they lived here. A dynamic include is
-# skipped under never before its file is ever read, which is why roles/arr pairs
-# include_tasks with apply: tags: -- and why this role does not need to. Static
-# imports are also expanded by --list-tasks, so the transcript an operator reads
-# before touching the NAS is unchanged. Every import below carries a name and
-# nothing else: a when:, vars: or tags: on a static import would apply to every
-# task in the file, which is a behaviour change rather than a move.
-#
-# The dynamic includes that stay here are the phase-gated ones -- settings.yml
-# and managed_users.yml, each called from several points in the run with a
-# different jellyfin_settings_phase or jellyfin_managed_users_phase. That
-# sequence is the thing an index is for, vars: on a static import would leak
-# into the rest of the role, and the media managed-user contract reads a
-# top-level include_tasks: managed_users.yml from this file.
+# Jellyfin, one stage per file, in the order they run. Stages are imported
+# statically so role-level `never` tags reach each verify task; a when:/vars:/tags:
+# on a static import would apply to every task in the file. The phase-gated
+# settings.yml and managed_users.yml stay dynamic includes.
 - name: Deploy the Jellyfin stack
   ansible.builtin.import_tasks: deploy.yml
 

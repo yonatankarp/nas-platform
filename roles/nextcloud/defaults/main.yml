@@ -1,206 +1,68 @@
 ---
-# The single operator switch. Inventory sets it true, and
-# inventory/group_vars/all/service_nextcloud.yml is where the deployment decision is
-# made and
-# explained; this default stays false so the role converges to `state: absent`
-# for any caller that runs it without that inventory rather than deploying a
-# database on the strength of a missing variable. The gate lives inside the role
-# rather than on the site.yml entry, because a `when:` there would also skip the
-# deployment_bundle re-include that revalidates the paths this role touches and
-# the deployment report that says whether anything moved.
+# Inventory sets it true (service_nextcloud.yml); false here converges to absent. The
+# gate lives in the role, not on site.yml, so deployment_bundle and the report still run.
 nextcloud_deployment_enabled: false
 
-# 8084. The next free host port on this platform when #500 chose it: 8080 is
-# Dozzle, 8081 the Dozzle alert relay, 8082 the qbittorrent web interface
-# declared in config/media-acquisition.yml, 8083 Seafile's until #501 removed
-# that stack and AdGuard Home's until #577 removed that one, 8085 SABnzbd and
-# 8090 Beszel. 8083 is free again and stays unclaimed: moving a published port
-# is a redeployment rather than a tidy-up.
+# 8083 is free but stays unclaimed: moving a published port is a redeployment.
 nextcloud_port: 8084
 
-# Every role addresses services over 127.0.0.1, which is correct whether the
-# play runs on the NAS itself or over SSH from a workstation.
 nextcloud_url: "http://127.0.0.1:{{ nextcloud_port }}"
 
 nextcloud_data_host_path: "{{ nas_docker_root }}/nextcloud/data"
 nextcloud_postgres_host_path: "{{ nas_docker_root }}/nextcloud/postgres"
 
-# The addresses Nextcloud will answer on, and the reason there is a list at all.
-#
-# Nextcloud compares the request's Host header against trusted_domains and
-# answers HTTP 400 -- "Access through untrusted domain" -- for anything absent.
-# That refusal reads as a client problem, which is why the whole set is declared
-# here rather than discovered when somebody cannot log in.
-#
-# The port is deliberately not part of an entry. Measured against
-# nextcloud:34.0.3-apache: with `127.0.0.1` trusted, a request arriving on the
-# published 8084 answered 200, so the comparison is against the host alone.
-#
-# 127.0.0.1 is not optional. It is the address tasks/verify.yml polls, so an
-# instance that does not trust it fails its own verification with a 400 before
-# any of the assertions can say anything useful.
-# `localhost` is in the set because the application container's own health
-# check requests http://localhost/status.php from inside the container, so an
-# instance that stopped trusting it would report itself unhealthy for ever. It
-# is the one entry the installer writes on its own, at index 0, which is why
-# templates/env.j2 leaves it out of the value it renders for the install and
-# tasks/reconcile_trusted_domains.yml merely confirms it afterwards.
+# Nextcloud answers 400 to any Host not in trusted_domains, matched on host only (the
+# port is ignored). 127.0.0.1 is what verify.yml polls; localhost is what the container's
+# own health check requests, and the installer writes it itself at index 0.
 nextcloud_trusted_domains: >-
   {{ (['127.0.0.1', 'localhost', platform_public_host | default('')]
       + nextcloud_additional_trusted_domains)
      | select | map('trim') | select | unique | list }}
 
-# Where the mesh name goes, and why it is its own list rather than a second
-# value folded into platform_public_host.
-#
-# platform_public_host has blast radius well beyond this service: Beszel publishes
-# it as its application URL, Seerr embeds it in every notification link and
-# Vaultwarden derives its WebAuthn domain from it -- so repointing it to reach
-# Nextcloud over the mesh would silently move every one of those. Nextcloud is the first service here that can hold
-# several hostnames at once, and this is the list that holds the extra ones.
-#
-# Empty by default: this platform has no mesh hostname declared anywhere today,
-# and inventing one here would put an address into config.php that resolves to
-# nothing. Set it in inventory/group_vars/all/service_nextcloud.yml when the name
-# exists.
+# Extra hostnames (e.g. a mesh name), kept apart from platform_public_host, which
+# Beszel, Seerr and Vaultwarden also derive URLs from. Empty until such a name exists.
 nextcloud_additional_trusted_domains: []
 
-# The shipped app set, which is configuration this repository would otherwise
-# not control. Nextcloud ships 56 applications and its installer enables 50 of
-# them; these eight are the ones this platform switches off, and everything else
-# is the image's decision, deliberately.
-#
-# AN OFF-SET, NOT AN ON-SET, and that asymmetry is the design. Declaring the
-# apps that must stay on would mean copying 38 names out of the image's own
-# core/shipped.json defaultEnabled -- it holds 46, and all eight below are in
-# it -- a value restated in this repository is a copy nothing bumps, which is
-# what CLAUDE.md refuses, and it would fight the image on every version bump
-# that adds or removes one. The cost is real and
-# stated rather than hidden: re-asserting the off-set does NOT notice
-# `occ upgrade` disabling something. tests/contracts/nextcloud-runtime.rb
-# reports the enabled count on every run, and that observation is the on-side
-# signal.
-#
-# VERSIONS ARE NOT PINNED, AND CANNOT BE. #500 asks whether they should be;
-# the answer is that `occ app:install` takes an app id and three flags and no
-# version at all (core/Command/App/Install.php), so it resolves whatever the
-# appstore currently calls newest. The apps here are pinned by the image digest
-# in services/nextcloud/compose.yml and by nothing else, which is exactly why
-# this platform runs the shipped set and installs nothing from the appstore.
-#
-# One of these is derived from a rule stated elsewhere, two from a principle, and
-# five are judgement -- the per-entry comments below are the authority, and this
-# sentence counts them. The distinction is kept because a later reader overruling
-# taste should not have to re-derive the three that are not taste, and
-# tests/contracts/nextcloud-static.rb pins exactly those three so the sentence is
-# not merely advice: photos by the scope it is derived from, updatenotification
-# and survey_client by the principle. The five marked judgement are deliberately
-# left unpinned, because taste is what that reader is entitled to overrule.
+# An off-set, not an on-set: listing the apps to keep would copy the image's
+# defaultEnabled list, a copy nothing bumps. App versions come only from the image
+# digest; `occ app:install` takes no version. nextcloud-static.rb pins photos,
+# updatenotification and survey_client; the entries marked judgement are unpinned.
 nextcloud_disabled_apps:
-  # Derived, from #500's own scope: "Photos, documents and media are already
-  # covered by Immich, Paperless and Jellyfin/Audiobookshelf/Komga". Immich is
-  # this platform's photo service. The only shipped app that overlaps one.
+  # Derived from #500's scope: Immich is this platform's photo service.
   - photos
-  # The principle roles/immich/defaults/main.yml states as "The NAS is not
-  # permitted to phone home for release announcements". Every notification this
-  # raises is about an upgrade an operator here cannot perform in band: the
-  # digest pin is the only upgrade path this platform has.
+  # Principle: the NAS does not phone home; the digest pin is the only upgrade path.
   - updatenotification
-  # The same principle, stricter case -- this one sends outbound telemetry
-  # rather than merely fetching. "Sends anonymized data to Nextcloud to help us
-  # to improve Nextcloud."
+  # Same principle, stricter: outbound telemetry.
   - survey_client
-  # Judgement. Vendor news fetched from the internet into the notification bell.
-  # Nearly the principle above; filed as judgement because news is not telemetry.
+  # Judgement: vendor news in the notification bell.
   - nextcloud_announcements
-  # Judgement. A one-time welcome overlay for a deployment with one account.
+  # Judgement: one-time welcome overlay.
   - firstrunwizard
-  # Judgement, with evidence: the shipped `office` app is not an editor. Its
-  # appinfo/info.xml declares no <commands>, no <repair-steps> and no
-  # <background-jobs> -- only a <navigations> entry routed at office.page.index
-  # -- and the code behind that route is three PHP files: lib/AppInfo/Application.php,
-  # a PageController whose only action returns the one template in templates/,
-  # and an ApiController whose only action answers {"message": "Hello world!"}.
-  # The rest of the tree is js/, css/, img/, l10n/, openapi.json and a
-  # package.json. It is a navigation entry pointing at onboarding for a Collabora
-  # backend this platform does not deploy, so enabling it advertises a feature
-  # that is not there.
+  # Judgement: not an editor, only a navigation entry for a Collabora backend this
+  # platform does not deploy.
   - office
-  # Judgement. A dashboard widget that calls a weather API per user, from a NAS.
+  # Judgement: per-user weather API calls from a NAS.
   - weather_status
-  # Judgement, with evidence: no mail transport is configured anywhere in this
-  # stack -- services/nextcloud/compose.yml and roles/nextcloud/templates/env.j2
-  # name no SMTP host and no NC_mail_* override -- so this offers a share option
-  # in the interface that cannot deliver. Reconsider it if #500 ever configures
-  # mail.
+  # Judgement: no mail transport is configured, so this share option cannot deliver.
   - sharebymail
 
-# WHAT DELIBERATELY STAYS ON, because the reason is not obvious from the list
-# above and a later prune would be a regression rather than a tidy-up:
-#
-#   text -- collaborative document editing. #500 names calendar, contacts and
-#   document editing as "the features this platform has no answer for", which is
-#   its stated reason for adopting Nextcloud at all. Paperless is archival OCR
-#   and does not overlap it.
-#
-#   activity, notifications, files_sharing, files_versions, files_trashbin,
-#   systemtags, circles, federation -- no shipped app declares a dependency on
-#   another, so disabling one of these breaks nothing outright; siblings guard
-#   on them at runtime and silently drop features instead. Churn without a
-#   stated reason is worse than the app.
-#
-#   bruteforcesettings, password_policy, twofactor_totp, privacy, logreader,
-#   serverinfo, support -- security and operability.
-#
-#   contactsinteraction, and dav which cannot be disabled at all -- what a
-#   future CalDAV/CardDAV answer is built on.
+# Deliberately kept on: text (document editing is why #500 adopted Nextcloud);
+# activity, notifications, files_* and friends (siblings silently lose features);
+# security/operability apps; contactsinteraction and dav (future CalDAV/CardDAV).
 
-# The operator's escape hatch, empty by default, in the shape
-# nextcloud_additional_trusted_domains above uses: the role owns a list and the
-# inventory may extend it without editing this file. Set it in
-# inventory/group_vars/all/service_nextcloud.yml.
+# Operator extension, set in inventory/group_vars/all/service_nextcloud.yml.
 nextcloud_additional_disabled_apps: []
 
-# What the reconciliation actually reads. Kept separate from the two lists above
-# so neither has to know about the other, and deduplicated because an operator
-# repeating a name the role already carries is not an error worth failing on.
 nextcloud_disabled_apps_effective: >-
   {{ (nextcloud_disabled_apps + nextcloud_additional_disabled_apps)
      | map('trim') | select | unique | list }}
 
-# What Nextcloud writes into the URLs it builds for itself when there is no
-# incoming request to infer a host from -- what cron.php and occ generate, which
-# is what lands in notification e-mails. Without it those come out as localhost.
-#
-# The port belongs here, unlike in trusted_domains above: this is a URL handed
-# to a reader, not a host compared against a header.
+# The URL cron.php and occ build without a request; otherwise mails say localhost.
 nextcloud_overwrite_cli_url: "http://{{ platform_public_host }}:{{ nextcloud_port }}"
 
-# Two waits, sized separately because the stack comes up in two phases and they
-# have different worst cases.
-#
-# NEITHER IS THE BOOT BUDGET. The health checks in services/nextcloud/compose.yml
-# are, and this is worth stating flatly because the same numbers were read the
-# wrong way round on Seafile's first CI run. Compose's `--wait` stops the moment
-# Docker reports a container *unhealthy*, and Docker reports that after
-# `start_period` plus `retries` consecutive failing probes `interval` apart:
-#
-#   application (start_period 300s, retries 5, interval 30s) -> at most 450s
-#   cron        (start_period  30s, retries 5, interval 30s) -> at most 180s
-#   db, cache   (start_period  60s, retries 5, interval 30s) -> at most 210s
-#
-# The invariant is the ordering: each wait must stay strictly ABOVE its stage's
-# worst-case verdict time, so a wedged boot surfaces as Docker's own
-# `container nextcloud is unhealthy`, which names the container, rather than as
-# a bare module timeout, which names nothing. 600 > 450 and 300 > 210 hold, and
-# that is the whole of what these numbers are for.
-#
-# Measured for scale rather than for the budget: on an arm64 developer machine
-# against an empty bind mount the application container reported healthy 51s
-# after creation and the whole stack was healthy at 57s. The health check
-# therefore already grants roughly eight times the only first boot anyone has
-# timed, and these two are the backstop for the other failure -- the one where
-# Compose returns no health verdict at all.
+# Not the boot budget; the compose health checks are. Each wait must stay above its
+# stage's worst-case unhealthy verdict (application 450s, db/cache 210s) so a wedged
+# boot surfaces as Docker naming the container rather than a bare timeout.
 nextcloud_data_compose_wait_timeout: 300
 nextcloud_compose_wait_timeout: 600
 
@@ -208,10 +70,5 @@ nextcloud_compose_project_name: >-
   {{ (platform_project_name ~ '-nextcloud')
      if platform_project_name | default('') | length > 0 else 'nextcloud' }}
 
-# PHP's per-request memory ceiling, restated here so the number is in the
-# repository rather than inherited from the image. It is a declared value and
-# not a derived one -- PHP reads it from ini and never from the host -- which is
-# why this stack declares no mem_limit and is not a MEMORY_SELF_SIZING_IMAGES
-# member. tests/policy_test.rb's memory check is about runtimes that size
-# themselves off whatever RAM they can see, and nothing in this stack does.
+# Declared, not self-sized: PHP reads it from ini, which is why no mem_limit is needed.
 nextcloud_php_memory_limit: 512M

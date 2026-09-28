@@ -58,14 +58,8 @@
   tags: [platform_verify_downloaders]
   no_log: true
 
-# Its own task rather than a second condition on the destination assert above,
-# because the two failures are not the same failure and the operator acts on
-# them differently. A wrong destination misplaces a download; a category with no
-# script imports one that nothing looked at, and says so nowhere else -- SABnzbd
-# reports a category running no script exactly as it reports one that ran a
-# script and passed. The two settings that make the gate work beside this one,
-# script_dir and script_can_fail, are verified by the owned-misc loop below
-# because they live in downloaders_sabnzbd_owned_misc.
+# Separate from the destination assert: a category running no script imports
+# downloads unscanned and says so nowhere else.
 - name: Verify each SABnzbd category runs the ClamAV post-processing gate
   ansible.builtin.assert:
     that:
@@ -97,26 +91,9 @@
   tags: [platform_verify_downloaders]
   no_log: true
 
-# Zero Usenet servers is what SABnzbd looked like on this platform for as long
-# as the downloader stack existed, and nothing failed. These assertions are the
-# reason that cannot happen again: an absent `servers` key, a server under
-# another name, and a drifted host, port, account name, connection count, TLS
-# setting, priority or timeout all fail here.
-#
-# The password is the exception, and it is not a fixable one. SABnzbd answers
-# with ten asterisks in its place, so it cannot be compared, and both sides of
-# the fingerprint are computed from the vault, so neither moves when someone
-# edits the password in the web interface. A provider password changed there
-# stands until the vault value itself changes, which is the one hand edit this
-# platform does not revert. docs/secrets.md records it.
-#
-# This is one of a complementary pair, and the pair is the point: a declared
-# provider must be present and match, an undeclared one must be absent, and
-# `downloaders_usenet_provider_declared` sends every run into exactly one of the
-# two. Neither branch can be reached with nothing asserted, which is what a
-# single gated assertion would have restored -- the same silence issue #269
-# closed. tests/contracts/downloaders.sh pins both branches and pins their
-# conditions as each other's negation.
+# The password cannot be compared (SABnzbd masks it), so a web-UI edit to it
+# stands until the vault changes; docs/secrets.md records it. This and the
+# undeclared-provider check below are a pair: every run asserts exactly one.
 - name: Verify the operator-owned SABnzbd Usenet server
   ansible.builtin.assert:
     that:
@@ -150,16 +127,8 @@
   tags: [platform_verify_downloaders]
   no_log: true
 
-# The other half of the pair. An undeclared provider means the platform owns no
-# server, so this reads the same `get_config` response and asserts the inverse
-# claim against it: the response still carries a well-formed server list, and no
-# entry in it carries the name the platform reconciles. A server standing under
-# that name with nothing declared is a real inconsistency and it fails here --
-# either the declaration was removed from the vault while the server it created
-# still stands, or something outside this platform wrote one. Neither is quietly
-# converged over, and neither is deleted: the reconciliation above only ever
-# upserts, so removing that server is an operator decision, not a side effect of
-# emptying a declaration.
+# An owned-name server with nothing declared fails rather than being deleted:
+# reconciliation only upserts, so removing it is an operator decision.
 - name: Verify SABnzbd owns no Usenet server while none is declared
   ansible.builtin.assert:
     that:

@@ -1,21 +1,7 @@
 ---
-# The superuser, and the proof the hub adopted the keypair from vault.
-# PocketBase offers no non-secret existence check, so the identity is
-# established by exact authentication either side of one atomic create. getkey
-# needs a superuser token, which is why the keypair assertion lives here rather
-# than beside the copy task that installed it.
-
-# PocketBase has no supported non-secret list or existence command. Exact
-# authentication safely proves the desired identity already exists; otherwise
-# its atomic create command is the reviewed exception. The command creates an
-# absent identity but cannot update an existing password. Post-authentication
-# distinguishes successful creation from an existing identity with another
-# password. Read against Beszel 0.18.7 -- a dated record, not a claim about the
-# pin in services/beszel/compose.yml -- the hub prints one exact non-secret
-# success line only for the controller that creates the record; duplicate create
-# attempts print the unique email error while still exiting zero. Exact
-# post-authentication remains the authority for credentials, and the pinned
-# success line only owns the change.
+# PocketBase has no non-secret existence check: exact authentication proves the
+# identity exists, otherwise its atomic create runs (it cannot update a password).
+# A duplicate create still exits zero, so post-authentication is the authority.
 - name: Check for an existing Beszel superuser with vault credentials
   ansible.builtin.uri:
     url: "{{ beszel_api }}/api/collections/_superusers/auth-with-password"
@@ -97,8 +83,7 @@
     - beszel_superuser_pre_auth.status | int != 200
   changed_when: true
 
-# The point of authoring the keypair is that the hub adopts it, so assert rather
-# than assume. getkey needs superuser authentication, hence its position here.
+# Assert the hub adopted the vault keypair; getkey needs a superuser token.
 - name: Read the public key the hub advertises
   tags: [platform_verify_beszel]
   ansible.builtin.uri:

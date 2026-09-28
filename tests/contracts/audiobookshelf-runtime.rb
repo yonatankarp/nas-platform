@@ -1,18 +1,8 @@
 #!/usr/bin/env ruby
-# The runtime half of the Audiobookshelf service contract: everything that needs
-# a deployed Audiobookshelf, plus the self-test modes that need only a media root
-# and a report root.
-#
-# usage: ruby audiobookshelf-runtime.rb MODE [ARGUMENT...]
-#
-# No -r preloads, because the heredoc this came from had none -- the requires
-# below are the program's own. Its whole remaining input is the PLATFORM_*
-# environment the wrapper exports, including PLATFORM_CONTRACT_REPO_DIR and
-# PLATFORM_REPO_ROOT, both of which name the tree being inspected rather than the
-# checkout this file lives in.
-#
-# One `Audiobookshelf contract failed: ...` line on stderr and exit 1 when a
-# property does not hold, a success line on stdout and exit 0 when it does.
+# Runtime half of the Audiobookshelf contract, plus self-test modes needing only
+# a media and report root. usage: ruby audiobookshelf-runtime.rb MODE [ARGUMENT...]
+# Inputs are the wrapper's PLATFORM_* environment; both repo variables name the
+# inspected tree. Refusals are one `Audiobookshelf contract failed: ...` line, exit 1.
 require "digest"
 require "json"
 require "net/http"
@@ -21,8 +11,7 @@ require "pathname"
 require "timeout"
 require "uri"
 require "yaml"
-# The role is one stage per file; PolicySupport.static_role_tasks assembles them
-# the way Ansible does rather than reading main.yml alone.
+# static_role_tasks assembles the stage files the way Ansible does.
 require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
 
 MODE = ARGV.fetch(0)
@@ -345,12 +334,8 @@ def expect_contract_failure(message = "unsafe drift snapshot was accepted", time
   fail_contract(message) if status.success?
 end
 
-# Since #647 the managed-user authenticate requests are roles/managed_users',
-# reached through this role's shim, so counting logins in the shim alone would
-# find none and the budget below would silently stop counting them. The shared
-# role is read with this service's title substituted, and the shim is held to the
-# bindings that make its generic login URL this service's /login: the API base,
-# the path, the verb and the declared set the per-user loop iterates.
+# Managed-user logins live in roles/managed_users since #647, so read that role
+# with this service's title and hold the shim to its URL bindings.
 SHARED_MANAGED_USER_LOGIN_URL = "{{ managed_users_api }}/{{ managed_users_authenticate_path }}"
 
 def audiobookshelf_managed_user_tasks(repo_root)
@@ -367,9 +352,7 @@ def audiobookshelf_managed_user_tasks(repo_root)
       defaults["audiobookshelf_managed_users_authenticate_path"] == "login" &&
       bound["managed_users_authenticate_method"] == "POST" &&
       bound["managed_users_declared"] == "{{ vault_managed_audiobookshelf_users }}"
-  # The existing-user login also runs in the verify phase for a service that
-  # binds authenticated identities (#647, beszel). Audiobookshelf must not, or
-  # the per-user login budget below counts one login where there are two.
+  # Binding authenticated identities would double the per-user login count (#647).
   fail_contract("Audiobookshelf managed-user shim binds authenticated identities") unless
     [nil, false].include?(bound["managed_users_bind_authenticated_ids"]) &&
       !bound.key?("managed_users_authenticated_id")
@@ -408,8 +391,6 @@ def exact_role_auth_model(main_tasks, managed_tasks)
       verify["when"] == ["not ansible_check_mode", "audiobookshelf_reconcile_token is not defined"]
   fail_contract("Audiobookshelf managed-user authentication guards differ") unless
     existing["when"] == [
-      # preflight is Jellyfin's phase; Audiobookshelf's shim refuses it, so the
-      # login still runs once per identity per converge (#647).
       "managed_users_phase in ['preflight', 'reconcile'] or managed_users_bind_authenticated_ids | bool",
       "not ansible_check_mode",
       "managed_users_matches[item[managed_users_identity_attribute]] | length == 1"
@@ -445,22 +426,8 @@ def generated_audiobookshelf_user_count(generator)
   count
 end
 
-# The four play bindings this counts are the controller's. They were written
-# with `\$` and `\"` while the controller was an `sh -c` argument; in a file of
-# its own the escapes are gone, and where a bare `\"` used to toggle the
-# launching shell's quoting rather than emit a character, the word is plain
-# unquoted -- `run_selected_play $@`. These patterns are built from the
-# controller's own bytes, not from de-escaping the old ones.
-#
-# The two conditions are quoted now, and reading these patterns as the record of
-# what the controller *should* say is what made this a fourth place that pinned a
-# defect. `[ -n $INTEGRATION_TAGS ]` was true on an empty value -- `[ -n ]`, a
-# one-argument test on a non-empty string -- so the untagged lanes ran
-# `--tags ""` and proved idempotence over the `always` pre_tasks alone. Three
-# other files pinned that spelling deliberately and said so; this one pinned it
-# silently, as a byte sequence it had no opinion about, and was the only one the
-# fix did not go looking for. A pattern over another file's source is a claim
-# about that file whether or not it means to be one.
+# Patterns built from the controller's own bytes. A pattern over another file's
+# source is a claim about it: this one once pinned the `[ -n $VAR ]` defect.
 def exact_baseline_role_runs(controller)
   selector = controller.scan(
     /^\s*run_selected_play\(\) \{\n\s*if \[ -n "\$INTEGRATION_TAGS" \]; then\n\s*run_play --tags "\$INTEGRATION_TAGS" "\$@"\n\s*elif \[ \$# -eq 0 \]; then\n\s*run_play\n\s*else\n\s*run_play "\$@"\n\s*fi\n\s*\}$/
@@ -708,13 +675,8 @@ def audiobookshelf_playbook_command(playbook, tags)
   repo_root = Pathname.new(ENV.fetch("PLATFORM_REPO_ROOT")).expand_path
   vault_file = ENV.fetch("PLATFORM_CONTRACT_VAULT_FILE")
   vault_password_file = ENV.fetch("PLATFORM_CONTRACT_VAULT_PASSWORD_FILE")
-  # The harness converges every stack into a sandbox-derived Compose project and
-  # the integration override names the container after it, so a play run from
-  # here has to be given the same namespace. Without it the role renders an empty
-  # PLATFORM_PROJECT_NAME, the override's ${PLATFORM_PROJECT_NAME:?} refuses the
-  # deployment, and the run dies before it can reach the refusal under test.
-  # The value is read from the environment the harness exports rather than spelled
-  # again, so the play and the sandbox can never disagree about which stack it is.
+  # The sandbox-derived project name, from the harness environment; without it the
+  # override's ${PLATFORM_PROJECT_NAME:?} refuses before the refusal under test.
   project_name = ENV.fetch("PLATFORM_PROJECT_NAME", "")
   fail_contract("the sandbox project namespace is unavailable") if project_name.empty?
   command = [
@@ -729,9 +691,8 @@ def audiobookshelf_playbook_command(playbook, tags)
     "-e", "platform_beszel_agent_kind=portable",
     "-e", "deployment_bundle_test_mode=true",
     "-e", "deployment_bundle_allow_dirty_controller=true",
-    # The site.yml run recreates Audiobookshelf under the ephemeral vault, which
-    # sends a deployment report; the lane value keeps it off pushover.net.
-    # tests/deployment_summary_test.rb refuses this command losing it.
+    # Keeps the deployment report off pushover.net; tests/deployment_summary_test.rb
+    # refuses this command losing it.
     "-e", "deployment_pushover_api_url=http://127.0.0.1:1/1/messages.json",
     repo_root.join(playbook).to_s, "--tags", tags
   ]
@@ -812,12 +773,8 @@ when "seed-fixture-only"
   puts "Audiobookshelf media fixture prepared before deployment"
   exit 0
 when "authentication-budget-self-test"
-  # Two files, deliberately. Everything that happens *inside* the container --
-  # the scenario dispatch, the role runs, the verify-only reads -- is the
-  # controller program's. The sandbox lifecycle around it -- the exit trap, the
-  # signal trap, the sandbox removal -- is the launcher's, on the Docker host,
-  # and stays read from there. Reading one file for both would leave whichever
-  # half lost its subject unable to fail.
+  # Two files deliberately: in-container dispatch is the controller's, the sandbox
+  # lifecycle is the launcher's, so each half keeps a subject that can fail.
   repo_root = Pathname.new(ENV.fetch("PLATFORM_REPO_ROOT"))
   launcher = repo_root.join("tests/integration.sh").read
   controller = repo_root.join("tests/integration_controller.sh").read

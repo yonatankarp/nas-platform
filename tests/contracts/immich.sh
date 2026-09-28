@@ -2,12 +2,8 @@
 set -eu
 set +x
 
-# Two roots, deliberately separate. The checkout this script belongs to is where
-# its two Ruby programs live; $repo_dir is the tree they inspect, and a caller
-# may point PLATFORM_CONTRACT_REPO_DIR at a fixture repository instead. A
-# heredoc kept the two apart by construction -- the program travelled inside
-# this file -- so resolving the sibling programs from $repo_dir would silently
-# make a contract read its assertions out of the tree it is judging.
+# Programs come from this checkout; $repo_dir is the tree they inspect.
+# Never resolve a program from $repo_dir, or the contract judges itself.
 contract_repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$contract_repo_dir}
 compose=$repo_dir/services/immich/compose.yml
@@ -26,8 +22,6 @@ usage() {
   exit 2
 }
 
-# The platform decides which capability contract applies. It defaults to the
-# contract environment ABI so the integration lane needs no extra argument.
 platform=${PLATFORM_KIND:-nas}
 mode=
 while [ "$#" -gt 0 ]; do
@@ -56,17 +50,8 @@ esac
 [ -f "$defaults" ] || fail_contract 'roles/immich/defaults/main.yml is absent'
 [ -f "$compose" ] || fail_contract 'services/immich/compose.yml is absent'
 
-# The 936-line Ruby program this used to pipe in from a quoted heredoc is now
-# immich-static.rb, where sh -n, a linter and tests/immich_contract_test.rb can
-# all reach it. Three things about this invocation are load-bearing:
-#
-#   * The program comes from $contract_repo_dir and the tree to inspect is an
-#     argument. Resolving the program from $repo_dir would make the contract read
-#     its own assertions out of the tree it is judging.
-#   * -ryaml is the heredoc's own preload, carried verbatim. The program does not
-#     require yaml itself, so dropping this breaks it.
-#   * Its stdin was that heredoc, exhausted by the time the program ran; keep
-#     stdin at end-of-file so it can never consume the caller's.
+# -ryaml is required (the program does not require yaml itself); stdin stays at
+# EOF so it can never consume the caller's.
 ruby -ryaml "$contract_repo_dir/tests/contracts/immich-static.rb" \
   "$repo_dir" "$platform" </dev/null
 
@@ -91,12 +76,5 @@ export PLATFORM_IMMICH_PORT PLATFORM_IMMICH_PLATFORM
 export PLATFORM_IMMICH_SERVER_CONTAINER PLATFORM_IMMICH_MACHINE_LEARNING_CONTAINER
 export PLATFORM_IMMICH_REDIS_CONTAINER PLATFORM_IMMICH_POSTGRES_CONTAINER
 
-# immich-runtime.rb takes the mode and passes through any remaining arguments,
-# exactly as the heredoc did; everything else is the environment exported above,
-# PLATFORM_CONTRACT_REPO_DIR included, which it reads as REPO_DIR. That variable
-# is bound to $repo_dir rather than $contract_repo_dir on purpose: the runtime
-# half inspects the deployed tree too, and pointing it at this checkout would be
-# the same defect as resolving the program from $repo_dir, one line over. The
-# heredoc carried no -r preloads, so neither does this. The </dev/null is the
-# same rule as above.
+# REPO_DIR is bound to $repo_dir on purpose: the runtime half inspects that tree too.
 exec ruby "$contract_repo_dir/tests/contracts/immich-runtime.rb" "$mode" "$@" </dev/null

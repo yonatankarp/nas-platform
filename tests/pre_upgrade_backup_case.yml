@@ -1,11 +1,6 @@
 ---
-# One case of tests/pre_upgrade_backup_test.yml. Separate because a block
-# cannot be looped and a refusal has to be caught: the case runs the shipped
-# role through include_role, as its callers do, and
-# records whether it failed and with what.
-#
-# Every fixture file is rewritten first, so no case is judged on what the
-# previous one left behind.
+# One case of tests/pre_upgrade_backup_test.yml: a separate file because a block
+# cannot be looped and a refusal has to be caught. Every fixture is rewritten first.
 - name: Clear the store, the copy and the daemon the previous case left
   ansible.builtin.file:
     path: "{{ backup_root }}/{{ fixture_path }}"
@@ -23,8 +18,7 @@
   loop_control:
     loop_var: fixture_path
 
-# The dump an earlier upgrade left, in a directory looser than the role's 0700,
-# so the case proves the one generation is replaced and the directory tightened.
+# Looser than the role's 0700, so the case proves the directory is tightened.
 - name: Leave the dump directory an earlier upgrade made
   ansible.builtin.file:
     path: "{{ backup_root }}/postgres/pre-upgrade-backup"
@@ -39,11 +33,8 @@
     mode: "0644"
   when: item.stale_dump | default(false)
 
-# Nextcloud's /var/www/html for the pg_dump entry's code archive (#884): the
-# code, version.php, config/ and custom_apps/ it must hold, and the two things
-# it must not -- the user's data/ and the entrypoint's lock. apps/x/data/y is a
-# directory named data below the top level, which only an anchored exclusion
-# keeps.
+# Nextcloud's code tree (#884). apps/x/data/y is a nested `data`, which only an
+# anchored exclusion keeps.
 - name: Create the code tree's directories
   ansible.builtin.file:
     path: "{{ backup_root }}/code/{{ code_dir }}"
@@ -75,8 +66,7 @@
   loop_control:
     loop_var: store_file
 
-# 0755, looser than the role's 0700, so a case that finds it must also prove
-# the role tightens a directory it did not create.
+# Looser than 0700, so the role must tighten a directory it did not create.
 - name: Leave the copy directory an earlier upgrade made
   ansible.builtin.file:
     path: "{{ backup_root }}/store/pre-upgrade-backup"
@@ -93,8 +83,7 @@
   loop_control:
     loop_var: stale_file
 
-# A plain file where the copy directory belongs: the failure measured on
-# Kapowarr before the rescue existed, which left the service stopped.
+# The failure measured on Kapowarr before the rescue existed.
 - name: Plant a file where the copy directory belongs
   ansible.builtin.copy:
     dest: "{{ backup_root }}/store/pre-upgrade-backup"
@@ -102,8 +91,7 @@
     mode: "0644"
   when: item.plant_file_at_backup | default(false)
 
-# A directory standing where one store file's copy has to land, so the copy
-# fails partway: the files ahead of it are written, that one is not.
+# Makes the copy fail partway: files ahead of it are written, that one is not.
 - name: Plant a directory where one copied file has to land
   ansible.builtin.file:
     path: "{{ backup_root }}/store/pre-upgrade-backup/{{ item.block_copy_of }}/{{ item.block_copy_of }}"
@@ -151,7 +139,6 @@
     mode: "0644"
   when: item.deployed is defined
 
-# Every stopped service but the fixture, which is `state` above.
 - name: Give the case's other stopped services a running container
   ansible.builtin.copy:
     dest: "{{ backup_root }}/daemon/state.{{ other_service }}"
@@ -170,10 +157,8 @@
   loop_control:
     loop_var: fault
 
-# Resolved into facts before the include rather than passed as templates over
-# `item`: the role loops, its own loops rebind `item` to a found file, and a
-# parameter templated over the case's `item` would then read that file instead
-# -- measured, the managed-ownership case copied with ownership left alone.
+# Resolved into facts first: the role's own loops rebind `item`, so a parameter
+# templated over the case's `item` would read the wrong value.
 - name: Start the case unrefused, with its parameters resolved
   ansible.builtin.set_fact:
     backup_case_failed: false
@@ -223,11 +208,8 @@
         backup_case_failed: true
         backup_case_message: "{{ ansible_failed_result.msg | default('') }}"
 
-# A review is a real `--check` run of its own. A block-level check_mode would put
-# the modules in check mode while leaving ansible_check_mode false -- and it is
-# ansible_check_mode the role gates every write on, so that block ran the stop
-# and the copy for real under a review's name (measured). The variable cannot be
-# overridden from here either: the magic variable wins.
+# A real `--check` run: block-level check_mode leaves ansible_check_mode false, which
+# is what the role gates writes on, so it would stop and copy for real.
 - name: Review the pre-upgrade copy in a check-mode run of its own
   ansible.builtin.command:
     argv:
@@ -300,8 +282,6 @@
   check_mode: false
   when: item.expect_dump | default(false)
 
-# GNU tar and bsdtar both list members as they were named, so the listing is
-# the archive's own record of what it holds.
 - name: List the code archive
   ansible.builtin.command:
     argv: [tar, -tzf, "{{ backup_root }}/postgres/pre-upgrade-backup/code.tar.gz"]
@@ -315,9 +295,7 @@
   ansible.builtin.assert:
     that:
       - backup_case_failed == (item.expect_message is defined)
-      # Only a review reports the copy it would take: the review play asserts
-      # its own plan message and that it ran under --check, and exits 0 only if
-      # both held.
+      # The review play asserts its own plan and --check, exiting 0 only if both held.
       - not backup_case_check | bool or backup_case_review.rc == 0
       - backup_case_check | bool
         or not ((pre_upgrade_backup_plan.msg | default('')) is search('A live run would stop the container'))
@@ -327,8 +305,7 @@
       - backup_case_other_states == ([item.expect_other_state] if item.expect_other_state is defined else [])
       # pg_dump's refusal names them; the message must not (#889).
       - backup_case_message is not search('fx_dbuser|fx_dbname|fx_dbpass')
-      # A container never changes its image, so an unchanged record is the old
-      # container: nothing recreated it onto the new pin.
+      # An unchanged image record means nothing recreated the container.
       - backup_case_image == (item.deployed | default(''))
       - item.expect_copy is defined or item.expect_copy_absent is not defined
         or not (backup_case_directory.stat.exists | default(false))
@@ -341,18 +318,15 @@
           and (not backup_case_manage | bool or (
             backup_case_files.files | map(attribute='gid') | unique | list == [backup_owner_gid | int]
             and backup_case_directory.stat.gid == backup_owner_gid | int)))
-      # The store the stop checkpointed, not the one before it: the stub's stop
-      # appends to it, so the copy holding that line was taken after the stop.
+      # The stub's stop appends to the store, so this proves the copy followed the stop.
       - item.expect_copy is not defined
         or (backup_case_store_copy.content | default('') | b64decode) is search('checkpointed by stop')
       - item.expect_copy_absent is not defined or not (backup_case_dump_directory.stat.exists | default(false))
-      # A dump is written only where one is declared, and a failed one leaves
-      # no generation behind under the name a restore would read.
+      # A failed dump leaves nothing under the name a restore would read.
       - item.expect_dump | default(false) or item.stale_dump | default(false)
         or not (backup_case_dumps.files | default([]) | map(attribute='path') | map('basename')
                 | select('eq', 'database.sql.gz') | list)
-      # One generation, private, and taken with the application stopped: the
-      # fake pg_dump writes the state the application container was in.
+      # The fake pg_dump records the application's state: it must have been stopped.
       - not item.expect_dump | default(false) or (
           backup_case_dump_directory.stat.mode == '0700'
           and backup_case_dumps.files | map(attribute='path') | map('basename') | sort
@@ -360,8 +334,7 @@
           and backup_case_dumps.files | map(attribute='mode') | unique | list == ['0600']
           and backup_case_dump.rc == 0
           and backup_case_dump.stdout == '-- dumped while the application was exited')
-      # The code archive holds what the older image needs to start again and
-      # nothing of the user's: data/ at the top only, and not the lock.
+      # What the older image needs to start, and nothing of the user's.
       - not item.expect_code | default(false) or (
           backup_case_code.rc == 0
           and ['version.php', 'config/config.php', 'apps/x/data/y', 'custom_apps/a/info.xml']

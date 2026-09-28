@@ -1,20 +1,7 @@
 #!/usr/bin/env ruby
-# Assert that two simultaneous Mac sandboxes are isolated from each other.
-#
-# usage: config-isolation.rb DIRECTORY
-#
-# DIRECTORY holds the rendered `docker compose config --format json` output for
-# every stack, twice: once as `first-<stack>.json` and once as
-# `second-<stack>.json`. tests/mac/config-isolation.sh renders those two sets
-# with different project names and ports; this program is the half that reads
-# them back and refuses any Compose project name, container name, published
-# port, control network or state bind the two sandboxes would share.
-#
-# Every refusal is a `raise` naming the stack and the thing that collided, so
-# the failing pair is readable without re-rendering anything.
-#
-# It lived in a `<<'RUBY'` heredoc in that script until #315, opened as
-# `ruby -rjson -`; the require below is that preload, which the body never had.
+# Assert two simultaneous Mac sandboxes share no project, container name, port,
+# control network or state bind. usage: config-isolation.rb DIRECTORY
+# (DIRECTORY holds first-<stack>.json and second-<stack>.json from config-isolation.sh).
 require "json"
 
 directory = ARGV.fetch(0)
@@ -132,8 +119,7 @@ raise "Jellyfin Mac runtime kept the NAS render device" unless
 raise "Jellyfin Mac runtime kept the NAS root group" unless
   first_jellyfin.dig("services", "jellyfin", "group_add").to_a.empty?
 raise "Immich project namespaces collide" if first_immich["name"] == second_immich["name"]
-# Immich is four containers; every one of them must be namespaced, or a second
-# sandbox would collide on the database or the cache rather than on the server.
+# All four Immich containers must be namespaced, not just the server.
 first_immich.fetch("services").each_key do |service|
   first_name = first_immich.dig("services", service, "container_name")
   second_name = second_immich.dig("services", service, "container_name")
@@ -218,9 +204,7 @@ raise "Seerr container names collide" if
   second_seerr.dig("services", "seerr", "container_name")
 raise "Seerr published ports collide" if
   published(first_seerr, "seerr") == published(second_seerr, "seerr")
-# Seerr reads Jellyfin and writes Radarr and Sonarr by service name, so a
-# sandbox copy must take its own control network rather than joining the
-# neighbour's.
+# Seerr reaches Jellyfin, Radarr and Sonarr by name, so it needs its own network.
 raise "Seerr control networks collide" if
   first_seerr.dig("networks", "media-control", "name") ==
   second_seerr.dig("networks", "media-control", "name")

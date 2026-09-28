@@ -1,15 +1,6 @@
 #!/bin/sh
-# Runs the plays against a disposable sandbox instead of the NAS.
-#
-# Ansible executes inside a Linux container so the plays meet a real
-# /proc/mounts, real numeric uid and gid, and a real Docker socket. Because the
-# Compose definitions take NAS_DOCKER_ROOT and NAS_MEDIA_ROOT rather than
-# absolute paths, the sandbox needs only to point those at a temporary directory:
-# no override files, and the definitions run byte-identical to production.
-#
-# Full and idempotence-check run three phases: converge, an unchanged second
-# converge, and --check --diff. Selective suites stop after their owned scenario
-# block, while smoke stops after the first converge and manifest verification.
+# Runs the plays against a disposable sandbox instead of the NAS. Ansible runs in a
+# Linux container so the plays meet a real /proc/mounts, numeric uid/gid and Docker.
 #
 # Usage: tests/integration.sh [--suite NAME [--tags TAGS]] [playbook] [ansible arguments]
 set -eu
@@ -19,21 +10,13 @@ ansible_core_version=2.21.4
 # the disposable controller is that host for the local inventory.
 requests_version=2.34.2
 runner_image=docker.io/library/python:3.14-alpine@sha256:9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01
-# Fuzzy `~` rather than `=`: apk's `=` requires the distro revision, so a
-# packaging-only bump from -r0 to -r1 drops the pinned version out of the index
-# and every suite fails at sandbox setup with "unable to select packages". `~`
-# pins the upstream version and accepts any revision of it. Dropping the
-# revision is also what lets Renovate track these, since repology reports
-# Alpine versions without one.
+# `~` rather than `=`: apk's `=` needs the distro revision, so an -r0 to -r1 bump
+# drops the pin out of the index. It also lets Renovate track it via repology.
 ruby_package='ruby~3.4.9'
 curl_package='curl~8.22.0'
 
-# Where the pre-built controller toolchain is published. The image is the five
-# pins above plus tests/integration.Dockerfile and requirements.yml, already
-# installed, so a suite starts converging instead of spending a minute of every
-# lane re-running apk, pip and ansible-galaxy against three registries. Not a
-# precondition for anything: every path below falls back to installing them in a
-# bare base image, which is what this script did before the image existed.
+# The pre-built controller toolchain (the pins above, the Dockerfile and
+# requirements.yml). Optional: every path falls back to installing them in the base image.
 toolchain_repository=${INTEGRATION_TOOLCHAIN_REPOSITORY:-ghcr.io/yonatankarp/nas-platform-controller}
 toolchain_dockerfile=tests/integration.Dockerfile
 
@@ -86,11 +69,7 @@ case "${1:-}" in
   --consume-lifecycle) consume_lifecycle=true; shift ;;
 esac
 
-# Which suites exist, and what each one converges, is data rather than code:
-# tests/ci/suites.conf holds one row per suite and tests/ci/classify_changes.rb
-# derives its lanes, its CI matrix and its tag plans from the same rows. Reading
-# the file here is what stops the runner and CI from disagreeing about what a
-# suite is -- they used to hold separate copies kept equal by a policy check.
+# Suites are data in tests/ci/suites.conf, which tests/ci/classify_changes.rb reads too.
 repo_dir=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd -P)
 suite_table=$repo_dir/tests/ci/suites.conf
 if [ ! -f "$suite_table" ]; then
@@ -98,9 +77,8 @@ if [ ! -f "$suite_table" ]; then
   exit 2
 fi
 
-# Sets suite_names to every suite in row order, suite_known to whether $1 is one
-# of them, and fixed_tags to the tags that suite converges. Reads the file in the
-# current shell rather than through a pipeline so a malformed row can exit.
+# Sets suite_names, suite_known and fixed_tags for suite $1. Reads in the current
+# shell rather than a pipeline so a malformed row can exit.
 read_suite_table() {
   suite_names=
   suite_known=false
@@ -209,36 +187,13 @@ else
   suite_tags=$fixed_tags
 fi
 
-# The two inputs the upgrade lane takes, and the only two the suite table does
-# not carry.
-#
-# INTEGRATION_UPGRADE_SERVICE is the manifest service directory the lane repins,
-# and INTEGRATION_UPGRADE_BASE_IMAGE is the image reference the BASE branch pins
-# it to -- the version the lane converges first, so that the head pin meets a
-# store a previous version wrote instead of an empty one.
-#
-# The base reference arrives as an environment input rather than being read out
-# of git, and that is forced rather than chosen: the `suites` job checks out at
-# actions/checkout's default depth of 1, so `git show origin/main:services/<svc>/
-# compose.yml` inside the controller has no base commit to read. Deepening all
-# nineteen legs to read one line was the alternative. This is also how every
-# other input here arrives (INTEGRATION_IMAGE_PULL_WIDTH, PLATFORM_BESZEL_*),
-# and it is what lets the lane be exercised without a git fixture.
-#
-# Validated by REFUSING rather than by clamping, which is where this departs
-# from bounded_integer above: there is no nearest valid image reference, and the
-# value reaches a `docker pull` argument and a literal substitution inside the
-# sandbox's compose.yml. The shape required is the one tests/policy_test.rb
-# already requires of every committed pin -- repository:tag@sha256:<64 hex> --
-# so a caller cannot pass a bare tag whose meaning moves under it.
+# Upgrade-lane inputs: the service to repin and the BASE branch's pin of it. An env
+# input because the suites job checks out at depth 1 and has no base to read.
+# Refused rather than clamped: the value reaches `docker pull` and compose.yml.
 upgrade_service=${INTEGRATION_UPGRADE_SERVICE:-}
 upgrade_base_image=${INTEGRATION_UPGRADE_BASE_IMAGE:-}
 
-# Which services the lane can be the subject of is DERIVED from which ones have
-# a seed-and-verify program, not restated: a subject with no seeder converges,
-# migrates and asserts nothing, which is a green lane that proves less than the
-# fresh-install lanes it was built to complement. tests/ci/classify_changes.rb
-# reads the same directory for the same list, so the two cannot disagree.
+# Subjects are derived from tests/contracts/<svc>-upgrade.rb, as classify_changes.rb does.
 upgrade_subject_program=$repo_dir/tests/contracts/$upgrade_service-upgrade.rb
 
 if [ -n "$upgrade_base_image" ]; then
@@ -342,15 +297,8 @@ if [ "$describe_suite" = true ] || [ "${INTEGRATION_DESCRIBE_ONLY:-0}" = 1 ]; th
   exit 0
 fi
 
-# The events this suite's run consists of, in order, for
-# tests/integration_lifecycle.sh to validate and tests/integration_controller.sh
-# to execute. An ordinary lane is one converge; the upgrade lane is the six
-# events that make a version change observable, and the table refuses every other
-# ordering of them rather than merely not emitting it. The last of them is the
-# shutdown half (#781): stopping the head container is the only moment its exit
-# code exists to be read, and it is where a regression like #671's -- a stop
-# swallowed and waited out to a SIGKILL -- becomes visible to CI instead of to
-# Dozzle's die rule after the poller has deployed it.
+# The event plan tests/integration_lifecycle.sh validates. The upgrade lane ends in
+# `stop` so the head container's exit code is read (#781).
 emit_lifecycle_plan() {
   if [ "$suite" = upgrade ]; then
     printf '%s\n' converge
@@ -379,34 +327,18 @@ if [ "$consume_lifecycle" = true ]; then
   exit $?
 fi
 
-# Required only once the suite is going to RUN. --list-suites, --describe-suite
-# and both lifecycle modes are pure queries about the table and answer without
-# them; the shape check above still refuses a malformed value wherever one is
-# set.
+# Required only once the suite runs; the queries above answer without them.
 if [ "$suite" = upgrade ]; then
-  # An explicit `if`, not `A && B || C`: that shape is SC2015 and runs C when A
-  # is true and B is false, which is not the branch structure it reads as. This
-  # file is not on a shellcheck manifest line, but the same shape in the
-  # controller -- which is -- red CI while ShellCheck 0.11.0 stayed silent
-  # locally, so it is written the same way here rather than left to be found.
+  # An explicit `if`, not `A && B || C` (SC2015).
   if [ -z "$upgrade_service" ] || [ -z "$upgrade_base_image" ]; then
     printf 'the upgrade suite requires INTEGRATION_UPGRADE_SERVICE and INTEGRATION_UPGRADE_BASE_IMAGE\n' >&2
     exit 2
   fi
 fi
 
-# Service images the suite will need, keyed by the site.yml role tag that
-# converges them.
-#
-# The keys are the role tags from site.yml and the values the service directories
-# from services/manifest.yml. They coincide everywhere except paperless, whose
-# role is paperless_ngx and whose directory is paperless-ngx. Keyed by tag rather
-# than by suite because smoke and idempotence-check accept --tags, and CI narrows
-# them to the changed service: pulling the whole tree for a one-service run would
-# cost several gigabytes of runner disk and download for nothing.
-#
-# tests/policy_ci_test.rb asserts this covers every implemented service exactly
-# once and names only real site.yml tags, so it cannot drift from the manifest.
+# Service images keyed by site.yml role tag, then services/ directory (only paperless
+# differs). Keyed by tag so a --tags run pulls only what it converges.
+# tests/policy_ci_test.rb holds this to the manifest.
 service_image_sources='
 beszel beszel
 dozzle dozzle
@@ -427,28 +359,12 @@ vaultwarden vaultwarden
 karakeep karakeep
 '
 
-# Retry budget for a registry that refuses. These ceilings bound all shell
-# arithmetic even when CI environment variables or registry diagnostics are
-# malformed or hostile.
+# Ceilings that bound all shell arithmetic even on malformed or hostile input.
 image_pull_attempt_limit=10
 image_pull_delay_limit=300
 image_pull_wait_limit=375
-# How many images the pre-pull fetches at once. Serial, it was 272 seconds of the
-# smoke lane's 1151 and 270 of idempotence-check's 1222 -- 33 images each, about
-# 22% of the two longest lanes -- and 18.5 runner-minutes across a full CI run,
-# measured on run 34454075921. Four rather than unbounded: the daemon already
-# fetches three layers of one image concurrently, so this is a dozen connections
-# and not a stampede against registries that answer "toomanyrequests" under far
-# less. An environment input for the same reason every other budget here is one.
-#
-# **Four wide is not four times faster, and raising it will not help.** Measured
-# on run 34467333883, the same fourteen lanes went from 1112 seconds of pre-pull
-# to 828 -- 26%, not 75%. smoke's own completion timestamps there show eight
-# clean bursts of four, so the concurrency is real and the arithmetic is not: a
-# runner pulls at a fixed network throughput, so overlapping the pulls recovers
-# per-request latency and leaves the bytes exactly where they were. What the
-# width buys is bounded, and a wider one would buy less of it while making the
-# burst rate at three registries worse.
+# Pre-pull concurrency. Width recovers per-request latency, not bandwidth, so raising
+# it buys little and worsens the burst rate at the registries.
 image_pull_width_limit=8
 
 bounded_integer() {
@@ -489,13 +405,7 @@ bounded_integer() {
   '
 }
 
-# Ten, the ceiling, rather than six (#762). Six attempts waited about 152
-# seconds in total, and ghcr.io's "toomanyrequests ... allowed: 44000/minute"
-# lasted longer than that four times in a week: each time, other images in the
-# same batch got through on attempt 4 or 5 while the one that failed used up
-# all six. Ten waits about seven minutes. The first batch holding a refused
-# image is the last one launched, so a registry that never answers costs about
-# eight minutes before the lane fails, not eight minutes per image.
+# Ten attempts (~7 min) because ghcr.io rate limits outlasted six (#762).
 image_pull_attempts=$(bounded_integer "${INTEGRATION_IMAGE_PULL_ATTEMPTS:-10}" \
   10 2 "$image_pull_attempt_limit")
 image_pull_delay=$(bounded_integer "${INTEGRATION_IMAGE_PULL_DELAY:-5}" \
@@ -525,9 +435,7 @@ cleanup_prepull_list() {
   fi
 }
 
-# The per-image output and status files the concurrent pre-pull writes. Removed
-# through the same EXIT trap as the two above, and for the same reason: a run
-# interrupted mid-pull must leave nothing behind under TMPDIR.
+# Removed by the EXIT trap so an interrupted pull leaves nothing under TMPDIR.
 cleanup_prepull_results() {
   if [ -n "$prepull_results" ]; then
     rm -rf "$prepull_results" || true
@@ -555,9 +463,8 @@ retry_after_seconds() {
     }
 
     {
-      # Case-insensitive, and tolerant of a space before the colon, so the hint
-      # is still read if the daemon ever echoes an HTTP-style "Retry-After".
-      # A stricter match would turn this whole parser into dead code silently.
+      # Case-insensitive and space-tolerant so an HTTP-style "Retry-After" still
+      # matches; a stricter match would silently make this parser dead code.
       if (!match($0, /[Rr][Ee][Tt][Rr][Yy]-[Aa][Ff][Tt][Ee][Rr][[:space:]]*:/)) next
       token = substr($0, RSTART + RLENGTH)
       sub(/^[[:space:]]*/, "", token)
@@ -618,28 +525,21 @@ image_pull_jitter() {
   '
 }
 
-# A refusal worth sleeping on. Docker Hub and ghcr.io both answer pressure with
-# "toomanyrequests", usually carrying a retry-after hint; both answer an image
-# that is not there, or that this caller may not read, with "denied" or "not
-# found". The distinction only matters for the toolchain image, whose absence is
-# the ordinary case on a developer's machine: retrying it would spend the whole
-# ladder in sleeps to rediscover a 404.
+# A refusal worth sleeping on. Only this is retried for the optional toolchain
+# image, whose 404 is ordinary on a developer machine.
 refusal_is_rate_limited() {
   LC_ALL=C grep -qiE 'toomanyrequests|too many requests|retry-after' "$1"
 }
 
 pull_image() {
   pull_target=$1
-  # When true, only a rate-limit refusal is retried and anything else fails at
-  # once. The caller is expected to have somewhere else to go.
+  # When true, only a rate-limit refusal is retried.
   pull_transient_only=${2:-false}
   pull_attempt=1
   pull_delay=$image_pull_delay
   pull_error=$(mktemp "${TMPDIR:-/tmp}/nas-platform-pull-error.XXXXXX") || pull_error=
   if [ -z "$pull_error" ]; then
-    # Without it every `docker pull` would redirect to "" and fail without
-    # running, burning the whole attempt budget of sleeps to report a refusal
-    # that never happened.
+    # Without the file every pull fails unrun and burns the whole retry budget.
     printf 'could not create a pull diagnostic file under %s\n' \
       "${TMPDIR:-/tmp}" >&2
     return 1
@@ -669,11 +569,8 @@ pull_image() {
     case $retry_after in
       ''|*[!0123456789]*) ;;
       *)
-        # A registry hint lengthens the wait but does not escape the ceiling the
-        # local ladder obeys. Honouring "retry-after: 5m" literally would sleep
-        # roughly thirty-one minutes across the default budget for a single
-        # image, and the Actions timeout would kill the job with no diagnostic
-        # -- strictly worse than reporting the refusal ourselves.
+        # A registry hint may lengthen the wait but never past the local ceiling,
+        # or the Actions timeout kills the job with no diagnostic.
         retry_after=$(bounded_integer "$retry_after" 0 0 "$image_pull_max_delay")
         [ "$retry_after" -le "$retry_delay" ] || retry_delay=$retry_after
         ;;
@@ -696,27 +593,9 @@ pull_image() {
 }
 
 suite_pull_images() {
-  # The upgrade lane converges two versions of one service, and only the head one
-  # is written in a compose.yml the loop below can read. Without this the base
-  # pull happens inside community.docker.docker_compose_v2 on the first converge
-  # instead, which is the registry refusal this whole ladder exists to absorb.
-  #
-  # BEFORE the loop rather than after it, and that is load-bearing rather than
-  # tidy: this function's status is the pipeline's, and a trailing command would
-  # replace it. A `[ -z ... ] || printf` placed after the loop returns 0 for every
-  # non-upgrade lane, which swallows exactly the truncated-enumeration failure the
-  # comment inside the loop exists to report -- caught by
-  # tests/integration_suite_test.sh, which plants a missing compose.yml and
-  # requires the pre-pull to refuse. The caller sorts -u, so order is free.
-  #
-  # Gated on the SUITE, not merely on the value being set. The workflow puts both
-  # upgrade inputs on the step environment of every matrix leg -- there is one
-  # step -- so without this gate the beszel lane pulls the Kapowarr base image,
-  # measured with a stub docker under INTEGRATION_PREPULL_ONLY=1. That is two
-  # wasted pulls on a routed bump and twenty-five on a fall-open, against a
-  # Docker Hub allowance of 200 per six hours that a full matrix already spends
-  # about 66 of -- and a rate-limited pull REDS the leg, so it converts a cost
-  # into a possible red on lanes with nothing to do with the upgrade.
+  # The upgrade base image is in no compose.yml. Printed BEFORE the loop: a trailing
+  # command would replace this function's status and hide a truncated enumeration.
+  # Gated on the suite because every matrix leg carries the upgrade inputs.
   if [ "$suite" = upgrade ] && [ -n "$upgrade_base_image" ]; then
     printf '%s\n' "$upgrade_base_image"
   fi
@@ -728,10 +607,7 @@ suite_pull_images() {
       case ",$suite_tags," in
         *",$service_tag,"*) ;;
         *)
-          # The seerr lane carries the shared media-acquisition foundation
-          # proof as well as its own service, and that converges audiobookshelf
-          # -- the second reader the foundation verifies -- which its own tags
-          # have no reason to name.
+          # The seerr lane's foundation proof also converges audiobookshelf.
           case "$suite:$service_tag" in
             seerr:audiobookshelf) ;;
             *) continue ;;
@@ -739,49 +615,20 @@ suite_pull_images() {
           ;;
       esac
     fi
-    # Explicit rather than left to set -e: the caller reads this function's
-    # status with `|| status=$?`, and POSIX suspends errexit for everything
-    # inside an AND-OR list -- including a function body. Without the exit, an
-    # unreadable compose.yml would be skipped and the suite would converge
-    # images that were never pre-pulled.
+    # Explicit exit: the caller's `|| status=$?` suspends set -e in this body.
     sed -n 's/^[[:space:]]*image:[[:space:]]*//p' \
       "$repo_dir/services/$service_dir/compose.yml" || exit 1
   done
 }
 
-# Warms the daemon's image cache before anything converges.
-#
-# Every image in services/*/compose.yml is digest-pinned, so once a layer set is
-# local the play's own `docker compose up` reaches no registry at all. That is
-# what makes this the honest retry point: the pull otherwise happens inside
-# community.docker.docker_compose_v2, which reports a registry refusal as a
-# module failure that aborts the play, and no Ansible retry keyword reaches into
-# the module's own pull. Observed on PR #84, where ghcr.io answered
-# "toomanyrequests: retry-after: 218.093us, allowed: 44000/minute" during
-# "Deploy Immich" and failed two suites that a re-run passed unchanged.
-#
-# Pulling from here is also what lets a registry login matter at all. The Docker
-# CLI reads its own credentials and sends them to the daemon per request rather
-# than the daemon holding them, and the plays run in a throwaway controller
-# container whose CLI has no credential store, so a pull issued from in there is
-# anonymous however the runner logged in. This one is issued by the runner's own
-# CLI, and every later pull finds the layers already local.
-#
-# Failing here fails the suite, deliberately: the point is to survive a transient
-# refusal, not to hide a registry that is genuinely unreachable.
+# Warms the image cache under a retry: a refusal inside docker_compose_v2 aborts the
+# play and no Ansible retry reaches it. Also the only pull carrying the runner's
+# registry login. A registry that stays unreachable still fails the suite.
 prepull_images() {
-  # Which image the controller runs from, and whether the toolchain is already
-  # in it, is decided before anything is pulled: it changes both what this
-  # function pulls and what the container has to install.
+  # Resolved first: it changes what is pulled and what the container installs.
   resolve_controller_image || return 1
-  # `for candidate in $(suite_pull_images | sort -u)` would take its status from
-  # sort, and #!/bin/sh has no pipefail to fix that. A missing
-  # services/<dir>/compose.yml aborts the enumeration's `while` subshell under
-  # set -e, sort still succeeds on the truncated list, and every image after the
-  # gap is silently never pre-pulled -- so it gets pulled inside
-  # docker_compose_v2 instead, which is exactly the registry refusal this
-  # function exists to absorb. Materialize the list first and refuse the suite if
-  # producing it failed.
+  # Materialized first: #!/bin/sh has no pipefail, so `$(... | sort -u)` would hide
+  # a truncated enumeration and skip the rest of the pre-pull.
   prepull_list=$(mktemp "${TMPDIR:-/tmp}/nas-platform-prepull.XXXXXX") ||
     prepull_list=
   if [ -z "$prepull_list" ]; then
@@ -812,35 +659,15 @@ prepull_images() {
   prepull_drained=0
   prepull_failed=0
   for pull_candidate in $prepull_targets; do
-    # Whatever the controller runs from is already local, so skipping it here
-    # saves a second registry round trip. On the toolchain path that is a ghcr.io
-    # image no service uses, and the base python image stops being pulled at all
-    # -- except by the three lanes that converge Dozzle, whose alert relay runs
-    # on it as a service in its own right.
+    # Already local. On the toolchain path the base python image is then pulled
+    # only by lanes converging Dozzle, whose alert relay runs on it.
     if [ "$pull_candidate" = "$controller_image" ]; then
       continue
     fi
     prepull_launched=$((prepull_launched + 1))
-    # Each image is pulled in its own subshell so pull_image's whole retry ladder
-    # -- its attempt counter, its backoff and its own diagnostic file -- is a
-    # private copy rather than four writers of one set of globals. The trap is the
-    # reason it can be: cleanup_pull_error is the parent's function, but the
-    # variable it reads is the child's, so an interrupted child removes the file it
-    # created and the parent's own trap has nothing of the child's to find.
-    #
-    # One trap, not a signal trap and an EXIT trap. A child killed during a backoff
-    # is the only way this is reached -- pull_image removes its own file on every
-    # return path it has -- and the two are redundant there under a /bin/sh that
-    # runs EXIT handlers for a signal it has no trap for. Redundant means neither
-    # is provable alone: with both in place, planting the removal of either left
-    # tests/integration_suite_test.sh green, and only removing both leaked. Under
-    # dash, which is what /bin/sh is on the runners, an untrapped SIGTERM does not
-    # run the EXIT handler at all, so this is the one that was doing the work.
-    #
-    # Output is captured per image and replayed in enumeration order below.
-    # Interleaving four `docker pull` progress streams would make the one thing
-    # this ladder exists to report -- which image the registry refused, and with
-    # what -- unreadable in a CI log.
+    # One subshell per image so each retry ladder has private state; the trap
+    # removes the child's own file. A signal trap, not EXIT: dash runs no EXIT
+    # handler on an untrapped SIGTERM. Output is replayed in order below.
     (
       trap 'cleanup_pull_error; exit 130' HUP INT TERM
       prepull_child_status=0
@@ -854,10 +681,7 @@ prepull_images() {
     wait
     prepull_batch=0
     drain_prepull_batch || prepull_failed=1
-    # Under a rate limit the pulls still queued would only extend the outage, so
-    # a batch carrying a refusal is the last one launched. Concurrency is what
-    # costs the rest of that batch: serially this stopped at the refusing image
-    # itself, and the widest it can now overshoot is image_pull_width - 1 pulls.
+    # A batch carrying a refusal is the last one launched.
     [ "$prepull_failed" -eq 0 ] || break
   done
   wait
@@ -866,10 +690,7 @@ prepull_images() {
   [ "$prepull_failed" -eq 0 ] || return 1
 }
 
-# Replays everything the finished children wrote, in the order the enumeration
-# launched them, and reports whether any of them refused. A child killed before
-# it could record a status wrote none, and that counts as a refusal rather than
-# as a silence.
+# Replays the children's output in launch order. A missing status is a refusal.
 drain_prepull_batch() {
   prepull_drain_status=0
   while [ "$prepull_drained" -lt "$prepull_launched" ]; do
@@ -885,10 +706,8 @@ drain_prepull_batch() {
   return "$prepull_drain_status"
 }
 
-# Everything the controller image is built from, as one byte stream. The tag is
-# a digest of it, so a bumped pin, an edited Dockerfile or a new collection is a
-# different image rather than a stale one wearing the right name -- which is the
-# whole reason nothing here needs invalidating by hand.
+# Everything the controller image is built from. The tag is its digest, so nothing
+# needs invalidating by hand.
 toolchain_digest_stream() {
   printf '%s\n' "$runner_image" "$ansible_core_version" "$requests_version" \
     "$ruby_package" "$curl_package"
@@ -907,10 +726,8 @@ sha256_stream() {
   fi
 }
 
-# Only linux/amd64 is published, because only the CI runners are that. Naming the
-# daemon's architecture in the tag is what makes an Apple Silicon machine miss
-# cleanly and build its own native image, instead of pulling an amd64 controller
-# and running every play under emulation.
+# Only linux/amd64 is published. The arch in the tag makes Apple Silicon miss cleanly
+# and build natively rather than run under emulation.
 toolchain_platform() {
   toolchain_arch=$(docker version --format '{{.Server.Arch}}' 2>/dev/null) ||
     toolchain_arch=
@@ -950,9 +767,7 @@ cleanup_toolchain_context() {
   fi
 }
 
-# The build context is exactly the two files the digest covers. Handing docker
-# the checkout instead would ship .git, every service definition and every
-# fixture to the daemon on a build that reads two files.
+# The build context is just the two digested files, not the checkout.
 build_toolchain_image() {
   resolve_toolchain_reference || return 1
   toolchain_context=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-toolchain.XXXXXX") ||
@@ -977,11 +792,8 @@ build_toolchain_image() {
   return "$toolchain_build_status"
 }
 
-# Chooses what the controller container starts from, in falling order of cost:
-# an image already on this daemon, the published one, one built here, and
-# finally the bare base image with the toolchain installed inside the run. Only
-# the last of those touches Docker Hub on a lane that converges no python
-# service, which is the whole point.
+# Controller image, cheapest first: local, published, built here, else the base
+# image with the toolchain installed in the run.
 controller_image=$runner_image
 toolchain_preinstalled=false
 
@@ -1017,18 +829,8 @@ resolve_controller_image() {
   fi
 }
 
-# The media-control collision fixture starts its endpoints with --pull=never and
-# refuses an image that is not digest-pinned, so it needs a reference that is both
-# already local and named by digest. The controller image is local by
-# construction but not always named that way, so the two properties are resolved
-# separately here rather than assumed to coincide:
-#
-#   base-image fallback  the reference is the digest-pinned pin itself
-#   pulled toolchain     the daemon knows its registry digest, and using it costs
-#                        nothing this run has not already spent
-#   built toolchain      a locally built image has no registry digest at all, so
-#                        the fixture falls back to the base image -- which that
-#                        path has already pulled, or pulls here
+# The collision fixture needs an image both local and named by digest. A locally
+# built toolchain has no registry digest, so it falls back to the base image.
 collision_image=
 resolve_collision_image() {
   collision_image=$controller_image
@@ -1062,15 +864,11 @@ publish_toolchain_image() {
   printf 'published %s\n' "$toolchain_reference" >&2
 }
 
-# Pull-only mode exists so tests/integration_suite_test.sh can drive the retry
-# against a stub docker without building a sandbox. It shares the code path the
-# real run uses rather than re-implementing it.
+# Pull-only mode lets tests/integration_suite_test.sh drive the retry against a stub docker.
 trap 'cleanup_pull_error; cleanup_prepull_list; cleanup_prepull_results; cleanup_toolchain_context' EXIT
 trap 'exit 130' HUP INT TERM
 
-# Reports the image the suites on this daemon would run from, so the workflow
-# that publishes it and the harness that consumes it cannot disagree about which
-# tag that is.
+# Reports the toolchain tag, so the publishing workflow and the harness agree on it.
 if [ "${INTEGRATION_TOOLCHAIN_REFERENCE_ONLY:-0}" = 1 ]; then
   reference_status=0
   resolve_toolchain_reference || reference_status=$?
@@ -1094,9 +892,8 @@ cleanup_sandbox_repo_dir=$repo_dir
 . "$repo_dir/tests/sandbox_cleanup.sh"
 . "$repo_dir/tests/integration_lock.sh"
 
-# Bind sources must be valid for the Docker daemon as well as this container. On
-# macOS TMPDIR lives under /private, which Docker Desktop shares by default; on
-# Linux the daemon shares the host filesystem, so /tmp is correct.
+# Bind sources must be valid on the daemon host too: macOS TMPDIR is under /private,
+# which Docker Desktop shares by default.
 temporary_parent=${TMPDIR:-/tmp}
 temporary_parent=${temporary_parent%/}
 temporary_parent=$(CDPATH= cd -P "$temporary_parent" && pwd -P)
@@ -1165,9 +962,7 @@ expected_release_id=$(git -C "$repo_dir" rev-parse HEAD)
 active_release_dir="$sandbox/volume1/Docker/nas-platform/releases/$expected_release_id"
 test ! -e "$sandbox/volume1/Docker/nas-platform"
 
-# Deliberately stale deployment state, including both legacy `current` content
-# and an inactive same-SHA release. Convergence must replace all of it without
-# giving the full service lane a pre-existing deployment root.
+# Deliberately stale deployment state that convergence must replace.
 stale_docker_root="$sandbox/stale-root/Docker"
 stale_deploy_root="$stale_docker_root/nas-platform"
 stale_release_dir="$stale_deploy_root/releases/$expected_release_id"
@@ -1178,18 +973,14 @@ printf '%s\n' legacy-current-compose > \
   "$stale_deploy_root/current/services/beszel/compose.yml"
 printf '%s\n' stale-same-sha-compose > \
   "$stale_release_dir/services/beszel/compose.yml"
-# A platform override the integration bundle never renders: the run deploys the
-# canonical and integration files, so a Mac override left in the release is
-# target-only content that convergence must delete.
+# A Mac override left in the release is target-only content convergence must delete.
 printf '%s\n' target-only-override > \
   "$stale_release_dir/services/beszel/compose.mac.yml"
 printf '%s\n' undeclared-service > \
   "$stale_release_dir/services/undeclared/compose.yml"
 
-# A minimal committed controller checkout proves canonical+platform image merge
-# behavior through the actual deployment role and manifest template. It is not
-# part of the production service inventory and its override cannot be consumed
-# by the real service deployment.
+# An isolated checkout proving canonical+platform image merge through the real
+# deployment role; not part of the production inventory.
 manifest_controller="$sandbox/manifest-controller"
 manifest_docker_root="$sandbox/manifest-root/Docker"
 manifest_media_root="$sandbox/manifest-root/media"
@@ -1349,18 +1140,14 @@ EOF
 create_controller_symlink_fixture manifest manifest
 create_controller_symlink_fixture override override
 
-# Always give the container an isolated checkout at the same HEAD, then overlay
-# the working files so integration-only dirty-controller tests retain their
-# exact meaning. The isolated copy is also the only place where CI replaces the
-# committed deployment vault with its generated ephemeral fixture.
+# An isolated clone at HEAD with the working files overlaid. Also the only place CI
+# swaps in the ephemeral vault fixture.
 controller_mount=$sandbox/repo
 git clone --quiet --no-local --no-checkout "$repo_dir" "$controller_mount"
 git -C "$controller_mount" checkout -q --detach "$expected_release_id"
 tar -C "$repo_dir" -cf - --exclude .git . | tar -C "$controller_mount" -xf -
 
-# Exercise the controller guard in an isolated Git checkout. Its play has a
-# target-mutating task immediately after validation, so each refusal also proves
-# the guard runs before target state can change.
+# Each refusal also proves the controller guard runs before any target mutation.
 controller_test_dir="$sandbox/controller-checkout"
 controller_test_playbook="$controller_test_dir/dirty-controller-test.yml"
 controller_test_target="$sandbox/dirty-controller-target"
@@ -1396,12 +1183,8 @@ printf '%s\n' pristine > "$controller_test_sentinel"
 
 printf 'sandbox: %s\n' "$sandbox"
 
-# Services reach one another across published host ports, so they need an address
-# for the daemon's host that resolves inside a container. Docker Desktop supplies
-# host.docker.internal; a Linux daemon does not, and the service containers are
-# started by Compose rather than by this script, so they cannot be given the name
-# through --add-host. Use the default bridge gateway there, which every container
-# can route to and which the published ports listen on.
+# Linux daemons lack host.docker.internal and Compose-started containers get no
+# --add-host, so use the bridge gateway the published ports listen on.
 if docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -qi 'docker desktop'; then
   nas_address=host.docker.internal
 else
@@ -1417,11 +1200,7 @@ printf 'host address: %s\n' "$nas_address"
 # read the run makes happens under the retry rather than half of them.
 prepull_images
 
-# The sandbox teardown runs a container of its own on the way out, and every
-# lane reaches it. Left pointing at the base image it would put a Docker Hub
-# pull back on the exit path of every lane and cancel out the saving the
-# toolchain image exists for; the controller image is local by construction and
-# carries the same python.
+# Teardown reuses the local controller image, avoiding a Docker Hub pull per lane.
 cleanup_sandbox_image=$controller_image
 
 paperless_fixture_preseeded=false
@@ -1478,20 +1257,13 @@ docker run --rm \
   -v "$sandbox":"$sandbox" \
   -e ANSIBLE_CONFIG=/repo/ansible.cfg \
   -e PLATFORM_NAS_ADDRESS="$nas_address" \
-  `# The sandbox reaches published services at the same address it is` \
-  `# administered through, so the two coordinates coincide here. Stated` \
-  `# explicitly because the inventory no longer infers one from the other.` \
+  `# The sandbox is published and administered at the same address.` \
   -e PLATFORM_PUBLIC_HOST="$nas_address" \
-  `# The launcher library is a real file rather than text pasted into the` \
-  `# controller argument, so the two values it needs cross the boundary as` \
-  `# environment rather than as interpolation.` \
   -e PLATFORM_INTEGRATION_SANDBOX="$sandbox" \
   -e PLATFORM_INTEGRATION_PROJECT_NAMESPACE="$integration_project_namespace" \
   -e INTEGRATION_SUITE="$suite" \
   -e INTEGRATION_TAGS="$suite_tags" \
-  `# The subject the upgrade lane repins and the base version it converges` \
-  `# first. Empty for every other lane, and the controller refuses the upgrade` \
-  `# lane without both.` \
+  `# Upgrade-lane inputs; empty for every other lane.` \
   -e INTEGRATION_UPGRADE_SERVICE="$upgrade_service" \
   -e INTEGRATION_UPGRADE_BASE_IMAGE="$upgrade_base_image" \
   -e INTEGRATION_RUN_SERVICE_SCENARIOS="$run_service_scenarios" \
@@ -1500,12 +1272,7 @@ docker run --rm \
   -e PLATFORM_PAPERLESS_FIXTURE_PRESEEDED="$paperless_fixture_preseeded" \
   -e PLATFORM_KOMGA_FIXTURE_PRESEEDED="$komga_fixture_preseeded" \
   -e PLATFORM_JELLYFIN_FIXTURE_PRESEEDED="$jellyfin_fixture_preseeded" \
-  `# The controller is a file rather than text pasted into an argument, so` \
-  `# everything the launcher used to interpolate into it crosses as environment` \
-  `# instead. Two roots meet in that program and neither may be inferred from` \
-  `# where the file sits: /repo is the checkout under test, which is the copy at` \
-  `# the sandbox path below rather than the calling workstation checkout, while` \
-  `# the sandbox is the disposable tree the plays deploy into.` \
+  `# /repo is the sandbox copy under test, not the workstation checkout.` \
   -e CONTROLLER_REPO_DIR=/repo \
   -e CONTROLLER_SANDBOX="$sandbox" \
   -e CONTROLLER_PROJECT_NAMESPACE="$integration_project_namespace" \
@@ -1513,9 +1280,7 @@ docker run --rm \
   -e CONTROLLER_CURL_PACKAGE="$curl_package" \
   -e CONTROLLER_ANSIBLE_CORE_VERSION="$ansible_core_version" \
   -e CONTROLLER_REQUESTS_VERSION="$requests_version" \
-  `# Both of these are a git rev-parse the launcher already ran against the` \
-  `# right tree. Recomputing either inside the container would run git against` \
-  `# /repo, which is the copy, and go wrong without saying so.` \
+  `# Computed by the launcher: git against /repo, the copy, would be wrong.` \
   -e CONTROLLER_EXPECTED_RELEASE_ID="$expected_release_id" \
   -e CONTROLLER_MANIFEST_FIXTURE_SHA="$manifest_fixture_sha" \
   -e CONTROLLER_ACTIVE_RELEASE_DIR="$active_release_dir" \

@@ -1,12 +1,7 @@
 ---
-# Karakeep, one stage per file, in the order they run.
-#
-# Imported statically, as roles/nextcloud/tasks/main.yml explains: that is what
-# lets --tags platform_verify_karakeep reach the verification through verify.yml's
-# tags: [never], and what keeps these files in the fixture set
-# tests/policy_mutation_support.rb derives.
-#
-# The gate is karakeep_deployment_enabled and it lives inside these files.
+# Karakeep, one stage per file, in the order they run. Imported statically so
+# --tags platform_verify_karakeep reaches verify.yml through tags: [never].
+# The gate is karakeep_deployment_enabled, inside these files.
 - name: Deploy the Karakeep stack
   ansible.builtin.import_tasks: deploy.yml
 

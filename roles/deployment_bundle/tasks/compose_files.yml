@@ -1,15 +1,7 @@
 ---
-# One rule for which Compose files each service deploys from, replacing the copy
-# every service role used to carry.
-#
-# The platform override is optional and its presence must be read from the
-# deployed release rather than the controller checkout: main.yml only copies an
-# override the controller actually carries, and target.yml validates containment
-# rather than existence, so a selective run can legitimately converge against a
-# release that predates one.
-#
-# Resolved from the controller manifest rather than deployment_bundle_services so
-# that verify.yml, which never runs inputs.yml, can include this file directly.
+# The override's presence is read from the deployed release, not the checkout, since a
+# selective run may converge an older release. Reads the manifest directly so
+# verify.yml, which never runs inputs.yml, can include this file.
 - name: Resolve the manifest services requiring Compose selection
   ansible.builtin.set_fact:
     deployment_compose_services: >-

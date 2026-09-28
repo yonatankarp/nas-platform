@@ -1,37 +1,12 @@
 ---
-# Delivers one deployment notification -- a per-service report -- to Pushover.
-# The run summary was its second caller until #558 stage 4a; the delivery and
-# its failure semantics stay stated once, here, rather than inside report.yml.
-#
-# It lives in roles/deployment_bundle beside report.yml since #558 stage 4a moved
-# both out of the alerting sink's role. A change under roles/deployment_bundle/ falls open to
-# every lane and every idempotence shard, which is wider than the lanes that run
-# a report but never narrower.
-#
-# WHICH APPLICATION SENDS IT is the caller's choice, by vault key NAME rather
-# than by value: deployment_pushover_token_variable names the vault variable holding
-# the application token (vault_pushover_containers_token for a service report),
-# and the value is read
-# through the vars lookup below. The name is what lets a refusal say which
-# token to fix without the value ever reaching a message.
-#
-# deployment_pushover_ttl and deployment_pushover_html are optional and omitted from the form
-# when unset. With html set the caller owns escaping: every interpolated value in
-# deployment_pushover_message must already be HTML-escaped and short enough that the
-# 1024 cut below never fires, because a cut can split an entity or a tag.
-#
-# THE VERDICT FOLLOWS roles/beszel/tasks/configure.yml (#598). An authoritative
-# refusal fails the converge; anything that is not an authoritative answer does
-# not, because a third party's uptime must not decide whether this NAS deployed.
-# By the time this runs the services have already converged, so failing on an
-# outage would report a broken deployment that is not broken.
+# Delivers one per-service deployment notification to Pushover. The caller names the
+# token's vault variable, not its value, so a refusal can name it without leaking it.
+# With deployment_pushover_html set, the caller must pre-escape and stay under 1024.
+# Verdict follows roles/beszel/tasks/configure.yml (#598): only an authoritative
+# refusal fails; an outage must not fail a converge whose services already deployed.
 
-# Pushover refuses a title over 250 characters and a message over 1024 with a
-# 400 and status 0 -- an authoritative refusal, which would fail the converge
-# after every service had already deployed. The summary's image lines are
-# unbounded (a Renovate batch moves many images), so both are cut here, with a
-# visible marker, before they can become one. leeway 0, because Jinja's default
-# leeway lets a string run five characters past the length it was given.
+# Pushover refuses an over-long title or message with a 400, so both are cut here.
+# leeway 0: Jinja's default lets a string run five characters past the limit.
 - name: Publish the deployment notification to Pushover
   ansible.builtin.uri:
     url: "{{ deployment_pushover_api_url }}"
@@ -45,37 +20,17 @@
       priority: "{{ deployment_pushover_priority }}"
       ttl: "{{ deployment_pushover_ttl | default(omit) }}"
       html: "{{ deployment_pushover_html | default(omit) }}"
-    # Pushover's two real answers. The verdict is the tasks below, not this list:
-    # failed_when replaces the module's own, and uri parses a JSON body whatever
-    # the status, so a 403 still registers what Pushover said.
+    # failed_when replaces the verdict below; uri parses the JSON body whatever the status.
     status_code: [200, 400]
     timeout: 10
   register: deployment_pushover_delivery
-  # Without this line a DNS failure, a timeout or a 5xx fails the run.
   failed_when: false
-  # Publishing is not host state, and the converge-every-run model asserts a
-  # second run reports no changes.
   changed_when: false
   no_log: true
 
-# A verdict needs BOTH an authoritative code and Pushover's own status field.
-# A captive portal or proxy can answer 200 or 4xx with a body that carries no
-# verdict, and reading that as a refusal is the one invention this must not
-# make. 429 is Pushover's quota answer: a message not delivered, not credentials
-# refused, so it fails nothing.
-#
-# A uri that refused before it made any request -- an unparseable url, an
-# unsupported scheme -- registers no status and no body at all (the #521 shape).
-# What keeps that from reading as "refused" is the conjunction: no body means no
-# Pushover status. The -1 default is belt and braces beside it, and no row in
-# tests/deployment_summary_test.rb can observe it, because a request never made
-# has no body to disagree with it.
-#
-# The body status must be a real integer. `| int` would read any non-number,
-# "0" included, as 0 and invent a refusal; a bare `== 0` is too loose the other
-# way, because false == 0 and true == 1 in Jinja. `is integer` is false for
-# both booleans, for strings and for floats, measured on the pinned Jinja, so a
-# status of false, true or "0" is no verdict.
+# A verdict needs both an authoritative code and Pushover's own status field: a proxy
+# can answer 200/4xx with no verdict. 429 is a quota answer, not a refusal. `is integer`
+# rejects booleans and "0", which `| int` and `== 0` would read as a refusal.
 - name: Summarize the Pushover answer without the credentials it carried
   ansible.builtin.set_fact:
     deployment_pushover_verdict: >-
@@ -86,10 +41,7 @@
       {%- if code == 200 and answer == 1 -%}accepted{%- elif 400 <= code <= 499
       and code != 429 and answer == 0 -%}refused{%- else -%}unanswered{%- endif -%}
 
-# The non-verdict, said out loud and as its own task: no_log suppresses an
-# assert's success_msg but not its fail_msg (measured in #598), so a redacted
-# assert cannot say that nothing was found out. It names no vault key, which is
-# what lets it stay visible.
+# Its own task: no_log suppresses an assert's success_msg but not its fail_msg.
 - name: Report that Pushover did not answer, which is not a refusal
   ansible.builtin.debug:
     msg: >-
@@ -98,9 +50,6 @@
       deployment itself converged.
   when: deployment_pushover_verdict == 'unanswered'
 
-# Redacted because the fail_msg names the vault keys to fix, which
-# tests/policy_vault_test.rb requires; no_log still lets the fail_msg through,
-# and it renders no value. No success_msg: no_log would suppress it.
 - name: Refuse a deployment notification Pushover rejected
   ansible.builtin.assert:
     that:

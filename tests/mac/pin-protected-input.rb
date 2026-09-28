@@ -12,19 +12,9 @@
 #             writing one, which is how a resumed manual validation proves it
 #             was handed the same inputs.
 #
-# Exits 0 on success, 1 with a one-line `protected <label> input <detail>`
-# diagnostic on any refusal. Nothing it reads or writes is ever printed.
-#
-# This is a TOCTOU-safe pin, not a copy. The source is opened through a
-# directory descriptor held for the whole operation -- `in_directory` fchdir()s
-# into it, so `./basename` cannot be redirected by a component of the path being
-# swapped underneath -- and every lstat/stat pair before and after the read must
-# still agree. The interleaving of those checks with the syscalls between them
-# is the security property: do not reorder, coalesce, or hoist them.
-#
-# It lived in a `<<'RUBY'` heredoc inside tests/mac/run.sh until #147. Nothing
-# syntax-checked it and nothing could unit-test it; tests/mac/pin-protected-input-test.rb
-# now does both. The body below is byte-identical to what that heredoc rendered.
+# Exits 1 with `protected <label> input <detail>`; never prints what it reads.
+# TOCTOU-safe: opened via a held directory fd, and every lstat/stat pair must agree.
+# The ordering of those checks is the security property; do not reorder or hoist (#147).
 source_path, destination_path, label, kind, external, repository, protected_root, reuse = ARGV
 require "fiddle"
 require "open3"

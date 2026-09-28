@@ -1,9 +1,6 @@
 ---
-# Platform fragments. Compose resolves a YAML anchor only inside the file that
-# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
-# copies equal and records there why cross-file sharing was not taken. A
-# container needing different health-check timing overrides only the fields it
-# changes, so a deviation reads as a deviation.
+# Platform fragments: anchors are per-file, so each stack carries a copy that
+# tests/policy_test.rb pins equal.
 x-logging: &default-logging
   driver: json-file
   options:
@@ -18,17 +15,11 @@ x-linuxserver-environment: &linuxserver-environment
 
 x-service-defaults: &service-defaults
   cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
-  # The linuxserver.io entrypoint reaches PUID/PGID by calling setuid(2) as
-  # root, which no_new_privs does not restrict; nothing in these images executes
-  # a setuid binary, so the flag costs them nothing.
+  # The linuxserver.io entrypoint's setuid(2) is unaffected by no_new_privs.
   security_opt:
     - no-new-privileges:true
   restart: unless-stopped
-  # Each of these owns a SQLite database under a recovery: critical config
-  # directory. A shutdown only has to commit the open transaction and check the
-  # write-ahead log back into it; 30s is far past that and short enough that a
-  # stack restart stays quick. A container wanting a different window states its
-  # own instead of joining this fragment: shutdown behaviour is never inherited.
+  # Each owns a critical SQLite database; 30s covers a WAL checkpoint.
   stop_grace_period: 30s
   logging: *default-logging
   networks:
@@ -106,12 +97,8 @@ services:
   bazarr:
     <<: *service-defaults
     container_name: bazarr
-    # Bazarr defaults general.hostname to platform.node() and stores that default
-    # through dynaconf's TOML parser, so a Docker-assigned hostname -- the random
-    # container ID -- shaped like 123e45678901 is saved as `.inf` and every later
-    # settings submit answers 406 over general.hostname (#708). A fixed,
-    # non-numeric hostname removes the draw, and heals a config already holding
-    # `.inf` at the next start, because Bazarr resets it to this value.
+    # A random container ID like 123e45678901 parses as `.inf` in Bazarr's TOML
+    # settings and every later submit answers 406 (#708); a fixed name heals it.
     hostname: bazarr
     image: lscr.io/linuxserver/bazarr:1.6.2@sha256:8b30e81c4aec2991f469e78fae8afaa89ecc9b21a80e3897f50427216b55470c
     cpus: 1.0

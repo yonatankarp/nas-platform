@@ -1,12 +1,6 @@
 #!/usr/bin/env ruby
-# The static half of the Seerr service contract: bootstrapped request front end
-# ownership, decided from the repository alone with nothing deployed.
-#
+# Static half of the Seerr contract, decided from the repository alone.
 # usage: seerr-static.rb REPOSITORY
-#
-# PLATFORM_CONTRACT_REPO_DIR names the same repository and is read below for
-# tests/policy_support.rb, so this program carries no copy of flatten_tasks.
-#
 require "yaml"
 
 root = ARGV.fetch(0)
@@ -45,26 +39,18 @@ if failures.empty?
   compose = YAML.safe_load_file(File.join(root, "services/seerr/compose.yml"), aliases: true)
   service = compose.fetch("services").fetch("seerr")
 
-  # Seerr reads Jellyfin's users and writes Radarr's and Sonarr's connection
-  # rows, addressing all three by Compose service alias, so unlike Kapowarr and
-  # Pinchflat it is not self-contained and has to join the shared control
-  # network.
+  # Addresses Jellyfin and the arrs by service alias, so it joins the control network.
   failures << "Seerr must join the shared media control network" unless
     Array(service["networks"]).include?("media-control") &&
     compose.dig("networks", "media-control", "external") == true
 
-  # The image sets User: node:node with gid 1000, which is not this platform's
-  # gid, and its entrypoint neither starts as root nor re-executes, so the only
-  # way the platform identity reaches the process is a Compose `user:`. Neither
-  # gosu nor su-exec is in the image, so PUID/PGID would be dead configuration.
+  # The image runs as node (gid 1000) with no gosu/su-exec, so only `user:` works.
   failures << "Seerr must run as the shared platform identity" unless
     service["user"] == "${NAS_UID:?}:${NAS_GID:?}"
   # npm start forks; without an init the container accumulates zombies.
   failures << "Seerr must reap what npm start forks" unless service["init"] == true
 
-  # The whole of Seerr's authentication, and the one thing that makes it fit
-  # this platform: the application reads API_KEY on every start and overwrites
-  # a drifted stored value with it, so the credential never has to be read back.
+  # API_KEY overwrites a drifted stored value on every start; nothing is read back.
   failures << "Seerr must require its API key from the rendered environment" unless
     service.dig("environment", "API_KEY") == "${SEERR_API_KEY:?}"
 
@@ -76,12 +62,8 @@ if failures.empty?
   failures << "the Mac override must republish the web UI on the harness port" unless
     mac.dig("services", "seerr", "ports") == ["${SEERR_HOST_PORT:?}:5055"]
 
-  # The image ships no HEALTHCHECK, so docker_compose_v2 with wait: true would
-  # return as soon as the container is running and the next task would race a
-  # server that takes several seconds more to answer. curl is absent from the
-  # image and wget is the BusyBox applet, so the probe has to be spelled this
-  # way, and it has to read a route that answers 200 before the bootstrap as
-  # well as after it.
+  # No image HEALTHCHECK, no curl (wget is BusyBox), and the route must answer 200
+  # before and after the bootstrap.
   probe = Array(service.dig("healthcheck", "test")).join(" ")
   failures << "Seerr must probe a route that answers before it is configured" unless
     probe.include?("/api/v1/settings/public")
@@ -94,34 +76,26 @@ if failures.empty?
   defaults = YAML.safe_load_file(File.join(root, "roles/seerr/defaults/main.yml"))
   failures << "Seerr must keep its state in the declared config root" unless
     defaults["seerr_config_host_path"] == "{{ nas_docker_root }}/seerr/config"
-  # The design's two identities. ADMIN short-circuits every check, so the owner
-  # needs the single bit; 160 is REQUEST plus AUTO_APPROVE and deliberately
-  # excludes every 4K bit and every MANAGE_* bit.
+  # ADMIN short-circuits every check; 160 is REQUEST + AUTO_APPROVE, no 4K or MANAGE_*.
   failures << "the Seerr owner must hold exactly ADMIN" unless
     defaults["seerr_owner_permissions"] == 2
   failures << "the Seerr household identity must hold exactly REQUEST and AUTO_APPROVE" unless
     defaults["seerr_household_permissions"] == 160
-  # defaultPermissions ships 32 and newPlexLogin ships true, and together they
-  # give every Jellyfin user who signs in a standing request permission the
-  # design never granted. mediaServerLogin is deliberately absent: it is not the
-  # auto-create switch but the one that enables Jellyfin sign-in at all, and
-  # false there locks out the two imported identities as well.
+  # Shipped defaults grant every Jellyfin sign-in a request permission. mediaServerLogin
+  # is absent deliberately: false would disable Jellyfin sign-in entirely.
   declared = defaults["seerr_main_settings"]
   failures << "Seerr must pin the sign-in policy the design requires" unless
     declared.is_a?(Hash) && declared["defaultPermissions"] == 0 &&
     declared["newPlexLogin"] == false && declared["localLogin"] == false
   failures << "Seerr must not disable Jellyfin sign-in for its own identities" if
     declared.is_a?(Hash) && declared.key?("mediaServerLogin")
-  # MediaServerType.JELLYFIN. Without it the bootstrap answers 500
-  # NO_ADMIN_USER, which reads as a Jellyfin permission problem and is not.
+  # Without it the bootstrap answers a misleading 500 NO_ADMIN_USER.
   failures << "the Seerr bootstrap must declare the Jellyfin media server type" unless
     defaults["seerr_media_server_type"] == 2
-  # Radarr's and Sonarr's own keys, consumed rather than minted again.
   failures << "Seerr must consume the arrs' own API keys" unless
     defaults.dig("seerr_radarr_server", "apiKey") == "{{ vault_arr_radarr_api_key }}" &&
     defaults.dig("seerr_sonarr_server", "apiKey") == "{{ vault_arr_sonarr_api_key }}"
-  # Seerr's Pushover agent sends nothing when disabled or when either credential
-  # is empty, and fails silently either way.
+  # The agent fails silently when disabled or missing a credential.
   pushover = defaults["seerr_pushover_declaration"]
   failures << "Seerr's Pushover agent must send with the Media application token and the vault's user key" unless
     pushover.is_a?(Hash) && pushover["enabled"] == true &&
@@ -129,8 +103,7 @@ if failures.empty?
     pushover.dig("options", "userToken") == "{{ seerr_pushover_user_key }}" &&
     defaults["seerr_pushover_access_token"] == "{{ vault_pushover_media_token }}" &&
     defaults["seerr_pushover_user_key"] == "{{ vault_pushover_user_key }}"
-  # Request events moved to Pushover in #558; an ntfy agent left on publishes
-  # every one of them twice.
+  # An ntfy agent left on would publish every request twice (#558).
   failures << "Seerr's ntfy agent must be declared off" unless
     defaults.dig("seerr_ntfy_declaration", "enabled") == false
 
@@ -140,8 +113,7 @@ if failures.empty?
       [["PLATFORM_CONTAINER_CPUSET", "{{ platform_effective_container_cpuset }}"]]
   failures << "Seerr env must carry the vault-authored API key" unless
     env_assignments.include?(["SEERR_API_KEY", "{{ vault_seerr_api_key }}"])
-  # Seerr has no administrator password of its own and must not grow one: its
-  # owner row is created with a Jellyfin user type and no local password.
+  # The owner is a Jellyfin user with no local password.
   failures << "Seerr must not invent an administrator credential of its own" if
     env_assignments.any? { |name, _value| name.match?(/SEERR_(?:ADMIN|PASSWORD|WEBUI)/) }
 
@@ -150,14 +122,8 @@ if failures.empty?
       YAML.safe_load_file(File.join(root, "roles/seerr/tasks/#{file}.yml"), aliases: true)
     )
   end
-  # One `up` here since #646, which is the deployment. The bounded recovery that
-  # #537 bracketed it with moved to roles/container_health/tasks/recover.yml --
-  # this role held 114 lines of it byte-identical with five others -- so what is
-  # counted here is the include that spends it rather than the force-recreate
-  # itself. Counted separately from the deployment rather than as a total, so a
-  # second plain deployment is still refused and a recovery included twice in one
-  # converge is still refused; roles/container_health/tasks/recover.yml holding
-  # exactly one force-recreate is tests/container_health_wiring_test.rb's.
+  # One deployment `up`; recovery lives in roles/container_health/tasks/recover.yml
+  # (#646) and is counted as its include.
   compose_ups = tasks.select { |task| task.dig("community.docker.docker_compose_v2", "state") == "present" }
   failures << "Seerr must deploy through docker_compose_v2" unless
     compose_ups.count { |task| !task["community.docker.docker_compose_v2"].key?("recreate") } == 1
@@ -169,9 +135,7 @@ if failures.empty?
   failures << "Seerr must verify its effective project CPU policy" unless
     tasks.count { |task| task.dig("vars", "container_cpu_service_name") == "seerr" } == 1
 
-  # The bootstrap is the one task that closes the anonymous takeover window on
-  # POST /api/v1/auth/jellyfin, and it has to be guarded so a reconverge does
-  # not mint a second Jellyfin device session and report a change forever.
+  # Guarded, so a reconverge does not mint another Jellyfin device session.
   bootstrap = tasks.find do |task|
     task.dig("ansible.builtin.uri", "url").to_s.end_with?("/auth/jellyfin")
   end
@@ -182,9 +146,7 @@ if failures.empty?
     bootstrap["no_log"] == true &&
     Array(bootstrap["when"]).include?("seerr_needs_bootstrap | bool")
 
-  # Nothing here is create-if-absent: the arr create routes append blindly, and
-  # the permission write is unconditional. Every write is guarded, and every
-  # write is skipped under --check with a debug naming the planned change.
+  # Nothing is create-if-absent, so every write is guarded and skipped under --check.
   writes = tasks.select do |task|
     uri = task["ansible.builtin.uri"]
     uri.is_a?(Hash) && %w[POST PUT].include?(uri["method"])
@@ -222,9 +184,7 @@ if failures.empty?
   failures << "Seerr verification must assert its exact access and policy outcomes" unless
     conditions.any? { |value| value.include?("seerr_verify_anonymous.status") && value.include?("401") } &&
     conditions.any? { |value| value.include?("seerr_verify_authenticated.status") && value.include?("200") } &&
-    # The user row with id 1 is the only thing that closes the takeover window,
-    # so its absence has to be a verification failure rather than a 403 nobody
-    # reads.
+    # User row 1 closes the takeover window; its absence must fail verification.
     conditions.any? { |value| value.include?("selectattr('id', 'equalto', 1)") } &&
     conditions.any? { |value| value.include?("newPlexLogin") } &&
     conditions.any? { |value| value.include?("mediaServerLogin") }
@@ -233,10 +193,8 @@ if failures.empty?
 end
 
 unless failures.empty?
-  # Every violation, one per line, each line naming the contract that authored it.
-  # The prefix is not decoration: tests/<service>_contract_test.rb requires a row
-  # that says "this must be refused" to see it, so a Ruby backtrace or a shell
-  # diagnostic can no longer stand in for a refusal (#352).
+  # One line per violation with the contract's prefix, which contract tests
+  # match on (#352).
   warn failures.map { |failure| "Seerr contract failed: #{failure}" }.join("\n")
   exit 1
 end

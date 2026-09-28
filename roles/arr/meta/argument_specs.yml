@@ -60,11 +60,7 @@ argument_specs:
         type: list
         elements: dict
         required: false
-      # The two structured declarations below are fed straight into
-      # filter_plugins/acquisition_servarr.py, whose tasks run under
-      # no_log: true. Without a declared shape a missing or mistyped field
-      # surfaces as an AnsibleFilterError inside a redacted task; declared, it
-      # fails at role entry naming the element and the field.
+      # Declared so a malformed field fails at role entry, not inside a no_log filter task.
       arr_servarr_instances:
         type: list
         elements: dict
@@ -94,8 +90,7 @@ argument_specs:
           rename_field:
             type: str
             required: true
-          # Read as instance.get('tags', []) by acquisition_servarr_client_body.
-          # No declared instance carries tags today; the platform tags nothing.
+          # Optional: read as instance.get('tags', []); the platform tags nothing today.
           tags:
             type: list
             elements: int
@@ -111,8 +106,7 @@ argument_specs:
           implementation:
             type: str
             required: true
-          # acquisition_application_body defaults implementation_name to
-          # implementation, so it is optional here and absent from the defaults.
+          # Optional: defaults to implementation.
           implementation_name:
             type: str
             required: false

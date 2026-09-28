@@ -1,43 +1,8 @@
 #!/bin/sh
-# tests/mac/run.sh refuses to start on three classes of preset environment, and
-# until #677 nothing asserted any of it: one `grep -rl` for the three refusal
-# messages found the file that raises them and nothing else. So the whole block
-# could have been deleted, or one variable dropped from the middle chain, and
-# every check in the repository stayed green.
-#
-# The middle guard is the one that matters. It covers eleven Ruby and Bundler
-# variables, and run.sh decrypts a vault: every one of them loads code into Ruby
-# before the script's first line. It is not theoretical either -- in #643 an
-# exported RUBYOPT=-EUTF-8 from tests/validate-policy.sh reached this guard, and
-# the guard is what turned it into a red `static (3)` rather than a Mac proof
-# running with an injected Ruby startup flag. That is also why the gate still
-# sets RUBYOPT per check instead of exporting it once.
-#
-# WHY A PER-VARIABLE CASE AND NOT ONE CASE PER GUARD. Each guard is a long `&&`
-# chain ending in a single `||`, and that shape fails quietly in one direction:
-# drop a `[ -z ... ] &&` term and the chain still evaluates, still refuses every
-# variable it still names, and its one refusal message is unchanged. A case per
-# guard would keep passing across exactly that hole. So each of the eighteen
-# variables is set on its own and required to produce its guard's message.
-#
-# THE SET IS CLOSED IN BOTH DIRECTIONS, which the per-variable cases alone do
-# not do: they prove these eighteen are refused, not that these eighteen are all
-# of them. Guard 3 has already churned -- 02d60e23 took it from about thirty
-# names to six -- so a nineteenth name added to a chain with no row here would be
-# the same silent hole arriving from the other side. The table below is compared
-# against the names parsed out of run.sh in both directions, under a floor,
-# because a parse that matches nothing must be loud rather than green.
-#
-# This test is portable despite driving run.sh, which the comment in
-# tests/mac/run-phase-status-test.sh says requires Darwin. That requirement is
-# at run.sh:592, inside the preflight phase; these guards are at 37-51, before
-# argument parsing. Every invocation here dies far above it, which is also what
-# makes the check cheap: each one ends in a refusal and waits for nothing.
-# Measured in a Linux container rather than asserted -- 36ms for the plain run's
-# twenty invocations and 753ms for the self-test's three hundred and sixty-one.
-# The #319 lesson about READY_TIMEOUT_SECONDS applies in reverse: there is no
-# wait here to spread across a shard, so neither line competes for a worker slot
-# it is not using.
+# tests/mac/run.sh refuses three classes of preset environment (the Ruby/Bundler
+# chain matters: run.sh decrypts a vault, #643/#677). Each variable is tested on its
+# own because dropping one `&&` term keeps a whole-guard case green; the table is
+# held to the names parsed out of run.sh in both directions.
 set -eu
 set +x
 
@@ -65,14 +30,8 @@ cleanup_scratch() {
 }
 trap cleanup_scratch EXIT HUP INT TERM
 
-# Each row is a reserved variable and the refusal its guard raises. The three
-# messages are what partitions the eighteen into their guards, so a variable
-# that moves between chains fails here until this table moves with it.
-#
-# Written to a file rather than held in a variable because every loop over it
-# below reads it by redirection: a `printf | while` loop is a subshell, and a
-# case that needed to fail the run from inside one would be reporting its
-# failure to a shell that has already exited.
+# Reserved variable and its guard's refusal. A file, not a variable: a `printf | while`
+# loop is a subshell and could not fail the run.
 cat > "$scratch/table" <<'TABLE'
 PLATFORM_PROOF_PLATFORM reserved proof platform environment must be unset
 RUBYOPT reserved language startup environment must be unset
@@ -97,14 +56,8 @@ awk '{print $1}' "$scratch/table" | sort -u > "$scratch/declared"
 reserved_names=$(awk '{print $1}' "$scratch/table" | tr '\n' ' ')
 reserved_count=$(grep -c . "$scratch/declared")
 
-# A collapse floor, and deliberately well below the eighteen rather than equal to
-# them. Membership is owned by the both-directions comparison below, which names
-# the variable that moved; this floor answers the different question of whether
-# the parse still works at all. Set at eighteen it fires on any legitimate
-# removal as well, and says "the parse has broken" about a guard that shrank on
-# purpose -- a true statement replaced by a false one. Twelve is above the
-# eleven-name language chain, so it takes more than one whole guard going
-# unparsed to satisfy it.
+# A collapse floor for the parse, below the eighteen so a deliberate removal is
+# reported by the both-ways comparison rather than as a broken parse.
 RESERVED_FLOOR=12
 
 failures=0
@@ -113,9 +66,7 @@ note_failure() {
   failures=$((failures + 1))
 }
 
-# Every invocation clears all eighteen first, so a case does not depend on the
-# environment it inherits -- which is the same environment the gate is careful
-# about, and would otherwise make a result depend on which runner it landed on.
+# Every invocation clears all eighteen first so the inherited environment cannot matter.
 invoke_runner() {
   invoke_program=$1
   invoke_var=$2
@@ -127,27 +78,17 @@ invoke_runner() {
   [ -z "$invoke_var" ] || set -- "$@" "$invoke_var=$invoke_value"
   set -- "$@" sh "$invoke_program" --lane fresh \
     --vault-file /dev/null --vault-password-file /dev/null
-  # stdin from /dev/null, and it is load-bearing rather than tidy. Every loop
-  # below reads the case table on the loop's own stdin, which each invocation
-  # inherits: a run.sh that ever read stdin would eat the rows of the cases still
-  # to come, and the loop would end early having silently tested fewer variables
-  # than it declared. That is the same shape as the hole this whole check exists
-  # to close, so it is shut here rather than relied upon not to open.
+  # stdin from /dev/null: the loops read the case table on stdin, and a run.sh
+  # that read stdin would silently eat the remaining rows.
   "$@" </dev/null 2>&1 || true
 }
 
-# The exit status is not the assertion. Every invocation here exits nonzero --
-# the cleared one dies later, at the vault file -- so a case that read the status
-# would pass against a guard that had stopped refusing anything at all.
+# Every invocation exits nonzero, so the message, not the status, is the assertion.
 case_refuses() {
   [ "$(invoke_runner "$1" "$2" reserved-environment-test)" = "$3" ]
 }
 
-# The cleared run must reach past all three guards. It is asserted as "none of
-# the three refusals" rather than as the message run.sh actually prints there,
-# because that message comes from the vault-file validation well below the block
-# under test: pinning it would anchor this check to argument parsing and break it
-# for a reason that has nothing to do with the guards.
+# The cleared run must reach past all three guards; it later dies at the vault file.
 baseline_passes() {
   baseline_output=$(invoke_runner "$1" '' '')
   case $baseline_output in
@@ -158,10 +99,8 @@ baseline_passes() {
   return 0
 }
 
-# Runs every case against one runner and names the ones that failed. The
-# self-test needs the names and not a count: a plant that breaks a case other
-# than its own is a different defect from a plant that breaks none, and only the
-# names tell those apart.
+# Names the failing cases, so the self-test can tell a plant breaking its own case
+# from one breaking another.
 failing_cases() {
   suite_program=$1
   : > "$scratch/failing"
@@ -202,16 +141,11 @@ while read -r case_name case_message; do
   case_refuses "$runner_path" "$case_name" "$case_message" ||
     note_failure "tests/mac/run.sh did not refuse $case_name with '$case_message': got '$(invoke_runner "$runner_path" "$case_name" reserved-environment-test)'"
 done < "$scratch/table"
-# The loop is the subject list, so it says how far it got. A loop that ended
-# early -- on a row the reader could not parse, or because something downstream
-# consumed the table -- otherwise reports every case it never ran as passing.
+# A loop that ended early would report every case it never ran as passing.
 [ "$cases_run" -eq "$reserved_count" ] ||
   note_failure "ran $cases_run of $reserved_count declared cases: the case table was not read to the end"
 
-# The guards test whether a variable is SET, not whether it is non-empty, and an
-# empty value is the case that tells those two apart. RUBYOPT= loads nothing by
-# itself, but a guard rewritten to `[ -n "$RUBYOPT" ]` would admit it and admit
-# every future non-empty value through the same door on the next edit.
+# The guards test SET, not non-empty; an empty RUBYOPT tells the two apart.
 empty_output=$(invoke_runner "$runner_path" RUBYOPT '')
 [ "$empty_output" = 'reserved language startup environment must be unset' ] ||
   note_failure "tests/mac/run.sh admitted an empty RUBYOPT: the guard tests emptiness rather than whether the variable is set, got '${empty_output}'"
@@ -228,18 +162,8 @@ fi
 # ---------------------------------------------------------------------------
 # --self-test: one plant per variable.
 # ---------------------------------------------------------------------------
-# The plant replaces that variable's `[ -z "${NAME+x}" ]` with `true`, which is
-# the hole the issue describes: the term stops testing anything while the chain
-# around it still evaluates and still raises its own message for every sibling.
-# It is uniform across all three guards, which deleting the term is not --
-# guard 1 is a single term, and `[ -z ... ] || mac_die` does not survive having
-# its test cut out.
-#
-# The planted runner is a copy in a mirrored root rather than an edit in place.
-# run.sh resolves its repository from its own physical location and sources three
-# files before the guards, so the copy has to sit at tests/mac/run.sh of
-# something shaped like this repository; editing the real file would also mean
-# writing into a tree the rest of the gate is reading concurrently.
+# Each plant replaces one `[ -z "${NAME+x}" ]` with `true`, in a copy of run.sh
+# inside a symlinked mirror of the repository (run.sh resolves the repo from itself).
 mirror=$scratch/repo
 mkdir -p "$mirror/tests/mac"
 for entry in "$repo_dir"/* "$repo_dir"/.[!.]*; do
@@ -257,10 +181,7 @@ for entry in "$repo_dir"/tests/mac/*; do
 done
 mirror_runner=$mirror/tests/mac/run.sh
 
-# THE CONTROL, and it is the half that keeps the plants from being vacuous. A
-# mirror that broke run.sh for some unrelated reason would make every plant look
-# detected while proving nothing -- the same vacuous pass as a plant that lands
-# on a row the checker never reads.
+# The control: an unplanted mirror must pass every case, or the plants prove nothing.
 cp "$runner_path" "$mirror_runner"
 chmod 0755 "$mirror_runner"
 control_failing=$(failing_cases "$mirror_runner")
@@ -274,11 +195,8 @@ fi
 while read -r plant_name plant_message; do
   : "$plant_message"
   plant_term="[ -z \"\${$plant_name+x}\" ]"
-  # Literal string replacement rather than a regex: the term is almost nothing
-  # but metacharacters, and a bare-substring plant that lands on a row the
-  # checker does not read is how a self-test comes to report defects it never
-  # planted. The count is asserted in the same pass, so a term that stopped
-  # matching fails here instead of being reported as an undetected hole.
+  # Literal replacement, not a regex: the term is nearly all metacharacters. The
+  # count is asserted so a term that stopped matching fails here.
   awk -v term="$plant_term" '
     { while ((at = index($0, term)) > 0) {
         $0 = substr($0, 1, at - 1) "true" substr($0, at + length(term))

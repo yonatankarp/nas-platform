@@ -1,12 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 #
-# Shared fixtures and helpers for the media managed-user probes.
-#
-# Every probe drives real Ansible task files through ansible-playbook against a
-# stub HTTP service, so the playbook runner, the stub server and the per-service
-# task expectations live here and the probe files stay a statement of what each
-# service must do.
+# Shared fixtures and helpers for the media managed-user probes (real task files run
+# against a stub HTTP service).
 # frozen_string_literal: true
 
 require "base64"
@@ -36,25 +32,15 @@ JELLYFIN_PLUGIN_PACKAGES = [
   { "Name" => "Open Subtitles", "AssemblyGuid" => JELLYFIN_OPENSUBTITLES_ID,
     "RepositoryUrl" => "https://repo.jellyfin.org/files/plugin/manifest.json" }
 ].freeze
-# Komga's and Audiobookshelf's managed-user lifecycles are roles/managed_users
-# behind a shim (#647), so the contract below reads the shared role with the
-# service's title substituted. That keeps every property this file asserted
-# before -- the ten lifecycle steps in order, no_log on every request, no DELETE,
-# the check-mode gates -- asserted against the tasks the service actually runs,
-# rather than against a shim that runs none of them. Jellyfin joined them too;
-# its policy refusals are its own hook files, which shim_failures holds.
+# Komga, Audiobookshelf and Jellyfin run roles/managed_users behind a shim (#647), so
+# the contract reads the shared role with the service's title substituted.
 SHARED_MANAGED_USER_ROLE = File.join(ROOT, "roles", "managed_users", "tasks", "main.yml")
 SHARED_MANAGED_USER_TITLES = { "audiobookshelf" => "Audiobookshelf", "jellyfin" => "Jellyfin",
                                "komga" => "Komga" }.freeze
 KOMGA_SHIM = File.join(ROOT, "roles", "komga", "tasks", "managed_users.yml")
 
-# The vault password's route to the authenticate requests, in two halves,
-# because through a shared role it is no longer one file's business. The shared
-# role holds `item.password` literally -- a parameter there would make this a
-# check on a name rather than on a value -- and the shim is what binds `item` to
-# the vault's declared set. Either half alone is a green check that says nothing.
-# The conditional is audiobookshelf's: a body-authenticated service sends no
-# basic credentials at all, and komga's rendered value is unchanged by it.
+# The password route in two halves: the shared role reads `item.password` literally and
+# the shim binds `item` to the vault's set. Either alone proves nothing.
 KOMGA_AUTH_PASSWORD_EXPRESSIONS = {
   "Authenticate existing managed users: Komga" =>
     "{{ item.password if managed_users_authenticate_basic else omit }}",
@@ -82,10 +68,7 @@ AUDIOBOOKSHELF_SHIM_PARAMETERS = {
   "managed_users_authenticate_basic" => false,
   "managed_users_authenticate_body" => "{{ audiobookshelf_managed_users_authenticate_body }}"
 }.freeze
-# Jellyfin's two hooks are what keep its policy refusals running inside the
-# lifecycle, and re-resolution is what makes the repair merge into the re-read
-# policy; a shim that dropped any of the three would still converge a fixture
-# that needs no refusal.
+# Jellyfin's hooks keep its policy refusals inside the lifecycle.
 JELLYFIN_SHIM_PARAMETERS = {
   "managed_users_phase" => "{{ jellyfin_managed_users_phase }}",
   "managed_users_service" => "jellyfin",
@@ -151,10 +134,7 @@ REQUIRED_TASKS = {
 }.freeze
 
 
-# The task list a service's contract is asserted against. For a service that has
-# adopted roles/managed_users this is that role with {{ managed_users_title }}
-# substituted, which is why no task name in it may begin with the template: the
-# substitution happens on the source text, before it is parsed.
+# {{ managed_users_title }} is substituted in the source text before parsing.
 def contract_source_tasks(service)
   title = SHARED_MANAGED_USER_TITLES[service]
   path = title ? SHARED_MANAGED_USER_ROLE : File.join(ROOT, "roles", service, "tasks",
@@ -164,11 +144,8 @@ def contract_source_tasks(service)
   YAML.safe_load(source, aliases: false)
 end
 
-# What the shim has to carry, now that the lifecycle is elsewhere: it names the
-# shared role, and it binds the parameters whose values this suite's other
-# assertions assume. managed_users_declared is the load-bearing one -- the
-# authenticate requests read item.password, and this is what makes `item` a
-# vault-declared user rather than anything else.
+# The shim must name the shared role and bind managed_users_declared, which makes `item`
+# a vault-declared user.
 def shim_failures(service, shim_tasks, defaults)
   failures = []
   include = shim_tasks.find { |task| task.key?("ansible.builtin.include_role") }
@@ -179,27 +156,19 @@ def shim_failures(service, shim_tasks, defaults)
     failures << "#{service} shim does not pass #{name} as #{value}" unless supplied[name] == value
   end
 
-  # The repair body is a parameter now, so the shared role's own `body:` is a
-  # reference and reading it proves nothing. The service's declared value is the
-  # subject, and it is the same property: repairing an existing identity must
-  # never carry a credential.
+  # The declared repair body must never carry a credential.
   repair_body = defaults["#{service}_managed_users_repair_body"]
   if service == "jellyfin"
-    # Jellyfin's policy endpoint replaces the whole policy, so its body is the
-    # complete listed policy with the declared fields merged over it -- a
-    # template, not a mapping. What it must still never do is name a credential.
+    # Jellyfin's body is a template (whole-policy replace), still never a credential.
     body = repair_body.to_s
     failures << "jellyfin existing-user repair contains secret fields" if
       body.match?(/password|passwd|secret|token/i)
     failures << "jellyfin repair does not merge into the complete current policy" unless
       body.include?(".Policy") && body.include?("combine(item.policy")
-    # The two refusals the shared role cannot state, held where they now live.
     failures.concat(jellyfin_hook_failures(defaults))
   elsif repair_body.is_a?(Hash)
     failures << "#{service} existing-user repair contains secret fields" unless
       repair_body.keys.map(&:to_s).grep(/password|passwd|secret|token/i).empty?
-    # Audiobookshelf's pinned permission fields, moved here from the task body
-    # contract_failures used to read for the same reason.
     failures << "audiobookshelf repair does not split the pinned permission fields" if
       service == "audiobookshelf" &&
       repair_body.keys.sort != %w[isActive itemTagsSelected librariesAccessible permissions type]
@@ -209,9 +178,6 @@ def shim_failures(service, shim_tasks, defaults)
   failures
 end
 
-# Jellyfin's policy refusals run inside roles/managed_users through its hooks, so
-# a hook path that stopped resolving to the file, or a file that lost a refusal,
-# would leave a converge that still passes every fixture needing no refusal.
 JELLYFIN_HOOK_TASKS = {
   "jellyfin_managed_users_before_create_tasks" => [
     "managed_users_existing_policies.yml",
@@ -227,8 +193,7 @@ JELLYFIN_HOOK_TASKS = {
 
 JELLYFIN_TASKS = File.join(ROOT, "roles", "jellyfin", "tasks")
 
-# hook_directory is where the hook files are read from; only the self-test moves
-# it, to read a planted copy while the path the defaults name stays the real one.
+# Only the self-test moves hook_directory, to read a planted copy.
 def jellyfin_hook_failures(defaults, hook_directory = JELLYFIN_TASKS)
   shared_tasks = File.dirname(SHARED_MANAGED_USER_ROLE)
   JELLYFIN_HOOK_TASKS.flat_map do |parameter, (file, names)|
@@ -263,11 +228,7 @@ def nested_task_names(tasks)
   nested_tasks(tasks).map { |task| task_name(task) }
 end
 
-# Every scalar mapping entry the parsed task tree carries, at any depth. The
-# absence invariants below need whole-file reach, because a forbidden shape
-# introduced by any task is a violation, but reading the source text instead made
-# a comment that merely mentions the shape indistinguishable from the shape
-# itself, and made an unrelated key that happens to end in the same word match.
+# Parsed rather than source text, so a comment mentioning a shape is not the shape.
 def nested_task_entries(node)
   case node
   when Hash
@@ -290,12 +251,8 @@ def command_available?(name)
   end
 end
 
-# The probes lift task files out of the roles and run them in a synthetic play,
-# so Ansible loads neither inventory/group_vars/all/main.yml nor the defaults
-# beside those tasks, and every timing keyword the tasks read would be undefined.
-# The values are taken from the real files rather than restated here, so a probe
-# waits exactly as production does and a retimed platform stays one edit. A probe
-# that declares its own value still wins, because these are merged underneath it.
+# Probes load no defaults, so timing variables are read from the real files (a probe's
+# own value still wins).
 TIMING_VARIABLE = /\A(?:platform|#{SERVICES.join('|')})_\w*(?:_retries|_delay|_wait_timeout)\z/
 HARNESS_TIMING_DEFAULTS = (
   [File.join(ROOT, "inventory", "group_vars", "all", "main.yml")] +
@@ -306,12 +263,7 @@ HARNESS_TIMING_DEFAULTS = (
   end
 end.freeze
 
-# The same reasoning one step further, for the services whose managed-user
-# reconciliation is roles/managed_users behind a shim: the probe includes the
-# shim directly, so Ansible loads neither the service's defaults nor the shared
-# role's, and every komga_managed_users_* parameter the shim maps would be
-# undefined. Read from the real defaults file rather than restated, so the probe
-# drives the production contract and a changed endpoint is one edit.
+# Likewise the shim's *_managed_users_* parameters, read from real defaults.
 MANAGED_USER_PARAMETER = /\A(?:#{SERVICES.join('|')})_managed_users_\w+\z/
 HARNESS_MANAGED_USER_DEFAULTS = SERVICES.each_with_object({}) do |service, defaults|
   YAML.safe_load_file(File.join(ROOT, "roles", service, "defaults", "main.yml")).each do |name, value|
@@ -319,17 +271,10 @@ HARNESS_MANAGED_USER_DEFAULTS = SERVICES.each_with_object({}) do |service, defau
   end
 end.freeze
 
-# roles/managed_users reads config/managed-user-capabilities.yml off the
-# DEPLOYED release, so a probe has to name one. The repository root is a release
-# that carries the register, which is the branch every probe but the stale-release
-# one wants; that probe overrides this with a directory that has no config/ at
-# all. Naming it here rather than per probe is what stops a probe that forgot it
-# from landing in the skip branch and reporting green.
+# roles/managed_users reads config/managed-user-capabilities.yml from the deployed
+# release; defaulting it here keeps a probe that forgot it out of the skip branch.
 HARNESS_RELEASE_DEFAULTS = { "platform_current_dir" => ROOT }.freeze
 
-# Named the same as the shared runner it wraps: every probe passes its own
-# variables and the harness timings underneath them, which is the one thing this
-# suite adds to the shared runner.
 def run_playbook(tasks, variables, *arguments)
   HttpFixtureSupport.run_playbook(
     tasks,
@@ -370,12 +315,8 @@ def includes_for(service, token_variable = nil)
   ]
 end
 
-# The probes include the role task file directly, so Ansible never loads
-# roles/jellyfin/defaults/main.yml. Every role default the task file reads has to
-# be declared here, the way the per-probe fixtures already declare the encoding
-# policy and the plugin inventory. jellyfin_retired_plugin_repository_urls is
-# pinned to the same retired URL the role asserts, so the probes exercise the
-# production value instead of a harness-only substitute.
+# Probes include task files directly, so every role default they read is declared here,
+# with production values.
 def jellyfin_settings_includes(*phases)
   settings = File.join(ROOT, "roles", "jellyfin", "tasks", "settings.yml")
   phases.flat_map do |phase|
@@ -403,12 +344,8 @@ def jellyfin_library_inventory_include(name, response)
   }
 end
 
-# The whole Jellyfin role as one task list, assembled the way Ansible assembles
-# it: main.yml is an index of statically imported stage files, so every import
-# is spliced in where it stands and the phase-gated dynamic includes are left
-# alone. Every probe below selects the tasks it drives by name, and a probe that
-# reads only the index would select nothing, run an empty playbook and report
-# the property holding -- so the reader is shared rather than repeated.
+# The whole role with static imports spliced in; reading only the index would select
+# nothing and pass vacuously.
 def jellyfin_role_tasks
   PolicySupport.static_role_tasks(
     File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false
@@ -448,9 +385,6 @@ def contract_failures(service, tasks)
     forbidden = body.keys.map(&:to_s).grep(/password|passwd|secret|token/i)
     failures << "#{service} existing-user repair contains secret fields" unless forbidden.empty?
   end
-
-  # audiobookshelf's pinned repair fields and jellyfin's complete-policy merge
-  # are their declared defaults now, so shim_failures reads them there.
 
   auth_assert = tasks.find { |task| task_name(task).start_with?("Require preserved") }
   guidance = auth_assert&.dig("ansible.builtin.assert", "fail_msg").to_s
@@ -496,10 +430,7 @@ def jellyfin_identity_contract_failures
   identity_tasks = File.file?(identity_path) ?
     YAML.safe_load_file(identity_path, aliases: false) : []
   inventory_tasks = YAML.safe_load_file(inventory_path, aliases: false)
-  # The whole role as parsed task structure, in the same order the two files were
-  # previously concatenated as text. Every assertion below reads this rather than
-  # the source, so a task name in a comment is no longer a task and a byte offset
-  # is no longer a position.
+  # Parsed structure, so a task name in a comment is not a task.
   role_tasks = nested_tasks(main_tasks) + nested_tasks(identity_tasks) +
     nested_tasks(inventory_tasks)
   role_urls = role_tasks.filter_map { |task| task.dig("ansible.builtin.uri", "url") }
@@ -587,8 +518,7 @@ def jellyfin_identity_contract_failures
     role_task.call("Resolve Jellyfin primary administrator matches")
              .dig("ansible.builtin.set_fact", "jellyfin_primary_temporary_matches").to_s
              .include?("if item.Name == jellyfin_primary_temporary_name else")
-  # The endpoint and the verb have to belong to the same request. Asserting them
-  # independently over the source accepted a DELETE declared by any other task.
+  # Endpoint and verb must belong to the same request.
   extra_path_removal = role_task.call("Remove extra paths from Jellyfin managed libraries")
                                 .fetch("ansible.builtin.uri", {})
   failures << "Jellyfin extra library paths do not use the supported removal endpoint" unless
@@ -618,8 +548,6 @@ def jellyfin_identity_contract_failures
   failures << "Jellyfin server update does not preserve the full configuration" unless
     server_name_update_body.include?("jellyfin_server_configuration_for_update.json") &&
       server_name_update_body.include?("combine({'ServerName': jellyfin_server_name})")
-  # The digest has to be computed by a stat and compared by an assertion. Two
-  # loose substrings could be satisfied by an unrelated stat and a stray mention.
   failures << "Jellyfin role has no authoritative image byte verification" unless
     role_tasks.any? { |task| task.dig("ansible.builtin.stat", "checksum_algorithm") == "sha256" } &&
       role_tasks.any? do |task|

@@ -34,20 +34,15 @@ RELAY_TOKEN = "relay-secret-that-must-not-leak"
 PUSHOVER_TOKEN = "pushover-app-secret-that-must-not-leak"
 PUSHOVER_USER_KEY = "pushover-user-secret-that-must-not-leak"
 CONTAINER_ID = "a" * 64
-# Dozzle's address as roles/dozzle renders it, which the relay turns into a
-# tap-through link. A name rather than 127.0.0.1 so a relay that substituted its
-# own host would be visible.
+# A name rather than 127.0.0.1, so a relay that substituted its own host shows.
 LINK_BASE = "http://nas.tailnet.example:8080"
-# Beszel's app URL as inventory renders it, and a PocketBase record id: the link
-# Beszel appends to an alert is the one to the other.
+# Beszel's app URL as inventory renders it, and a PocketBase record id.
 BESZEL_LINK_BASE = "http://nas.tailnet.example:8090"
 BESZEL_SYSTEM_ID = "a1b2c3d4e5f6g7h"
 ALERTS_TOKEN = "pushover-alerts-secret-that-must-not-leak"
 GOLEM_TOKEN = "pushover-golem-secret-that-must-not-leak"
-# The ceilings these cases run against. Deliberately not the deployment's
-# 10/25/200: a case that trips a ceiling has to publish one message per unit of
-# allowance first, and a relay that ignored its configuration and kept a literal
-# would still pass at whatever numbers the role happens to declare today.
+# Deliberately not the deployment's 10/25/200, so a relay ignoring its
+# configuration cannot pass on a literal.
 CONTAINER_CEILING = 3
 OOM_CONTAINER_CEILING = 5
 GLOBAL_CEILING = 9
@@ -56,11 +51,7 @@ HALF_ENTITY = re.compile(r"&(?!amp;|lt;|gt;|quot;|#x27;)")
 
 
 def message_shape(message):
-    """A message's lead line, its detail labels in order, and its closing line.
-
-    Every detail line must be `emoji <b>Label</b> value`; one that is not fails
-    here rather than reading as a missing label.
-    """
+    """A message's lead line, its detail labels in order, and its closing line."""
     blocks = message.split("\n\n")
     closing = blocks.pop() if len(blocks) > 1 and blocks[-1].startswith("<i>") else ""
     details = blocks[1].split("\n") if len(blocks) > 1 else []
@@ -71,27 +62,13 @@ def message_shape(message):
             raise AssertionError(f"not an `emoji <b>Label</b> value` detail line: {line!r}")
         labels.append(matched.group(1))
     return {"lead": blocks[0], "labels": labels, "closing": closing}
-# The instant every in-process case runs at unless it patches `utc_now` itself.
-# The fixtures carry fixed 2026-08-15 timestamps, and the relay prunes healthy
-# entries older than HEALTHY_RETENTION against its clock, so a case left on the
-# real clock changed verdict the moment that clock passed 2026-09-14T01:22Z --
-# four cases went red on every branch at once. Pinned shortly after the latest
-# fixture, so no case depends on the date it happens to run on, and so the
-# budget day a case expects cannot straddle a real midnight either.
+# Pinned just after the fixtures' timestamps: the relay prunes against its clock,
+# so the real clock would change verdicts as the date moves.
 FIXED_NOW = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
-# The listener port the deployment declares today, in service_dozzle.yml.
-# Nothing here depends on the number staying current: these tests only need a
-# port that differs from any literal the relay itself could have kept, so a
-# stale value would still select a usable one.
+# Only needs to differ from any literal the relay could have kept.
 DEPLOYED_PORT = 8081
-# How long the process-level signal cases below wait for the relay to begin
-# listening, and for it to exit once signalled. Both are environment inputs
-# because a hardcoded wait is how this repository's gate keeps acquiring a
-# floor it cannot parallelise away (#319, #485): a case that waits is a worker
-# slot held without CPU. The defaults are generous against what the operation
-# costs -- the relay listens in well under a second on a cold interpreter -- and
-# the exit budget is Docker's own stop grace period, because a relay that needed
-# longer than that in the container would be SIGKILLed rather than waited for.
+# Environment inputs so the harness can shorten them: a hardcoded wait becomes a
+# floor the gate cannot parallelise away (#319, #485).
 RELAY_START_TIMEOUT_SECONDS = float(
     os.environ.get("PLATFORM_RELAY_START_TIMEOUT_SECONDS", "20")
 )
@@ -101,19 +78,10 @@ RELAY_EXIT_TIMEOUT_SECONDS = float(
 
 
 def reserve_local_port():
-    """Hold a free local TCP port, deliberately never the deployed default.
+    """Hold a free local TCP port, never the deployed default.
 
-    Returns (port, holder). The holder is a bound, listening socket and the
-    caller closes it on the line before whatever binds the port -- not earlier.
-
-    This used to close the socket before returning the number, which put the
-    port back in the kernel's free pool for the whole of the caller's setup.
-    `tests/validate-policy.sh` runs its checks in a pool of `nproc` workers and
-    several of them allocate ports this way, so that window is contended by
-    construction; the Ruby sibling of this function lost a port in it and
-    reddened `main` on an unrelated pull request (#736). Nothing here has been
-    observed losing one, which is a statement about luck rather than about the
-    shape.
+    Returns (port, holder); close the holder on the line before whatever binds the
+    port, so the port is never back in the free pool during setup (#736).
     """
     while True:
         holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -135,13 +103,7 @@ def load_relay_module():
 
 
 class RecordingPushoverHandler(BaseHTTPRequestHandler):
-    """Stands in for api.pushover.net and records the form it was POSTed.
-
-    The whole request is captured, not only the fields a case looks at: the
-    Authorization header disappeared with the earlier transport because Pushover
-    authenticates by form field, and a case that only read the fields it cared
-    about could not say that a header carrying a credential had come back.
-    """
+    """Stands in for api.pushover.net and records the whole request, headers included."""
 
     server_version = "FakePushover/1"
 
@@ -156,19 +118,14 @@ class RecordingPushoverHandler(BaseHTTPRequestHandler):
                 "path": self.path,
                 "authorization": self.headers.get("Authorization"),
                 "content_type": self.headers.get("Content-Type"),
-                # Every Pushover field is single-valued; a repeated key would be
-                # a defect rather than something to merge silently, so it is
-                # kept visible as a list of what arrived.
+                # A repeated key is kept visible as a list rather than merged.
                 "form": {
                     key: values[0] if len(values) == 1 else values
                     for key, values in parsed.items()
                 },
             }
         )
-        # A rejection carries a body, because Pushover's `errors` array is the
-        # half that says WHICH rejection it is -- and because a stand-in that
-        # only ever answers empty cannot exercise what the relay does with the
-        # far end's text.
+        # Pushover's `errors` array says which rejection it is.
         payload = getattr(self.server, "response_body", b"")
         self.send_response(self.server.response_status)
         self.send_header("Content-Length", str(len(payload)))
@@ -212,17 +169,9 @@ class RedirectTargetHandler(BaseHTTPRequestHandler):
 
 
 class RecordingStderr:
-    """A stderr that counts write() CALLS, not just the text they produced.
+    """A stderr that counts write() calls: one log line must be one write.
 
-    The point of the count. `print(x, file=sys.stderr)` issues two writes -- the
-    text, then the terminator -- and under socketserver's threading two
-    concurrent failures can interleave into a merged line. Asserting only on the
-    joined text would catch that non-deterministically at best, because whether
-    two threads actually interleave is a scheduling accident. Counting calls
-    catches it every time: one line must be one write.
-
-    list.append is atomic under the GIL, so this records faithfully from the
-    request threads without a lock of its own perturbing what it measures.
+    list.append is atomic under the GIL, so no lock is needed.
     """
 
     def __init__(self):
@@ -578,10 +527,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
     def test_sigkill_exit_pages_while_the_graceful_codes_stay_quiet(self):
         """137 is what an out-of-memory kill produces, so it must be published.
 
-        Docker's own `oom` event is cgroup-scoped, so a host-level kill can only
-        be seen here. The three codes beside it are deliberate stops: a graceful
-        shutdown exits 143 under the grace periods the services declare, and a
-        suppression list emptied by accident has to fail rather than go quiet.
+        Docker's `oom` event is cgroup-scoped, so a host-level kill is only seen here.
         """
         status_code, body = self.post(
             self.envelope("Unexpected exit", container="jellyfin", exitCode="137")
@@ -613,11 +559,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
         self.assertEqual(self.post(fractional_leap_day), (204, b""))
         request_count = len(self.pushover.requests)
-        # Two accepted OOMs have now charged the ceiling, so the state file
-        # exists. What a rejected timestamp must not do is move it -- the whole
-        # document is captured rather than only its absence, which is what the
-        # assertion below meant before the ceiling gave this file a reason to
-        # exist after an OOM.
+        # The whole state document is captured, since the ceiling now writes it.
         settled = self.state_path.read_bytes()
 
         invalid_timestamps = (
@@ -647,13 +589,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
             self.pushover.requests,
             [
                 {
-                    # The path is part of the endpoint rather than a root the
-                    # relay appends a topic to, which is the transport change in
-                    # one line.
                     "path": "/1/messages.json",
-                    # Pushover authenticates by form field. A Bearer header here
-                    # would mean the relay had carried the earlier shape across and
-                    # was leaking a credential into a header nothing reads.
+                    # Pushover authenticates by form field; a header would leak a credential.
                     "authorization": None,
                     "content_type": "application/x-www-form-urlencoded",
                     "form": {
@@ -670,10 +607,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
                                    "<i>Open it in Dozzle to see why.</i>",
                         "html": "1",
                         "priority": "1",
-                        # The container's own page in Dozzle, by the short id
-                        # the page's store is keyed on, and the moment Docker
-                        # reported the event (2026-08-15T01:22:13Z) as Unix
-                        # seconds, which is the form Pushover reads.
+                        # The container's Dozzle page, and the event time as Unix seconds.
                         "url": f"{LINK_BASE}/container/{CONTAINER_ID}",
                         "url_title": "Open in Dozzle",
                         "timestamp": "1786756933",
@@ -683,9 +617,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
 
     def test_all_rule_renderings_are_human_readable_and_fixed(self):
-        # title, lead, the detail labels in order, whether a closing line follows,
-        # priority. The lead is exact because its coloured state IS the meaning;
-        # the details are pinned by label and order rather than by prose.
+        # (title, lead, detail labels, closing line?, priority)
         cases = [
             (
                 "Unexpected exit",
@@ -719,8 +651,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         for rule, title, lead, labels, closes, priority, changes in cases:
             with self.subTest(rule=rule):
                 if rule == "Recovery":
-                    # A recovery only publishes when it closes an unhealthy
-                    # entry, so the transition has to exist before it.
+                    # A recovery publishes only when it closes an unhealthy entry.
                     self.assertEqual(
                         self.post(
                             self.envelope(
@@ -767,11 +698,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertNotEqual(container_notice["title"], global_notice["title"])
 
     def test_every_message_leads_with_its_state_in_the_colour_of_that_state(self):
-        """Lead, labelled details, closing; red failed, amber warning, green recovered.
-
-        The colour is the one thing the expanded view adds over the title, so a
-        recovery rendered red would read as a second failure.
-        """
+        """Lead, labelled details, closing; red failed, amber warning, green recovered."""
         colours = {
             "OOM": ("#c62828", ["Host", "Container", "When"]),
             "Unexpected exit": ("#c62828", ["Host", "Container", "Exit code", "When"]),
@@ -806,10 +733,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
     def test_an_unhealthy_alert_promises_no_recovery_it_cannot_guarantee(self):
         """State is keyed on host and container id, so a recovery is not certain.
 
-        A container recreated under the same name -- every image bump -- never
-        closes the entry its predecessor opened, and a ceiling-suppressed or
-        evicted entry closes nothing either, so the closing line points at Dozzle
-        instead, and only when there is a link to point with.
+        A recreated container never closes its predecessor's entry, so the closing
+        line points at Dozzle instead, and only when there is a link.
         """
         linked = message_shape(self.relay_module.render_notification(self.envelope(), LINK_BASE)["message"])
         self.assertEqual(
@@ -819,7 +744,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
         unlinked = message_shape(self.relay_module.render_notification(self.envelope(), None)["message"])
         self.assertEqual(unlinked["closing"], "", "no link, so no line pointing at Dozzle")
-        # Only the Unhealthy closing points at Dozzle, so only it goes with the link.
+        # Only the Unhealthy closing points at Dozzle.
         oom = message_shape(self.relay_module.render_notification(self.envelope("OOM"), None)["message"])
         self.assertIn("until acknowledged", oom["closing"])
 
@@ -852,20 +777,13 @@ class DozzleAlertRelayTest(unittest.TestCase):
                     )
 
     def test_emergency_priority_carries_the_parameters_pushover_requires(self):
-        """Priority 2 without retry and expire is refused by Pushover outright.
-
-        This is the acknowledge semantic the migration was made for, so it is
-        asserted on the wire rather than in the renderer: a message that reached
-        the API at priority 2 with either parameter missing would be rejected
-        and the out-of-memory alert simply lost.
-        """
+        """Priority 2 without retry and expire is refused by Pushover outright."""
         self.assertEqual(self.post(self.envelope("OOM"))[0], 204)
         emergency = self.pushover.requests[-1]["form"]
         self.assertEqual(emergency["priority"], "2")
         self.assertEqual(emergency["retry"], "60")
         self.assertEqual(emergency["expire"], "3600")
-        # Interior to Pushover's documented bounds rather than at them, so the
-        # message is accepted whatever the exact limits are today.
+        # Inside Pushover's documented bounds rather than at them.
         self.assertGreaterEqual(int(emergency["retry"]), 30)
         self.assertLessEqual(int(emergency["expire"]), 10800)
 
@@ -877,27 +795,15 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 self.assertEqual(self.post(self.envelope(rule, **changes))[0], 204)
                 ordinary = self.pushover.requests[-1]["form"]
                 self.assertNotEqual(ordinary["priority"], "2")
-                # Only an emergency carries them; a retry on a non-emergency is
-                # accepted by the API and silently means nothing.
+                # A retry on a non-emergency is accepted and silently means nothing.
                 self.assertNotIn("retry", ordinary)
                 self.assertNotIn("expire", ordinary)
 
     def test_the_documented_escalation_window_is_the_one_that_happens(self):
-        """The third bound, which is neither of the two the case above checks.
+        """Pushover stops an emergency at 50 retries whatever `expire` says.
 
-        Pushover stops an emergency at 50 retries whatever `expire` says, and
-        its own worked example is retry=30 with expire=10800 escalating for 25
-        minutes rather than three hours. The relay's comment used to explain its
-        choice with arithmetic that ignored the cap -- "an hour of re-alerting
-        once a minute is already sixty alerts" -- which the API simply does not
-        do.
-
-        Asserted on the CONSTANTS rather than on the wire, and that is the whole
-        reason this is its own case. Placed inside the case above it sat behind
-        `assertEqual(retry, "60")`, so every plant that could have made it fail
-        tripped the literal first and it could never fire -- a check that cannot
-        fail, which is what this file keeps finding. Here a change to either
-        constant reaches it.
+        Asserted on the constants in its own case, so an earlier literal assertion
+        cannot mask it.
         """
         relay = self.relay_module
         escalation = relay.EMERGENCY_RETRY_SECONDS * relay.EMERGENCY_MAX_RETRIES
@@ -908,19 +814,12 @@ class DozzleAlertRelayTest(unittest.TestCase):
             f"short of the {escalation}s Pushover's retry cap allows, so the "
             "window documented beside these constants is not the one that runs",
         )
-        # And still inside what the API accepts, which the cap says nothing
-        # about: a retry below 30 or an expire above 10800 is a refused message
-        # and a lost out-of-memory alert.
+        # A retry below 30 or an expire above 10800 is a refused message.
         self.assertGreaterEqual(relay.EMERGENCY_RETRY_SECONDS, 30)
         self.assertLessEqual(relay.EMERGENCY_EXPIRE_SECONDS, 10800)
 
     def test_every_problem_rule_outranks_a_recovery(self):
-        """Only a recovery is quiet; a problem must never be downgraded.
-
-        This is what replaced the two-topic split: the Recovery rule used to be
-        routed to nas-containers so it could be muted on its own, and Pushover
-        says the same thing on the message itself with a negative priority.
-        """
+        """Only a recovery is quiet; a problem must never be downgraded."""
         for rule, changes in (
             ("Unexpected exit", {"exitCode": "23"}),
             ("OOM", {}),
@@ -964,14 +863,11 @@ class DozzleAlertRelayTest(unittest.TestCase):
             ("not a URL", "api.pushover.net"),
             ("wrong scheme", "ftp://api.pushover.net/1/messages.json"),
             ("no host", "https:///1/messages.json"),
-            # Credentials travel in the form body; a URL carrying its own is a
-            # hand-edited endpoint rather than a configured one.
             ("userinfo", "https://user:pass@api.pushover.net/1/messages.json"),
             ("user only", "https://user@api.pushover.net/1/messages.json"),
             ("query", "https://api.pushover.net/1/messages.json?token=leak"),
             ("fragment", "https://api.pushover.net/1/messages.json#x"),
-            # A bare root was the earlier shape, and POSTing a Pushover form at it
-            # would be a silent misconfiguration rather than a refusal.
+            # A bare root was the earlier shape.
             ("root", "https://api.pushover.net/"),
             ("control character", "https://api.pushover.net/1/messages.json\n"),
         ):
@@ -990,20 +886,13 @@ class DozzleAlertRelayTest(unittest.TestCase):
     def test_an_unusable_link_origin_costs_the_link_and_nothing_else(self):
         """The link base is validated, never repaired, and never fatal.
 
-        A url over Pushover's 512 characters is a 4xx and a lost alert, so the
-        bound lives here at start-up rather than as a cut at render time: the
-        longest base accepted plus the route and the longest id the envelope
-        admits must still fit. What an unusable base costs is the link: the
-        relay script arrives through the `current` symlink before roles/dozzle
-        re-renders this environment, so a relay restarted in between meets an
-        environment without the setting, and refusing to start there would lose
-        every container alert (see Config).
+        Pushover caps url at 512 characters, so the bound lives at start-up. A relay
+        restarted before roles/dozzle re-renders its environment must still alert.
         """
         relay = self.relay_module
         configured = relay.Config.from_mapping(self.environment())
         self.assertEqual(configured.alert_relay_link_base, LINK_BASE)
         self.assertIsNone(configured.alert_relay_link_problem)
-        # A trailing slash is the same origin, not a path, and must not double up.
         self.assertEqual(
             relay.Config.from_mapping(
                 self.environment(ALERT_RELAY_LINK_BASE=LINK_BASE + "/")
@@ -1045,21 +934,13 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 if value:
                     self.assertNotIn(value, degraded.alert_relay_link_problem)
                     self.assertNotIn("link-secret", degraded.alert_relay_link_problem)
-                # Everything else in the configuration is untouched.
                 self.assertEqual(degraded.pushover_api_url, configured.pushover_api_url)
 
         with self.assertRaises(relay.ConfigurationError):
             relay.validated_link_base("http://nas.tailnet.example:8080/dozzle")
 
     def test_the_role_default_renders_a_link_base_the_relay_accepts(self):
-        """The gate half of tolerating a bad base: the role must not ship one.
-
-        A relay without a valid base still alerts, so a broken role default
-        would degrade on the NAS silently. This renders the default the way
-        Ansible would for the two host shapes platform_public_host takes -- the
-        Mac inventory's loopback address and a MagicDNS name -- and holds it to
-        the relay's own validator.
-        """
+        """The role default must render a link base the relay's own validator accepts."""
         defaults = (ROOT / "roles" / "dozzle" / "defaults" / "main.yml").read_text()
         template = re.search(
             r'^dozzle_alert_relay_link_base: "([^"\n]*)"$', defaults, re.M
@@ -1083,10 +964,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
     def test_the_link_and_event_time_fit_what_pushover_accepts(self):
         """Every rule links its container and carries its event time.
 
-        `url_title` has a cap of its own, 100, and `timestamp` is Unix seconds,
-        so an ISO string or a negative number is a refused message. The
-        envelope admits a timestamp before 1970 and Docker never sends one; it
-        is left off rather than sent for Pushover to refuse.
+        `url_title` caps at 100 and `timestamp` is Unix seconds; a pre-1970 time is
+        left off rather than sent for Pushover to refuse.
         """
         relay = self.relay_module
         for rule, changes in (
@@ -1139,10 +1018,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
     def test_config_requires_a_coherent_ceiling(self):
         """Every ceiling is required, positive, and in a workable order.
 
-        The order matters rather than being tidiness. An OOM allowance below the
-        ordinary one inverts the whole point of having a second threshold, and a
-        global backstop below a per-container allowance makes the per-container
-        ceiling unreachable -- so it would never be observed to work or to fail.
+        OOM below ordinary, or global below per-container, makes a ceiling pointless
+        or unreachable.
         """
         configured = self.relay_module.Config.from_mapping(self.environment())
         self.assertEqual(configured.container_ceiling, CONTAINER_CEILING)
@@ -1228,8 +1105,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
 
         for label, value in (
-            # There is no fallback on purpose: a default here would be a second
-            # copy of a value that has exactly one home in the Ansible defaults.
+            # No fallback: the value has one home, the Ansible defaults.
             ("missing", None),
             ("empty", ""),
             ("zero", "0"),
@@ -1248,9 +1124,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
                     self.relay_module.Config.from_mapping(mutated)
 
     def test_entry_point_serves_on_the_configured_listener_port(self):
-        # The port is read back from a live listener rather than from the relay's
-        # source text: a main() that ignored ALERT_RELAY_PORT and bound its own
-        # number would leave nothing answering here.
+        # Read back from a live listener, so a main() binding its own number fails.
         port, holder = reserve_local_port()
         self.addCleanup(holder.close)
         self.assertNotEqual(port, DEPLOYED_PORT)
@@ -1265,9 +1139,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         environment = self.environment(ALERT_RELAY_PORT=str(port))
         with mock.patch.object(self.relay_module, "create_server", capture), \
                 mock.patch.dict(os.environ, environment):
-            # Given up on the line before the thread that binds it, so the
-            # patching and environment work above happens with the port still
-            # reserved.
+            # Released on the line before the binding thread.
             holder.close()
             thread = threading.Thread(target=self.relay_module.main, daemon=True)
             thread.start()
@@ -1305,9 +1177,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
 
         self.assertEqual(self.post(healthy)[0], 204)
         self.assertEqual(len(self.pushover.requests), 0)
-        # A first healthy transition publishes nothing, so it charges nothing:
-        # the ceiling is charged only once the transition logic has decided the
-        # event is worth sending.
+        # A first healthy transition publishes nothing, so it charges nothing.
         self.assertEqual(
             self.read_state(),
             {
@@ -1348,8 +1218,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
                            "immich_server</a>\n"
                            "\U0001f552 <b>When</b> 15 Aug 01:22 UTC",
                 "html": "1",
-                # A recovery is a record, not an emergency: a badge and no
-                # sound, which is what a second topic used to express.
+                # A recovery is a badge and no sound.
                 "priority": "-1",
                 "url": f"{LINK_BASE}/container/{'b' * 64}",
                 "url_title": "Open in Dozzle",
@@ -1368,7 +1237,6 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
         self.assertEqual(self.post(recovered)[0], 204)
         self.assertEqual(len(self.pushover.requests), 3)
-        # The suppressed duplicate charged nothing either.
         self.assertEqual(self.read_state()["budget"]["count"], 3)
 
     def test_later_recovery_wins_when_older_unhealthy_arrives_late(self):
@@ -1458,9 +1326,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
                     self.state_entry(first_id, "healthy", "2026-08-15T01:22:14Z"),
                     self.state_entry(second_id, "unhealthy", "0001-01-01T00:00:00Z"),
                 ],
-                # A migrated document carries today's empty budget: a schema
-                # that could not hold a count cannot be read as having spent
-                # one, so the first day after an upgrade starts whole.
+                # A schema that could not hold a count cannot have spent one.
                 "budget": self.budget(1, [(first_id, 1, False)]),
             },
         )
@@ -1533,20 +1399,10 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(self.pushover.requests, [])
         self.assertEqual(self.state_path.read_bytes(), original)
 
-    # --- the daily ceiling -------------------------------------------------
-    #
-    # Every case below runs against CONTAINER_CEILING / OOM_CONTAINER_CEILING /
-    # GLOBAL_CEILING rather than the deployment's numbers, so a relay that
-    # ignored its configuration fails here rather than passing by coincidence.
+    # --- the daily ceiling (test ceilings, not the deployment's) ---
 
     def test_under_the_ceiling_every_alert_publishes_and_is_counted(self):
-        """The passing path, asserted on purpose.
-
-        A ceiling is easy to get right in the direction that suppresses and easy
-        to get catastrophically wrong in the direction that does not publish,
-        and a suite that only exercises the tripping path cannot tell a working
-        ceiling from a relay that has gone silent.
-        """
+        """The passing path, so a silent relay cannot pass for a working ceiling."""
         for index in range(CONTAINER_CEILING):
             with self.subTest(index=index):
                 self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
@@ -1567,17 +1423,14 @@ class DozzleAlertRelayTest(unittest.TestCase):
             self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
         self.assertEqual(len(self.pushover.requests), CONTAINER_CEILING)
 
-        # One past the allowance: the notice, and nothing else.
         self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
         notice = self.pushover.requests[-1]["form"]
         self.assertEqual(notice["title"], "\U0001f507 paperless_webserver alerts paused")
         self.assertIn("<b>Alerts for paperless_webserver</b> are", notice["message"])
         self.assertIn(f"{CONTAINER_CEILING} alerts already sent", notice["message"])
-        # The notice says the platform has gone quiet, which outranks any single
-        # alert it replaced -- but there is nothing to acknowledge, so never 2.
+        # Outranks any single alert, but there is nothing to acknowledge, so never 2.
         self.assertEqual(notice["priority"], "1")
 
-        # And then silence, for this container, however many more arrive.
         for _index in range(5):
             self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
         self.assertEqual(len(self.pushover.requests), CONTAINER_CEILING + 1)
@@ -1586,8 +1439,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
             if form["title"].startswith("\U0001f507 ")
         ]
         self.assertEqual(len(suppressed), 1)
-        # The notice itself is not charged: the allowance is already spent, and
-        # charging it would make the latch depend on the counter it sets.
+        # The notice itself is not charged, or the latch would depend on its own counter.
         self.assertEqual(
             self.read_state()["budget"],
             self.budget(CONTAINER_CEILING, [(CONTAINER_ID, CONTAINER_CEILING, True)]),
@@ -1614,33 +1466,22 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
 
     def test_an_oom_outlives_the_ordinary_allowance_and_is_still_bounded(self):
-        """OOM is not exempt, and the crash loop is why.
-
-        A container the kernel kills and Docker restarts emits an unbounded
-        `oom` stream, so a fully exempt rule would hand that stream the quota. A
-        higher allowance rather than no allowance is what lets a container whose
-        ordinary alerts are suppressed still report that it was killed.
-        """
+        """OOM is not exempt: a crash loop emits an unbounded `oom` stream."""
         for _index in range(CONTAINER_CEILING):
             self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
         self.assertEqual(len(self.pushover.requests), CONTAINER_CEILING)
 
-        # The ordinary ceiling is spent; an OOM still gets through, at its own
-        # higher allowance and at emergency priority.
         for index in range(OOM_CONTAINER_CEILING - CONTAINER_CEILING):
             with self.subTest(index=index):
                 self.assertEqual(self.post(self.envelope("OOM"))[0], 204)
                 self.assertEqual(self.pushover.requests[-1]["form"]["priority"], "2")
         self.assertEqual(len(self.pushover.requests), OOM_CONTAINER_CEILING)
 
-        # An ordinary alert in between is still suppressed, and its notice is
-        # the container's one notice.
         self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
         self.assertTrue(
             self.pushover.requests[-1]["form"]["title"].startswith("\U0001f507 ")
         )
 
-        # And the OOM allowance ends too, rather than running forever.
         self.assertEqual(self.post(self.envelope("OOM"))[0], 204)
         self.assertEqual(len(self.pushover.requests), OOM_CONTAINER_CEILING + 1)
         self.assertEqual(
@@ -1671,8 +1512,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
             self.assertEqual(len(self.pushover.requests), published)
         self.assertEqual(self.read_state()["budget"]["count"], GLOBAL_CEILING)
 
-        # A container that has never alerted before is silenced too: the global
-        # count is checked before any per-container allowance.
+        # The global count is checked before any per-container allowance.
         fresh = f"{GLOBAL_CEILING:064x}"
         self.assertEqual(
             self.post(
@@ -1709,13 +1549,9 @@ class DozzleAlertRelayTest(unittest.TestCase):
             1,
             "one global notice per day, and one only",
         )
-        # Once the global backstop has tripped, no per-container notice is ever
-        # emitted on top of it -- which is what bounds the unbudgeted notices.
+        # No per-container notice after the global backstop trips.
         self.assertTrue(self.read_state()["budget"]["notified"])
 
-        # An OOM is bounded by the global backstop too. It is the one message
-        # this relay most wants to deliver, and it is still not a way past the
-        # quota; the notice above is what says so out loud.
         self.assertEqual(self.post(self.envelope("OOM"))[0], 204)
         self.assertEqual(len(self.pushover.requests), GLOBAL_CEILING + 1)
 
@@ -1748,14 +1584,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
 
     def test_a_clock_that_moves_backwards_cannot_wedge_the_relay_shut(self):
-        """The failure a rolling window has and a calendar day key does not.
-
-        A window stored as "started at T" and reset on `now - T >= one day` goes
-        negative when the clock jumps backwards and then never resets at all:
-        the relay would sit suppressed until somebody noticed the silence. A day
-        key has no arithmetic to invert -- any day that is not the stored one
-        resets -- so this case moves the clock the wrong way on purpose.
-        """
+        """A calendar day key resets on any other day, so a backwards clock cannot wedge it."""
         later = datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc)
         with mock.patch.object(self.relay_module, "utc_now", return_value=later):
             for _index in range(CONTAINER_CEILING + 1):
@@ -1789,8 +1618,6 @@ class DozzleAlertRelayTest(unittest.TestCase):
         original_relay = self.relay
         self.relay = restarted
         try:
-            # The count survives the restart, so the boundary is still where it
-            # was: one more publishes, the next is the notice.
             self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
             self.assertEqual(len(self.pushover.requests), CONTAINER_CEILING)
             self.assertEqual(
@@ -1803,7 +1630,6 @@ class DozzleAlertRelayTest(unittest.TestCase):
                     "\U0001f507 "
                 )
             )
-            # The latch survives too: a restart must not buy a second notice.
             self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
             self.assertEqual(len(self.pushover.requests), CONTAINER_CEILING + 1)
         finally:
@@ -1831,23 +1657,10 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
 
     def test_the_ceiling_survives_a_state_store_that_cannot_be_written(self):
-        """The defect that made the ceiling fail completely open.
+        """A state write that fails must not fail the ceiling open.
 
-        The bound lived only in the state file, so a write that failed took the
-        increment with it: the next event re-read an unchanged document, saw the
-        same count, and published again. Measured on the broken tree at
-        10/25/200 with the write always failing, 500 events produced 500 alerts
-        and no notice. The notice latch was worse -- nothing backed it at all,
-        so ten over-ceiling events produced ten notices.
-
-        `/state` filling or remounting read-only is the same class of event this
-        relay exists to report, so this was reachable, and silent in the
-        direction that matters.
-
-        Failing closed is NOT the fix and this case would not accept it: a relay
-        that stops publishing when its disk fills is silent at the one moment
-        somebody needs to hear from it. The bound degrades from durable to
-        process-lifetime instead, which is what the assertions below pin.
+        Failing closed is not the fix either: the bound degrades from durable to
+        process-lifetime instead.
         """
         with mock.patch.object(
             self.relay_module.LockedState, "replace",
@@ -1857,10 +1670,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
             for _index in range(CONTAINER_CEILING + 12):
                 statuses.append(self.post(self.envelope("Unexpected exit"))[0])
 
-        # Every write failed, so every request reports the store as unavailable
-        # -- the alert was delivered, so that status is about the store.
+        # The alert was delivered; the 500 is about the store.
         self.assertEqual(set(statuses), {500})
-        # And nothing was persisted, which is what makes this the hard case.
         self.assertFalse(self.state_path.exists())
 
         titles = [form["title"] for form in self.published_forms()]
@@ -1876,15 +1687,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
 
     def test_the_global_ceiling_and_its_latch_survive_a_broken_store_too(self):
-        """The other scope, which the per-container case cannot reach.
-
-        With a per-container ceiling of 3 and a global of 9, the case above
-        never gets near the global backstop -- it spends its events on one
-        container. The global count and the global notice latch are separate
-        fields with a separate merge, so they need their own broken-store case
-        or half the floor is asserted by nothing. Planted: dropping the global
-        latch from the merge left the per-container case green.
-        """
+        """The global count and latch merge separately, so they need their own case."""
         with mock.patch.object(
             self.relay_module.LockedState, "replace",
             side_effect=self.relay_module.StateError("state replacement failed"),
@@ -1915,26 +1718,13 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
 
     def test_the_whole_ceiling_decision_happens_inside_the_state_lock(self):
-        """The interlock, pinned structurally because a comment cannot hold it.
+        """The ceiling's check-then-act, publish included, must stay inside the flock.
 
-        The ceiling is a check-then-act -- raise_floor reads, charge_budget
-        decides, record and replace write -- with the publish those authorise in
-        between. BudgetFloor's own lock covers only its dict and spans none of
-        that, so the exclusive flock is what stops two concurrent events each
-        seeing the same remaining allowance. Measured with the window widened to
-        50ms: with the flock a ceiling of 10 delivered 10; with the flock gone
-        and BudgetFloor untouched, the same ceiling delivered 40.
-
-        The trap this closes is that moving `publish` out of the lock is the
-        obvious fix for a hung upstream serialising every Dozzle POST, and it
-        breaches the ceiling with BudgetFloor still there and still looking like
-        protection. Read as source structure rather than behaviour because a
-        concurrency test for this would be a race against PUBLISH_TIMEOUT_SECONDS;
-        this cannot flake and it fails the moment somebody takes the trap.
+        Moving `publish` out of the lock is the obvious fix for a hung upstream and
+        breaches the ceiling; asserted on source structure so it cannot flake.
         """
         tree = ast.parse(RELAY_PATH.read_text(encoding="utf-8"))
-        # Both callers of the ceiling: Dozzle's container events and Beszel's
-        # host alerts charge the same global counter under the same lock.
+        # Container events and Beszel alerts charge the same counter under one lock.
         for function_name in ("process_event", "process_beszel"):
             with self.subTest(function=function_name):
                 self.assert_ceiling_decision_is_locked(tree, function_name)
@@ -1980,9 +1770,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
             with self.subTest(call=name):
                 self.assertIn(name, inside, why)
 
-        # And nothing that matters may sit outside it: the only calls in the
-        # function body proper are the lock itself and the clock it is entered
-        # with, so a later edit cannot quietly hoist one of the five out.
+        # Only the lock and its clock may sit outside it in the function body.
         outside = set()
         for statement in function.body:
             if isinstance(statement, ast.With):
@@ -1995,18 +1783,11 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
 
     def test_a_working_store_still_bounds_a_process_that_forgot(self):
-        """The floor corrects the store upwards, never downwards.
-
-        A document that lost an increment -- the write failed, or something
-        rewrote it -- must not hand this process the same allowance again. The
-        state file is rolled back by hand here, which is the same input a lost
-        write produces.
-        """
+        """The floor corrects the store upwards, never downwards."""
         for _index in range(CONTAINER_CEILING):
             self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
         self.assertEqual(len(self.pushover.requests), CONTAINER_CEILING)
 
-        # Wind the persisted counters back to zero behind the relay's back.
         self.write_state(
             {"version": 3, "entries": [], "budget": self.budget()}
         )
@@ -2015,19 +1796,13 @@ class DozzleAlertRelayTest(unittest.TestCase):
             self.pushover.requests[-1]["form"]["title"].startswith("\U0001f507 "),
             "a rewound store handed the process its allowance a second time",
         )
-        # And the correction is written back, so the next reader sees it too.
         self.assertEqual(
             self.read_state()["budget"],
             self.budget(CONTAINER_CEILING, [(CONTAINER_ID, CONTAINER_CEILING, True)]),
         )
 
     def test_a_store_that_is_ahead_of_this_process_is_left_alone(self):
-        """The floor raises, so a larger stored count has to win.
-
-        Merging the other way -- trusting whichever value this process last saw
-        -- would let a relay that restarted mid-day undo a count written before
-        it started.
-        """
+        """The floor raises, so a larger stored count has to win."""
         self.write_state(
             {
                 "version": 3,
@@ -2044,15 +1819,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(len(self.pushover.requests), 1)
 
     def test_a_rejected_alert_says_so_on_stderr_with_its_status(self):
-        """The path that was silent, and it is the worst-consequence one.
-
-        Nothing in the relay logged anything -- no logging import, no print, no
-        stderr, `log_message` a no-op, and /healthz reporting only on the state
-        store -- so a rejected alert was answered with 502, not retried by
-        Dozzle, and gone. Against a local server a 4xx was barely reachable;
-        against Pushover it is reachable through the 250 and 1024 caps, the
-        priority-2 parameters, and credentials that were revoked or mistyped.
-        """
+        """A rejected alert is not retried by Dozzle, so it must at least be logged."""
         self.pushover.response_status = 400
         self.pushover.response_body = b'{"user":"invalid","errors":["user key is not valid"]}'
         recorder = RecordingStderr()
@@ -2065,19 +1832,11 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertTrue(line.endswith("\n"))
         self.assertEqual(line.count("\n"), 1, "the line must be exactly one line")
         self.assertIn("alert-relay: pushover rejected the alert (HTTP 400)", line)
-        # Which alert was lost, which is the operator's first question.
         self.assertIn("alert=\U0001f7e0 paperless_webserver unhealthy", line)
-        # And the far end's own explanation, which separates a bad credential
-        # from an over-long message from a missing retry parameter.
         self.assertIn("user key is not valid", line)
 
     def test_an_unreachable_upstream_is_distinguishable_from_a_rejection(self):
-        """Collapsing the two was half the defect.
-
-        A rejection never heals and an outage does, so an operator seeing one
-        line needs to know which they have. Before this both raised
-        `UpstreamError("upstream unavailable")` byte for byte.
-        """
+        """A rejection never heals and an outage does, so the log must say which."""
         self.config.pushover_api_url = "http://127.0.0.1:1/1/messages.json"
         recorder = RecordingStderr()
         with contextlib.redirect_stderr(recorder):
@@ -2088,20 +1847,12 @@ class DozzleAlertRelayTest(unittest.TestCase):
         line = recorder.writes[0]
         self.assertIn("alert-relay: pushover unreachable (", line)
         self.assertIn("alert=\U0001f7e0 paperless_webserver unhealthy", line)
-        # No HTTP status, because there was no HTTP response. A line claiming
-        # one would be the collapse this case exists to prevent, wearing the
-        # other name.
+        # No HTTP status, because there was no HTTP response.
         self.assertNotIn("HTTP ", line)
         self.assertNotIn("rejected", line)
 
     def test_no_credential_reaches_stderr_even_if_the_upstream_echoes_one(self):
-        """The assertion that has to survive the far end misbehaving.
-
-        The credentials travel in the request body, so the exception text is
-        clean today -- but "clean today" is exactly what stops being true, and a
-        far end that echoed a token into its error message would put it in a log
-        Dozzle renders to anybody who can read it.
-        """
+        """A far end echoing a token must not put it in a log Dozzle renders."""
         self.pushover.response_status = 400
         self.pushover.response_body = json.dumps(
             {"errors": [f"token {PUSHOVER_TOKEN} and user {PUSHOVER_USER_KEY} rejected"]}
@@ -2117,23 +1868,14 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertIn("[redacted]", output)
 
     def test_a_redacted_credential_cannot_survive_as_a_fragment(self):
-        """Redact before truncating, proved on the helper at the boundary.
-
-        Truncating first leaves the leading half of a credential in the log, and
-        half a credential is still a leak. Bounded to a length that would cut
-        this one in the middle, so the ordering is what the assertion turns on.
-        """
+        """Redact before truncating, proved on the helper at the boundary."""
         bound = self.relay_module.MAX_DIAGNOSTIC_CHARACTERS
         padded = "x" * (bound - 10) + PUSHOVER_TOKEN
         safe = self.relay_module.log_safe(padded, self.config)
         self.assertLessEqual(len(safe), bound)
 
-        # The fragment is DERIVED rather than guessed, and that is the whole
-        # assertion. Truncating first leaves exactly the credential's first
-        # `bound - (len(padded) - len(token))` characters, and an earlier
-        # version of this case asserted a 12-character prefix when only 10
-        # survive -- so it passed with the redaction deleted. Planted and
-        # measured, not reasoned.
+        # Derived, not guessed: a guessed prefix length once let this pass with the
+        # redaction deleted.
         surviving = PUSHOVER_TOKEN[: bound - (len(padded) - len(PUSHOVER_TOKEN))]
         self.assertEqual(len(surviving), 10)
         self.assertNotIn(surviving, safe)
@@ -2153,11 +1895,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
         line = recorder.writes[0]
         self.assertEqual(line.count("\n"), 1, "the upstream forged a second line")
         self.assertLess(len(line), 1024, "an upstream body flooded the log")
-        # The forged text may appear, but only inside the one real line, never
-        # as an entry of its own.
         self.assertEqual(len(line.splitlines()), 1)
 
-        # The same sanitiser on the field the platform does not author either.
         self.assertEqual(
             self.relay_module.log_safe("svc\nforged", self.config), "svc?forged"
         )
@@ -2165,28 +1904,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
     def test_concurrent_failures_produce_one_intact_line_each(self):
         """A log that garbles under concurrency is worse than no log.
 
-        It gets read as evidence of something it did not say. The line is
-        assembled whole and written ONCE for that reason: print() issues two
-        writes -- the text, then the terminator -- and two of those can
-        interleave into a merged line.
-
-        DRIVEN AT `publish` RATHER THAN THROUGH THE RELAY, for two reasons, and
-        the first is a correction worth stating. Inside process_event every
-        publish happens under the exclusive flock, so two failures CANNOT
-        currently interleave -- a version of this case that posted twelve
-        requests was serialising them behind that lock and proving nothing about
-        concurrent writers. The single write is therefore defensive rather than
-        load-bearing today: it holds if the publish ever moves out from under
-        the lock, and against anything else in the process that writes to
-        stderr. Second, the HTTP path carries a pre-existing ~1-in-180
-        StateError under twelve-way concurrency -- present unchanged on this
-        branch's base -- which made the case flaky for a reason that has nothing
-        to do with what it asserts.
-
-        Asserted on the WRITE COUNT, not only on the text: whether two threads
-        actually interleave is a scheduling accident, so a text-only assertion
-        would catch a two-write implementation only sometimes. One line is one
-        write, always.
+        Driven at `publish` rather than through the relay, whose flock serialises
+        publishes, and asserted on the write count because interleaving is luck.
         """
         self.config.pushover_api_url = "http://127.0.0.1:1/1/messages.json"
         failures = 16
@@ -2222,7 +1941,6 @@ class DozzleAlertRelayTest(unittest.TestCase):
             self.assertTrue(write.endswith("\n"))
             self.assertEqual(write.count("\n"), 1)
         self.assertEqual(len(recorder.getvalue().splitlines()), failures)
-        # Every alert is named exactly once, so nothing was lost or merged.
         self.assertEqual(
             sorted(
                 line.split("alert=")[1].split(" detail=")[0]
@@ -2232,12 +1950,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
 
     def test_a_refused_publish_does_not_consume_the_allowance(self):
-        """Publish first, persist second, and this is what that order buys.
-
-        Charging before the POST would let an upstream that is refusing eat the
-        whole daily allowance while delivering nothing, and the relay would then
-        be suppressed for the rest of the day for messages nobody received.
-        """
+        """Publish first, persist second, so a refusing upstream cannot eat the allowance."""
         self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
         charged = self.read_state()["budget"]
 
@@ -2254,29 +1967,12 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
 
     def test_budget_counters_cannot_crowd_out_unevictable_health_entries(self):
-        """The wedge the budget is a separate structure to DEFER.
+        """Counters are shed before unhealthy entries, which cannot be evicted.
 
-        bounded_state may only evict a health entry once it is healthy, so a
-        document full of unhealthy entries has nothing left to shed and raises
-        -- which stops the relay reporting anything at all. A counter may always
-        be evicted, because the global count beneath the per-container ones is
-        what actually guarantees the quota, so the bytes are reclaimed there
-        first. This plants a document that is only reconcilable if that ordering
-        holds.
-
-        Deferred rather than prevented, and the earlier version of this comment
-        claimed prevention. Shedding counters buys back the counters' bytes and
-        nothing else, so an all-unhealthy document still reaches that raise at
-        the same size it would with no counters at all -- measured at 128
-        entries for a short ASCII host, where the entry count binds first, and
-        39 for a 256-character non-ASCII one. That raise is byte-identical to
-        the one on the branch base and is not something the counters introduced.
+        This defers the all-unhealthy raise; it does not prevent it.
         """
-        # 85 of each is the largest pair of lists that still fits inside
-        # MAX_STATE_BYTES at the longest host name the envelope schema allows:
-        # the stored document is 65208 bytes and one more counter takes it to
-        # 65577, past the 65536 bound. Adding the counter is what the event
-        # below does, so the shrink is reached rather than merely possible.
+        # 85 of each is the largest pair that fits MAX_STATE_BYTES at the longest host;
+        # the event below adds the counter that tips it over.
         long_host = "h" * 256
         planted = 85
         entries = [
@@ -2311,8 +2007,6 @@ class DozzleAlertRelayTest(unittest.TestCase):
             len(self.state_path.read_bytes()), self.relay_module.MAX_STATE_BYTES
         )
 
-        # Health entries that cannot be evicted, plus counters that can: the
-        # relay must shed counters and keep reporting.
         self.assertEqual(self.request("GET", "/healthz", token=None)[0], 200)
         self.assertEqual(self.post(self.envelope("OOM", host=long_host))[0], 204)
         self.assertEqual(len(self.pushover.requests), 1)
@@ -2324,12 +2018,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
 
     def test_budget_eviction_keeps_the_counters_that_are_doing_work(self):
-        """Lowest count first, so a container at its ceiling keeps its latch.
-
-        Evicting oldest-first, or arbitrarily, would hand a suppressed container
-        a fresh allowance and a second notice -- the counter that is actually
-        holding something back is the one that must survive.
-        """
+        """Lowest count first, so a container at its ceiling keeps its latch."""
         entries = {
             f"nas\0{index:064x}": {
                 "identity": f"nas\0{index:064x}",
@@ -2360,7 +2049,6 @@ class DozzleAlertRelayTest(unittest.TestCase):
             FIXED_NOW,
         )
         self.assertEqual(len(budget["containers"]), self.relay_module.MAX_BUDGET_ENTRIES)
-        # The count-9 latch is still there; five count-1 counters went instead.
         self.assertIn(f"nas\0{0:064x}", budget["containers"])
         self.assertEqual(budget["containers"][f"nas\0{0:064x}"]["count"], 9)
         self.assertTrue(budget["containers"][f"nas\0{0:064x}"]["notified"])
@@ -2418,12 +2106,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertNotIn("Traceback", captured.getvalue())
 
     def test_version_two_state_migrates_into_a_full_allowance(self):
-        """An upgrade meets a file on the NAS that has no budget in it.
-
-        A relay that refused it would report nothing at all, which is worse than
-        anything the ceiling protects against, so v2 migrates the way v1 already
-        did and starts today whole.
-        """
+        """A v2 state file with no budget migrates and starts the day whole."""
         self.write_state(
             {
                 "version": 2,
@@ -2446,13 +2129,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
 
     def test_exit_and_oom_always_publish_without_changing_health_state(self):
-        """Neither rule is a health transition, so neither writes a health entry.
-
-        The ceiling gave this file a second thing to hold, so the assertion that
-        used to be "no state file at all" is now "no health entries": an exit or
-        an OOM that started tracking health would suppress the next one, which is
-        what this case has always been about.
-        """
+        """Neither rule is a health transition, so neither writes a health entry."""
         for _iteration in range(2):
             self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
             self.assertEqual(self.post(self.envelope("OOM"))[0], 204)
@@ -2544,8 +2221,6 @@ class DozzleAlertRelayTest(unittest.TestCase):
 
         self.assertEqual((status_code, response_body), (502, b"upstream unavailable\n"))
         self.assertEqual(target.requests, [])
-        # Nothing is written, so the refused publish did not consume any of the
-        # day's allowance either.
         self.assertFalse(self.state_path.exists())
 
     def test_corrupt_symlink_and_unsafe_state_fail_closed(self):
@@ -2692,15 +2367,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(self.read_state(), expected_state)
 
     def test_markup_is_escaped_and_diagnostics_are_redacted(self):
-        """Container and host text is attacker-adjacent and lands inside markup.
-
-        Pushover parses `message` under html=1 as five tags -- <b>, <i>, <u>,
-        <font color> and <a href> -- so a container named `<b>` would style the
-        notification and one carrying an `<a href>` would put a link in it. The
-        relay emits <b>, <i>, <font color> and <a href> of those five, which is
-        its own narrowness rather than the API's. `title` is not parsed, and stays raw on purpose:
-        escaping it would show `&amp;` to somebody reading a notification title.
-        """
+        """Container and host text is escaped in `message` (html=1); `title` stays raw."""
         hostile = '<b>svc</b> & "q" <a href=\'x\'>'
         payload = self.envelope(container=hostile, host="nas<host>")
         captured = io.StringIO()
@@ -2712,12 +2379,9 @@ class DozzleAlertRelayTest(unittest.TestCase):
         published = self.pushover.requests[0]["form"]
         self.assertEqual(published["title"], f"\U0001f7e0 {hostile} unhealthy")
         escaped = "&lt;b&gt;svc&lt;/b&gt; &amp; &quot;q&quot; &lt;a href=&#x27;x&#x27;&gt;"
-        # In the lead and inside the Container link, and escaped both times.
         self.assertEqual(published["message"].count(escaped), 2)
         self.assertIn("\U0001f5a5\ufe0f <b>Host</b> nas&lt;host&gt;\n", published["message"])
-        # The only markup left is the relay's own: four <b>, one <font>, one
-        # <a> and one <i>, each closed, so every `<` in the message is one of
-        # those fourteen and none of them came from the container's name.
+        # The only markup left is the relay's own fourteen tags.
         self.assertEqual(published["message"].count("<b>"), 4)
         self.assertEqual(published["message"].count("</b>"), 4)
         self.assertEqual(published["message"].count("<"), 14)
@@ -2726,21 +2390,11 @@ class DozzleAlertRelayTest(unittest.TestCase):
             self.assertNotIn(secret, combined)
 
     def test_escaping_bounds_the_field_before_it_escapes_it(self):
-        """Truncate then escape, so no entity is cut in half at the boundary.
-
-        Escaping first and cutting afterwards leaves a dangling `&am` at the
-        boundary, which renders as literal text in the middle of a notification.
-        Both of the relay's bounds are asserted through the renderer as well as
-        on the helper, so a renderer that stopped bounding its input is caught
-        too.
-        """
-        # An ordinary name is bounded on its input length and comes through whole.
+        """Truncate then escape, so no entity is cut in half at the boundary."""
         self.assertEqual(
             self.relay_module.html_escape("x" * 200), "x" * 128
         )
-        # A name that escapes to six characters apiece is bounded on its OUTPUT,
-        # by dropping whole input characters -- never by cutting the escaped
-        # text, which is what would leave the dangling entity.
+        # Bounded on its output, by dropping whole input characters.
         escaped = self.relay_module.html_escape("&" * 200)
         self.assertLessEqual(
             len(escaped), self.relay_module.MAX_ESCAPED_FIELD_CHARACTERS
@@ -2757,18 +2411,9 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertNotIn("x" * 129, published["message"])
 
     def test_no_rendered_message_can_exceed_what_pushover_accepts(self):
-        """Over Pushover's cap is a refused message, not a truncated one.
+        """Over Pushover's 1024 cap is a refused message and a lost alert.
 
-        The API rejects a `message` longer than 1024 characters with a 4xx, so
-        the relay would raise UpstreamError, answer Dozzle 502, and the alert
-        would simply be lost -- Dozzle does not retry. Escaping is what makes
-        this reachable at all: `'` becomes `&#x27;`, so 128 characters of
-        container name can render as 768 and two such fields overrun the cap
-        between them.
-
-        Real Docker container names cannot contain any of the five escaped
-        characters, so nothing on this platform reaches it. The envelope accepts
-        any non-control text in that field, so something could.
+        Escaping makes it reachable: `'` renders as six characters.
         """
         hostile = "'" * 256
         cap = self.relay_module.MAX_MESSAGE_CHARACTERS
@@ -2793,7 +2438,6 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 )
                 self.assertLessEqual(len(notice["message"]), cap)
 
-        # And on the wire, not only in the renderer.
         self.assertEqual(
             self.post(self.envelope(container=hostile, host=hostile))[0], 204
         )
@@ -2802,20 +2446,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
 
     def test_no_rendered_title_can_exceed_what_pushover_accepts(self):
-        """The title slice is the whole guard, and it was guarded by nothing.
-
-        Pushover caps a title at 250 characters and rejects a longer one with a
-        4xx -- the same lost alert an over-long message causes, reached by a
-        much shorter input. The title is NOT escaped, so nothing expands; what
-        makes it reachable is that the envelope admits a 256-character container
-        name and only the slice in each renderer bounds it.
-
-        Measured on the tree before this case existed: deleting the slice
-        produced a 268-character title and all 54 tests stayed green.
-
-        Both renderers, because they slice independently -- a fix applied to one
-        would leave the other losing alerts.
-        """
+        """Pushover rejects a title over 250 characters; each renderer's slice bounds it."""
         longest = "c" * 256
         cap = self.relay_module.MAX_TITLE_CHARACTERS
         for rule, changes in (
@@ -2841,8 +2472,6 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 )["title"]
                 self.assertLessEqual(len(title), cap)
 
-        # And on the wire, so a renderer that stopped bounding is caught even if
-        # something else started doing it for them.
         self.assertEqual(
             self.post(self.envelope(container=longest, host=longest))[0], 204
         )
@@ -2862,13 +2491,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
 
     def test_the_container_notice_says_what_still_gets_through(self):
-        """"Suppressed" would overstate it while the OOM allowance remains.
-
-        A container past its ordinary ceiling still publishes out-of-memory
-        kills up to the higher one, so the one message whose whole job is being
-        honest about going quiet has to say so -- and has to stop saying so once
-        that allowance is spent too.
-        """
+        """"Suppressed" would overstate it while the OOM allowance remains."""
         for _index in range(CONTAINER_CEILING + 1):
             self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
         notice = self.pushover.requests[-1]["form"]
@@ -2877,9 +2500,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
             notice["message"],
         )
 
-        # A second container, taken past the OOM allowance before its first
-        # notice: nothing is still reporting, and the notice must not claim
-        # otherwise.
+        # Past the OOM allowance: the notice must not claim anything still reports.
         spent = "b" * 64
         for _index in range(OOM_CONTAINER_CEILING):
             self.assertEqual(
@@ -2913,8 +2534,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
 
     # --- Beszel host alerts, POSTed to /beszel ------------------------------
 
-    # Each Beszel 0.20.0 subject exactly as it renders one, the body it sends
-    # with it, and the title and priority this relay must turn them into.
+    # Each Beszel 0.20.0 subject and body, and the title and priority expected.
     BESZEL_SUBJECTS = (
         ("ASUSTOR-AS6704T CPU above threshold",
          "CPU averaged 93.20% for the previous 10 minutes.",
@@ -2925,7 +2545,6 @@ class DozzleAlertRelayTest(unittest.TestCase):
         ("ASUSTOR-AS6704T temperature above threshold",
          "Highest sensor coretemp_core_2 averaged 87.53\u00b0C for the previous 15 minutes.",
          "\U0001f534 ASUSTOR-AS6704T temperature above threshold", 1),
-        # A system name with spaces, and a metric name with one.
         ("Office NAS 2 15m load below threshold",
          "15m Load averaged 1.20 for the previous 10 minutes.",
          "\U0001f7e2 Office NAS 2 15m load back below threshold", -1),
@@ -2945,9 +2564,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         ("laptop battery above threshold",
          "Battery averaged 64.00% for the previous 5 minutes.",
          "\U0001f7e2 laptop battery back above threshold", -1),
-        # Titles this relay does not parse go out as Beszel wrote them, quiet
-        # when they end in its checkmark. Each is Beszel 0.20.0's own format:
-        # internal/alerts/alerts_systemd.go, alerts_container.go, alerts_smart.go.
+        # Unparsed titles go out as Beszel wrote them.
         ("Services recovered on ASUSTOR-AS6704T \u2705",
          "No services are in the failed state on ASUSTOR-AS6704T.",
          "Services recovered on ASUSTOR-AS6704T \u2705", -1),
@@ -2978,7 +2595,6 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
 
     def test_every_beszel_subject_maps_to_its_title_and_priority(self):
-        # More subjects than the test's global ceiling, which is not under test here.
         self.relay.config = self.relay_module.Config.from_mapping(
             self.environment(ALERT_DAILY_GLOBAL_CEILING="1000")
         )
@@ -3094,9 +2710,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(container["user"], PUSHOVER_USER_KEY)
         self.assertEqual(host["user"], PUSHOVER_USER_KEY)
 
-    # Beszel 0.20.0 titles about golem, one per shape the relay routes on: the
-    # four golem has alerts for (roles/beszel beszel_remote_systems), and one it
-    # reads only from the title.
+    # Beszel 0.20.0 titles about golem, one per shape the relay routes on.
     GOLEM_SUBJECTS = (
         ("Connection to golem is down \U0001f534", "Connection to golem is down "),
         ("golem CPU above threshold", "CPU averaged 93.20% for the previous 10 minutes."),
@@ -3293,7 +2907,6 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertIn("<b>Host</b> ASUSTOR-AS6704T", notice["message"])
         self.assertEqual(notice["token"], ALERTS_TOKEN)
 
-        # One shared ceiling: container alerts stop too, and nothing notices twice.
         self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
         self.assertEqual(self.post_beszel(alert)[0], 204)
         self.assertEqual(len(self.pushover.requests), GLOBAL_CEILING + 1)
@@ -3328,7 +2941,6 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 self.assertNotIn("url_title", rendered)
                 self.assertNotIn("href", rendered["message"])
 
-        # No base, or a base the validator refuses: no button, and the relay starts.
         self.assertNotIn("url", render(self.beszel(subject, body, valid), None, FIXED_NOW))
         for raw in (None, "http://admin:link-secret@nas.tailnet.example:8090/beszel"):
             with self.subTest(base=raw):
@@ -3375,25 +2987,10 @@ class DozzleAlertRelayTest(unittest.TestCase):
 
 
 class RelayStateDirectoryTest(unittest.TestCase):
-    """The three refusals of open_directory_no_symlinks, and what each owns.
+    """The three refusals of open_directory_no_symlinks, and what each owns (#658).
 
-    The handler closes a descriptor this function opened, and the question it
-    has to answer is whether there is one: os.open may have raised, in which
-    case there is nothing to close and closing an unbound name would be the
-    error instead. That was decided by asking the interpreter whether it had
-    made the name (`"directory_fd" in locals()`); it is `directory_fd = None`
-    and `is not None` now, which is how LockedState in the same file already
-    writes it (#658).
-
-    Both halves are driven rather than read, because the half with nothing to
-    close is the one an ownership bug reaches first: a relative path and an
-    absent directory never open anything, and a 0o755 directory opens one and
-    then refuses it.
-
-    Its own TestCase, with no servers running, because it spies on os.open and
-    os.close process-wide: beside the two server threads DozzleAlertRelayTest
-    starts, an unrelated descriptor opened inside that window would land in
-    these lists and the case would fail for a reason that is not this function.
+    Its own TestCase with no servers running, because it spies on os.open and
+    os.close process-wide.
     """
 
     def setUp(self):
@@ -3436,23 +3033,8 @@ class RelayStateDirectoryTest(unittest.TestCase):
 class RelayProcessSignalTest(unittest.TestCase):
     """What a deliberate stop does to the relay, run as its own process.
 
-    services/dozzle/compose.yml starts the relay in exec form, so inside the
-    container the Python process is PID 1 unless Compose is asked for an init.
-    PID 1 has no default disposition for SIGTERM: the kernel delivers the signal
-    only if the process installed a handler, and drops it otherwise. A relay
-    that handled nothing but SIGINT therefore ignored `docker stop` outright and
-    was SIGKILLed at the end of the grace period for exit 137 -- which the `die`
-    rule pages on since #493, through the relay itself, which is the delivery
-    path every alert on this platform takes. It paged on its own recreation and
-    could not deliver the page (#516).
-
-    A unit test cannot make a process PID 1; that needs a container, and the
-    gate has no Docker. What it can assert is the property that makes the PID-1
-    case safe, and it is exactly the property that was missing: the relay
-    installs its own disposition for SIGTERM and exits zero under it, instead of
-    depending on a default disposition PID 1 does not have. Without the handler
-    this process is killed by the signal and reports returncode -SIGTERM, so
-    these cases are red on the tree that had the bug.
+    In the container the relay is PID 1, which has no default SIGTERM disposition,
+    so it must install its own and exit zero under it (#516).
     """
 
     def setUp(self):
@@ -3474,9 +3056,7 @@ class RelayProcessSignalTest(unittest.TestCase):
             {
                 "ALERT_RELAY_TOKEN": RELAY_TOKEN,
                 "ALERT_RELAY_PORT": str(port),
-                # Never dialled: these cases publish nothing. The discard
-                # address keeps a misdirected publish from reaching anything,
-                # and it is emphatically not api.pushover.net.
+                # Never dialled: a discard address, not api.pushover.net.
                 "PUSHOVER_API_URL": "http://127.0.0.1:9/1/messages.json",
                 "ALERT_RELAY_LINK_BASE": LINK_BASE,
                 "PUSHOVER_TOKEN": PUSHOVER_TOKEN,
@@ -3493,9 +3073,7 @@ class RelayProcessSignalTest(unittest.TestCase):
                 environment.pop(name, None)
             else:
                 environment[name] = value
-        # Given up on the line before the spawn: the relay is the binder, and
-        # what is left of the window is the fork itself rather than all of the
-        # environment assembly above.
+        # Released on the line before the spawn: the relay is the binder.
         holder.close()
         process = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
             [sys.executable, str(RELAY_PATH)],
@@ -3539,12 +3117,8 @@ class RelayProcessSignalTest(unittest.TestCase):
         for _ in range(open_connections):
             client = socket.create_connection(("127.0.0.1", port), timeout=3)
             self.addCleanup(client.close)
-            # A request line cut short, so the worker thread is inside the read
-            # when the signal lands. That is the window a shutdown implemented
-            # as a raising signal handler loses the signal in: socketserver
-            # catches whatever is raised while it dispatches a request and
-            # carries on, and the stop then ends in the SIGKILL it was meant to
-            # avoid.
+            # Cut short, so the worker is mid-read when the signal lands: socketserver
+            # swallows a raising handler's exception there.
             client.sendall(b"POST /alerts HT")
             clients.append(client)
         process.send_signal(number)
@@ -3570,27 +3144,13 @@ class RelayProcessSignalTest(unittest.TestCase):
         )
 
     def test_sigint_still_shuts_the_relay_down_cleanly(self):
-        """The path that already worked, so the SIGTERM handler cannot cost it.
-
-        SIGINT reached the relay before #516 as a KeyboardInterrupt out of
-        serve_forever. Installing a handler for it replaces that exception, so
-        this case is what says the replacement still ends in a clean exit.
-        """
+        """SIGINT, which worked before #516, still ends in a clean exit."""
         status = self.signalled_exit(signal.SIGINT)
 
         self.assertEqual(status, 0, f"SIGINT must still end in a clean exit, got {status}")
 
     def test_sigterm_lands_cleanly_while_requests_are_in_flight(self):
-        """The window a raising signal handler loses the stop in.
-
-        socketserver reports any exception raised while it is dispatching a
-        request through handle_error and keeps serving, so a stop implemented as
-        a handler that raises is swallowed whenever the signal arrives between
-        accept and the worker thread starting -- observed once in eight attempts
-        of a raising handler, on SIGINT, with a client connecting at start-up.
-        Blocking the signals and waiting for one has no such window, and this
-        case is what says so.
-        """
+        """A stop arriving mid-request must not be swallowed by socketserver."""
         status = self.signalled_exit(signal.SIGTERM, open_connections=3)
 
         self.assertEqual(
@@ -3603,13 +3163,7 @@ class RelayProcessSignalTest(unittest.TestCase):
 
 
 class RelayLinkBaseProcessTest(unittest.TestCase):
-    """A relay whose environment predates the link base still starts and alerts.
-
-    Run as a process, because the property is about start-up: the relay script
-    reaches its container through the `current` release symlink before
-    roles/dozzle re-renders the environment, so a restart in between runs this
-    script against an environment that has never heard of ALERT_RELAY_LINK_BASE.
-    """
+    """A relay whose environment predates the link base still starts and alerts."""
 
     setUp = RelayProcessSignalTest.setUp
     start_relay = RelayProcessSignalTest.start_relay
@@ -3678,11 +3232,8 @@ class RelayLinkBaseProcessTest(unittest.TestCase):
 class RelayPreviousEnvironmentProcessTest(unittest.TestCase):
     """This relay, started with exactly the environment main renders today.
 
-    deployment_bundle repoints `current` before roles/dozzle re-renders the
-    environment file, so a relay restarted in between runs this script with
-    neither PUSHOVER_ALERTS_TOKEN nor BESZEL_LINK_BASE. It must start, keep
-    serving /alerts on the Containers application, and refuse /beszel without
-    crashing -- the rule CLAUDE.md records after #327.
+    `current` is repointed before roles/dozzle re-renders the environment, so the
+    relay must start without PUSHOVER_ALERTS_TOKEN or BESZEL_LINK_BASE (#327).
     """
 
     setUp = RelayProcessSignalTest.setUp

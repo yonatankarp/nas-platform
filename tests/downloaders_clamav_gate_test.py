@@ -1,27 +1,9 @@
 """The gate's verdict logic, against a real socket serving clamd's replies.
 
-The subject is services/downloaders/clamav_gate.py, whose whole job is turning a
-clamd reply into an exit code SABnzbd acts on. Since #811 only an infection is
-allowed to fail a job: every other outcome imports it and pages the operator, so
-the pairing of exit code and alert is what each case below asserts. The fake
-clamd speaks the wire protocol rather than the module being stubbed, and the
-fake Pushover is an HTTP server rather than a patched function, because the two
-things that can silently stop working are the framing and the POST.
-
-Every case points PUSHOVER_API_URL at that fake. A case that forgot would reach
-pushover.net from the gate with whatever credentials the environment carried.
-
-Two framings and two shapes of case, and both pairs exist for a reason a green
-run did not give. This fixture served only newline-terminated replies, while
-clamd is documented as answering a `z`-prefixed command with NUL-terminated
-ones -- so the verdict test may never have been exercised against the framing
-production actually meets. Which framing the deployed clamd uses is unobserved,
-and the gate's own verdict() says how to settle it; both are served here so that
-neither answer leaves a case missing. And every case called main() in-process,
-which sees a return value rather than an exit code -- so a crash on the way to
-one, which is what a malformed Pushover URL was, was invisible here while the
-process exited 1 and told the arr the release was infected. The subprocess cases
-at the end are the ones that see that.
+Since #811 only an infection fails a job; everything else imports and pages, so
+each case asserts the exit code and alert pair. Every case points
+PUSHOVER_API_URL at the fake, or it would reach pushover.net. Both clamd
+framings are served, and the subprocess cases see real exit codes.
 """
 
 import importlib.util
@@ -47,12 +29,8 @@ USER_KEY = "clamav-gate-test-user-key"
 def load_gate(**env):
     """Import the gate fresh under `env`, and hold `env` while it runs.
 
-    The module reads the clamd address and the Pushover credentials at import
-    and SAB_COMPLETE_DIR inside main(), so the environment has to outlive the
-    import rather than be restored at it -- restoring early made every case take
-    the "SABnzbd passed no SAB_COMPLETE_DIR" branch and two of them still read as
-    passes. A None value unsets the variable, which is how the case for an
-    environment carrying no token at all is expressed.
+    The module reads SAB_COMPLETE_DIR inside main(), so the environment must
+    outlive the import. A None value unsets the variable.
     """
     previous = {key: os.environ.get(key) for key in env}
     for key, value in env.items():
@@ -75,11 +53,7 @@ def load_gate(**env):
 
 @contextmanager
 def fake_clamd(replies):
-    """Serve one scripted reply per connection on an ephemeral port.
-
-    `replies` is consumed in order; PING arrives on its own connection, so a case
-    that scans answers PONG first and the scan reply second.
-    """
+    """Serve one scripted reply per connection; PING gets its own connection."""
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen(8)
@@ -148,11 +122,7 @@ def closed_port():
 class ClamavGateTest(unittest.TestCase):
     def run_gate(self, replies, target=None, ready_timeout="5",
                  pushover_status=200, **overrides):
-        """Run main() against a fake clamd and a fake Pushover.
-
-        Returns the exit code, what clamd was sent, and the alert bodies the
-        fake Pushover received -- the three things every case below reads.
-        """
+        """Run main() against a fake clamd and Pushover; return (exit, sent, alerts)."""
         with fake_pushover(status=pushover_status) as (api_url, received):
             with fake_clamd(replies) as (port, served):
                 environment = {
@@ -181,12 +151,7 @@ class ClamavGateTest(unittest.TestCase):
         self.assertIn(name, alert.get("message", [""])[0])
 
     def run_script(self, **env):
-        """Run the gate as SABnzbd runs it: a process, read for its exit code.
-
-        `main()` returning is not the same event as the process exiting, and the
-        difference is everything the in-process cases cannot see -- an
-        import-time failure, and any exception escaping main().
-        """
+        """Run the gate as a process, as SABnzbd does, to see import-time failures."""
         environment = {
             "PATH": os.environ.get("PATH", ""),
             "CLAMD_HOST": "127.0.0.1",
@@ -217,9 +182,7 @@ class ClamavGateTest(unittest.TestCase):
     def test_infection_fails_the_job_and_does_not_alert(self):
         """The one verdict that still fails a job, and the one that pages nobody.
 
-        An infection reaches the operator as a failed job in SABnzbd and as the
-        arr's failed-download handling. Paging for it too would make the alert
-        this file added stop meaning "imported unscanned".
+        Paging for it would stop the alert meaning "imported unscanned".
         """
         code, _, received = self.run_gate(
             [b"PONG\n", b"/scan/x.exe: Win.Test.EICAR FOUND\n"]
@@ -246,12 +209,7 @@ class ClamavGateTest(unittest.TestCase):
         self.assert_alerted(received)
 
     def test_missing_and_bogus_complete_dir_import_and_alert(self):
-        """The two branches that run before clamd is asked anything.
-
-        SAB_FINAL_NAME is dropped as well, so this is also the case where the
-        alert has only the "(unnamed job)" placeholder to name -- the path where
-        there is nothing to report is still a path.
-        """
+        """The two branches that run before clamd is asked anything (and unnamed jobs)."""
         for target in ("", str(ROOT / "does-not-exist")):
             with self.subTest(target=target):
                 code, _, received = self.run_gate(
@@ -281,13 +239,9 @@ class ClamavGateTest(unittest.TestCase):
 
 
     def test_nul_terminated_replies_are_read(self):
-        """The framing clamd is documented as answering a `z` command with.
+        """The NUL framing clamd documents for a `z` command.
 
-        Nothing in splitlines() breaks on a NUL, so a reply terminated the way
-        the gate asked for it to be terminated arrives as one line ending in
-        "\x00" -- matching neither " FOUND" nor " ERROR", and taking the Clean
-        branch with a signature in it. Whether the deployed clamd frames replies
-        this way is unobserved; this case is what makes the answer not matter.
+        splitlines() does not split on NUL, so an unhandled reply would read as Clean.
         """
         infected, _, received = self.run_gate(
             [b"PONG\0", b"/scan/x.exe: Win.Test.EICAR FOUND\0"]
@@ -323,9 +277,7 @@ class ClamavGateTest(unittest.TestCase):
     def test_a_broken_alert_configuration_does_not_exit_one(self):
         """Exit 1 is the arr's blocklist signal, so no defect may borrow it.
 
-        Each of these was measured exiting 1 before the guards widened: a URL
-        Request() refuses, a release name os.environ hands over as surrogates,
-        and a timeout float() cannot parse, which fails at import.
+        Each case below was measured exiting 1 before the guards widened.
         """
         for label, override in (
             ("no scheme", {"PUSHOVER_API_URL": "api.pushover.net/1/messages.json"}),

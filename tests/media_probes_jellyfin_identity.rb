@@ -1,11 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 #
-# Jellyfin primary-administrator identity and library-shape probes.
-#
-# Required by media_managed_users_test.rb, which owns the probe selection so the
-# MEDIA_MANAGED_USERS_PROBES contract keeps naming one group rather than a file set.
-# Fixtures and helpers come from media_managed_users_support.rb.
+# Jellyfin primary-administrator identity and library-shape probes, required by
+# media_managed_users_test.rb, which owns the probe selection.
 
 def exercise_jellyfin_recovery_marker_safety(failures)
   main = jellyfin_role_tasks
@@ -695,18 +692,9 @@ def exercise_jellyfin_library_shape_preflight(failures)
   end
 end
 
-# The whole server-name loop, preflight read through the POST that repairs it,
-# driven end to end rather than from a fixture that hands the role its own
-# conclusion. Every other server-name probe supplies
-# jellyfin_server_name_update_required ready-made, so the one step that decides
-# whether a hand-edit in Jellyfin's dashboard is ever reverted -- preflight
-# comparing the served ServerName against the declared one -- had no coverage at
-# all. A gate added to that comparison, or a hoist of it into another fact, goes
-# red here instead of on the NAS.
-#
-# The converged rows are half the property: a repair that fires unconditionally
-# passes a drift-only probe and then reports a change on every five-minute tick
-# forever.
+# The whole server-name loop end to end: every other probe hands the role
+# jellyfin_server_name_update_required ready-made. The converged rows matter too:
+# an unconditional repair would report a change on every poller tick.
 def exercise_jellyfin_server_name_repair(failures)
   main = jellyfin_role_tasks
   selected_names = [
@@ -719,9 +707,7 @@ def exercise_jellyfin_server_name_repair(failures)
     "Update the Jellyfin server name"
   ]
   tasks = main.select { |task| selected_names.include?(task_name(task)) }
-  # Selecting by name goes quiet when a task is renamed: the playbook still runs,
-  # still passes, and pins nothing. Name every absentee rather than asserting a
-  # count, so the failure says which stage moved.
+  # Name every absentee rather than count: a renamed task would otherwise pin nothing.
   (selected_names - tasks.map { |task| task_name(task) }).each do |name|
     failures << "Jellyfin server-name repair probe selects no task named #{name}"
   end

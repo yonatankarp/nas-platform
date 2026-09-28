@@ -1,13 +1,7 @@
 #!/bin/sh
-# Proof for issue #326: a second converge is refused at the first task of the
-# role that would race, with a message that says a deployment is running -- not
-# with the containment guard's unsafe-deployment-target refusal, which is what an
-# operator actually saw when the poller repointed `current` underneath a hand-run
-# converge.
-#
-# Everything here is executed rather than asserted from the task file: the lock is
-# taken through scripts/production_auto_deploy.py's own deployment_lock, and the
-# refusal is read out of a real ansible-playbook run of the real role.
+# Proof for #326: a second converge is refused at the first task with "a
+# deployment is running", not the containment guard's refusal. Uses the real
+# deployment_lock and a real ansible-playbook run of the real role.
 set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
@@ -87,13 +81,8 @@ await_holder() {
   }
 }
 
-# The case that took production down. PR #327 shipped this guard and the poller
-# that writes the holder record in one commit, but the poller installs itself only
-# after site.yml has succeeded, so the guard first meets the *previous* poller:
-# flock held, nothing written, no owner exported. Refusing that deadlocks the
-# upgrade that would install the record-writing poller, so it must converge. The
-# fixture is the real deployment_lock with the record truncated away while the
-# lock is still held, which is exactly the on-disk state the old poller leaves.
+# The #327 case: the previous poller holds the flock but writes no holder record.
+# Refusing that deadlocks the upgrade, so it must converge.
 unrecorded_record=$fixture/unrecorded-pid
 "$python" -c '
 import os, signal, sys, time
@@ -162,9 +151,8 @@ fi
 release_holder "$unrecorded_pid"
 unrecorded_pid=
 
-# The holder is the poller's own deployment_lock, not a hand-rolled flock: the
-# point of the guard is that both paths serialise on one mechanism, so a proof
-# that used a second one would prove nothing about the first.
+# The poller's own deployment_lock, not a hand-rolled flock: both paths must
+# serialise on one mechanism.
 "$python" -c '
 import os, signal, sys, time
 from pathlib import Path
@@ -207,8 +195,7 @@ grep -qF "operator converge (pid $holder_pid" "$output" || {
   printf '%s\n' 'the refusal did not name the holder it found' >&2
   exit 1
 }
-# The whole point of #326: the run must not reach the containment guard, whose
-# message describes an integrity violation the operator does not have.
+# The run must not reach the containment guard (#326).
 if grep -qF 'Unsafe deployment target /' "$output"; then
   cat "$output" >&2
   printf '%s\n' 'the race still surfaced as a containment refusal' >&2
@@ -222,9 +209,8 @@ if grep -qF 'TASK [deployment_bundle : Validate target path ancestry and canonic
   exit 1
 fi
 
-# Same held lock, this time declared as this run's own holder, which is what
-# `nas-platform-deploy --converge` and the poller's own plays export. Without
-# this the guard would refuse the very converge that took the lock.
+# Same held lock, declared as this run's own holder, as the launcher and the
+# poller export; without it the guard would refuse the converge that took it.
 output=$fixture/owner
 set +e
 (cd "$repo_dir" && PLATFORM_DEPLOYMENT_LOCK_OWNER=$holder_pid run_play "$output")

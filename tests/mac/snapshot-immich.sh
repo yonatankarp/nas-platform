@@ -3,21 +3,9 @@ set -eu
 set +x
 umask 077
 
-# Coordinated snapshot and rollback for Immich. Immich keeps one application
-# state in several places that must move together: PostgreSQL rows, the original
-# files under the media root, and the profile and thumbnail trees under the
-# Docker root. Backing up any one of them alone produces a restore that starts
-# and then serves broken thumbnails or missing originals, so every operation
-# here takes all of them or none.
-#
-# The Valkey job queue is the fourth participant and is handled differently: it
-# is discarded on restore rather than captured, because it holds work queued
-# against a database state the restore has just replaced.
-#
-# The two Ruby programs this dispatches to are siblings of this file, so they
-# are resolved from this script's own directory. Nothing here inspects another
-# checkout, but the rule is the same one #147 measured: a program is part of the
-# script, not part of whatever tree the script was pointed at.
+# Coordinated Immich snapshot/rollback: PostgreSQL, originals and the profile and
+# thumbnail trees move together or not at all. The Valkey queue is discarded on
+# restore, since it holds work queued against the replaced database state.
 mac_script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 
 usage() {
@@ -42,11 +30,7 @@ esac
 [ "$#" -eq 1 ] || usage
 snapshot_dir=$1
 
-# The drill deletes every asset in the deployment and recovers only if the
-# restore works. That is an acceptable thing to do to a disposable lane sandbox
-# and an unacceptable thing to do to a NAS, so it refuses up front, before it
-# reads a credential or touches a container, anywhere that is not one of the
-# harness's own throwaway projects.
+# The drill deletes every asset; refuse anywhere but a throwaway sandbox project.
 if [ "$mode" = drill ]; then
   case ${PLATFORM_PROJECT_NAME:-} in
     nas-platform-mac-[abcdefghijklmnopqrstuvwxyz0123456789]*) ;;
@@ -80,11 +64,5 @@ export PLATFORM_DOCKER_ROOT PLATFORM_MEDIA_ROOT PLATFORM_IMMICH_PORT
 export PLATFORM_IMMICH_SERVER_CONTAINER PLATFORM_IMMICH_MACHINE_LEARNING_CONTAINER
 export PLATFORM_IMMICH_POSTGRES_CONTAINER PLATFORM_IMMICH_REDIS_CONTAINER
 
-# The 305-line coordinated snapshot is snapshot-immich.rb, and the offline
-# self-test above is snapshot-immich-test.rb. Both ran from `<<'RUBY'`
-# heredocs here until #315, where sh -n, ruby -c and a reader could reach
-# neither. Resolve them from this script's own directory rather than from any
-# path an argument or the environment supplies, and hold stdin at end-of-file:
-# a heredoc exhausted it by construction, a sibling program would inherit the
-# caller's.
+# Sibling programs resolve from this script's own directory; stdin held at EOF (#315).
 exec "$mac_script_dir/snapshot-immich.rb" "$mode" "$snapshot_dir" </dev/null

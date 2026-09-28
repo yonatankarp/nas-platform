@@ -1,15 +1,6 @@
 #!/bin/sh
-# Two Komga proofs, in the order the lane needs them.
-#
-# First the library root migration, because it ends with the platform converged
-# again: the two-library model is collapsed to the single pre-migration library
-# at /data, a plain converge must refuse to repoint it, the same converge
-# carrying komga_library_root_migration_allowed must complete it in place, and a
-# third converge without that input must change nothing. That is both halves of
-# the guard the acquisition design asks this lane to prove.
-#
-# Then the ordinary drift proof, which deliberately leaves Komga drifted for the
-# reconcile phase to repair.
+# First the library-root migration (refused without its input, completed with it,
+# idempotent after), then drift left in place for the reconcile phase.
 set -eu
 set +x
 umask 077
@@ -36,8 +27,7 @@ assert_no_secrets() {
     "$PLATFORM_MAC_VAULT_FILE" "$PLATFORM_MAC_VAULT_PASSWORD_FILE" "$1"
 }
 
-# The pre-migration state: one Comics library rooted at /data, no Ebooks
-# library, and the scan schedule this platform used before the acquisition work.
+# The pre-migration state: one Comics library rooted at /data, no Ebooks library.
 "$mac_script_dir/run-komga-contract.sh" migration-legacy
 "$mac_script_dir/run-komga-contract.sh" migration-legacy-verify
 

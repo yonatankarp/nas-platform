@@ -62,31 +62,9 @@
   changed_when: false
   no_log: true
 
-# Bazarr 1.6.0 answers a settings POST it cannot validate with 406, not 4xx-with-
-# detail, and the run then reads only "Status code was 406 and not [204]" -- a
-# failure with no name on it. 406 is therefore accepted from the request and
-# refused by the assertion below, which prints the setting name dynaconf named
-# and nothing after it. Retrying would buy only a slower failure: identical
-# schema validation over an identical body answers 406 every time. The response
-# body echoes the offending value, and for `sonarr.apikey` that value is the
-# credential itself, which is why the request stays redacted and only the
-# extracted name is ever rendered.
-#
-# What a 406 does *not* say is why. `app/config.py` casts every submitted string
-# with `int()` unless the last dash-segment of its key is one of its `str_keys`,
-# so a submitted value of only decimal digits can arrive as an `int` and fail
-# `is_type_of str` -- but dynaconf revalidates the *whole* schema on any submit,
-# so a 406 can equally name a setting this request never carried. Naming that
-# cause unconditionally sent two sessions after an all-digit Radarr API key that
-# `roles/vault_contract` already refuses to accept, over a refusal of
-# `general.hostname`, which nothing here submits. The report below therefore
-# blames the cast only for what this request submits.
-#
-# That `general.hostname` refusal is the only 406 observed in CI (#283, #708),
-# and its cause was a stored value, not this request: Bazarr defaults the key to
-# platform.node() through dynaconf's TOML parser, so a random container ID shaped
-# like a number was saved as an int or `.inf`. `services/arr/compose.yml` fixes
-# the container hostname for that reason.
+# Bazarr answers an invalid settings POST with a bare 406; accept it here and let the
+# assertion name the setting. The body echoes the value (maybe an API key): stay redacted.
+# A 406 may name a setting not submitted; services/arr/compose.yml pins hostname (#708).
 - name: Reconcile Bazarr authentication and identical-path Arr connections
   ansible.builtin.uri:
     url: "{{ arr_bazarr_api }}/system/settings"
@@ -165,10 +143,8 @@
   changed_when: true
   no_log: true
 
-# The rejections are collected before they are asserted on because a *looped*
-# failing task prints its whole `item`, which here is a provider body carrying
-# provider credentials, and `loop_control.label` does not suppress that. One
-# unlooped assertion over the extracted names prints the names only.
+# Collected first: a looped failing task prints its whole item (provider credentials),
+# which loop_control.label does not suppress.
 - name: Refuse rejected Bazarr provider requests by the settings they named
   ansible.builtin.assert:
     that:

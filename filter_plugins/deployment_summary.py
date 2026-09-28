@@ -1,9 +1,4 @@
-"""Filters that turn two deployment manifests into a human-readable summary.
-
-The manifest already records every pinned image of a release, so the difference
-between the previously active release and the one just installed answers "what
-did this deployment actually change" without a Git checkout at hand.
-"""
+"""Filters that turn two deployment manifests into a human-readable summary."""
 
 import runpy
 from pathlib import Path
@@ -66,13 +61,8 @@ def _label(service, container):
 def deployment_image_changes(previous_manifest, current_manifest):
     """Return one sorted, non-secret entry per image the deployment moved.
 
-    A repin — same readable tag, different digest — is reported as its own kind,
-    because "nothing changed" and "the same tag now resolves elsewhere" are
-    different answers to what shipped.
-
-    Every image the release now runs carries its full pinned `reference`, which
-    is the literal a Git pickaxe finds in the commit that introduced it. A
-    removed image has nothing in the release to find, so it carries none.
+    A repin (same tag, new digest) is its own kind. Current images carry their
+    full `reference`, the literal a Git pickaxe finds.
     """
     previous = _images(_require_manifest(previous_manifest, "previous"))
     current = _images(_require_manifest(current_manifest, "current"))
@@ -136,15 +126,11 @@ _SHA = re.compile(r"[0-9a-f]{40}")
 def deployment_summary_document(changes, image_commits, commit_lines, release, previous):
     """Return the version-1 summary the deployment poller announces (#558).
 
-    image_commits is the registered loop of per-image `git log -S` lookups, and
-    commit_lines are `%H<TAB>%s` lines. Everything a lookup could not settle -- a
-    skipped item, a non-zero exit, output that is not one SHA -- reads as no
-    commit, because a wrong release-notes link is worse than none.
+    Any lookup that did not yield exactly one SHA reads as no commit: a wrong
+    release-notes link is worse than none.
     """
-    # Called for its exceptions, not its value: it is the only validation of the
-    # change list's shape, and every kind it does not know raises. Discarding the
-    # return is deliberate -- #654 read it as a stray statement, which is exactly
-    # what a validation call with no name looks like.
+    # Called for its exceptions only: it is the sole validation of the change
+    # list's shape (#654).
     deployment_change_lines(changes)
     if not isinstance(image_commits, list) or not isinstance(commit_lines, list):
         raise AnsibleFilterError("deployment summary lookups must be lists")

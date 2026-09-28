@@ -1,150 +1,36 @@
 ---
-# The single operator switch. Inventory sets it, and
-# inventory/group_vars/all/service_vaultwarden.yml is where the deployment decision
-# is made and explained. The gate lives inside the role rather than on the site.yml entry,
-# because a `when:` there would also skip the deployment_bundle re-include that
-# revalidates the paths this role touches and the deployment report that says
-# whether anything moved.
-#
-# FALSE HERE WHILE THE PLATFORM RUNS IT, AND THE ASYMMETRY IS THE POINT. This
-# line is the FLOOR under the deployment decision rather than a copy of it. The
-# decision is `vaultwarden_deployment_enabled: true` in
-# inventory/group_vars/all/service_vaultwarden.yml, which wins on every run any
-# playbook in this
-# repository makes; what a role default decides is only what a caller with NO
-# inventory gets, and for this service that caller would otherwise stand up a
-# password manager whose registration door is deliberately open. nextcloud ships
-# its gate off for the same reason, and adguard did too until #577 removed the
-# service -- its own words were that a caller with no inventory must not put a
-# resolver on the household network. This is the starker case of the two.
-#
-# #547's second chunk shipped this true, on the reading that a dark stack must be
-# dark in both homes and so a lit one should be lit in both. The first half is
-# right and the second does not follow: flipping inventory is the decision,
-# flipping this removes the floor -- including the floor under turning the stack
-# back OFF, since a true default would keep converging it after inventory said
-# not to. tests/deployment_gate_coverage_test.rb now refuses any gate whose role
-# default is not false, for every gate rather than for this one.
+# Off here, on in inventory/group_vars/all/service_vaultwarden.yml: a role default is
+# the floor for a caller with no inventory, which must not get an open password manager.
+# tests/deployment_gate_coverage_test.rb requires every gate default to be false.
 vaultwarden_deployment_enabled: false
 
-# 8086, the web interface, and the container listens on it too. The image's own
-# ExposedPorts is 80/tcp, which the platform identity cannot bind; the reason
-# and the consequence are in services/vaultwarden/compose.yml, which carries the
-# production copy of this number because a Compose file cannot read a role
-# default.
-#
-# It was the lowest free port on this platform when #547 chose it: 8080 is
-# Dozzle, 8081 the Dozzle alert relay, 8082 the qbittorrent web interface
-# declared in config/media-acquisition.yml, 8083 was claimed by the AdGuard Home
-# stack of #548 and is free again since #577 removed it, 8084 is Nextcloud, 8085
-# SABnzbd and 8090 Beszel. The number does not move with that: republishing a
-# deployed service on a different port is a redeployment, not a tidy-up.
+# The image's port 80 cannot be bound by the platform identity; see
+# services/vaultwarden/compose.yml, which carries the production copy of this number.
 vaultwarden_port: 8086
 
-# Every role addresses services over 127.0.0.1, which is correct whether the
-# play runs on the NAS itself or over SSH from a workstation. This is the local
-# probe address, not the address clients use -- that is vaultwarden_domain.
+# Local probe address; clients use vaultwarden_domain.
 vaultwarden_url: "http://127.0.0.1:{{ vaultwarden_port }}"
 
-# THE ORIGIN CLIENTS SEE, DERIVED RATHER THAN RESTATED. Tailscale Serve
-# terminates TLS on 443 in front of vaultwarden_url above, so the origin carries
-# the https scheme and no port. platform_public_host is the one coordinate this
-# platform states per inventory for exactly this audience -- roles/seerr,
-# roles/beszel and roles/nextcloud all build their published URLs
-# from it -- so restating the name here would be a second copy nothing keeps in
-# agreement with the first.
-#
-# WebAuthn and the two-factor flows bind their credentials to this exact string,
-# so a value whose host is a bare IPv4 literal breaks them in ways that read as
-# client faults. platform_public_host is a LAN address in some environments
-# (inventory/mac.yml sets 127.0.0.1), which is why tasks/deploy.yml refuses one
-# by name rather than trusting this expression.
-# Lowercased for the same reason tasks/serve.yml lowercases its Serve lookup:
-# platform_public_host is a raw environment lookup and a DNS name is
-# case-insensitive, while the things that compare against this value are not. A
-# browser lowercases the host when it builds an origin, and WebAuthn matches a
-# relying-party identifier against that origin exactly -- so a DOMAIN carrying
-# the operator's capitalisation is the same silent mismatch one layer up from
-# the Serve one, and this is the only place it can be normalised once.
+# The client origin, derived from platform_public_host behind Tailscale Serve's TLS.
+# WebAuthn binds to this exact string: tasks/deploy.yml refuses an IPv4 host, and it is
+# lowercased because browsers lowercase the origin they compare against.
 vaultwarden_domain: "https://{{ platform_public_host | lower }}"
 
-# Ansible owns the door, and only the door.
-#
-# REGISTRATION IS OPEN, AND THE PERIMETER IS WHAT MAKES THAT DEFENSIBLE RATHER
-# THAN THE SETTING. Closed was the value #547 landed, and on a fresh database it
-# is a server with NO ROUTE TO A FIRST ACCOUNT: the admin panel is disabled by
-# decision, so there is nobody to invite from; there is no SMTP by decision, so
-# an invitation could not be delivered anyway. Both halves were measured against
-# the pinned image -- POST /identity/accounts/register answers 400 with
-# SIGNUPS_ALLOWED=false, and /admin answers 200 serving only its own "the admin
-# panel is disabled" body. The platform's decision, its cost and the alternative
-# it rejected (open once, create the account, close again) are recorded in
-# inventory/group_vars/all/service_vaultwarden.yml, which is where a nonsecret
-# policy value
-# belongs. THIS DEFAULT SHIPS THE DOOR SHUT, for the same reason
-# vaultwarden_deployment_enabled above ships the stack off: a role default is
-# what a caller with no inventory gets, and the one thing that caller must not
-# get is a password manager anyone can register on. It said `true` in the first
-# cut of the flip, justified as carrying "the same value for the reason the gate
-# does" -- which had the reason exactly backwards, since the gate's reason is
-# that a default is a floor rather than a mirror.
-#
-# Nothing static holds this line. The repo-wide rule the gate has -- every
-# `<role>_deployment_enabled` in a role default must be false,
-# tests/deployment_gate_coverage_test.rb -- cannot reach it, because this is not
-# a gate and generalising that rule to "switches that look dangerous" would be a
-# list rather than a property. What holds the value that actually runs is
-# tasks/verify.yml, which knocks on the door and asserts the answer matches
-# whichever declaration won; on this platform that is inventory's `true`.
-#
-# What the value depends on is one line in another file: Vaultwarden publishes
-# on `127.0.0.1:8086`, so nothing off the host reaches the listener and
-# Tailscale Serve is the only route to the registration page. That is what makes
-# "only a device already on the tailnet" true rather than aspirational -- it was
-# a wildcard publication until it was measured, and an uninvited registration
-# from a LAN address succeeded. Any deployment that publishes this service more
-# widely must set this false and arrange a first account some other way; on a
-# reachable origin this line is an open password manager.
-#
-# tasks/verify.yml asserts the DOOR AGAINST THE DECLARATION THAT WON in both
-# directions on every converge, so the effective value is a claim the platform
-# proves rather than a setting it merely pushes.
+# Shut by default, like the gate. Inventory opens it: with no admin panel and no SMTP a
+# fresh database has no other route to a first account. Only safe because the service is
+# published on 127.0.0.1 behind Tailscale Serve; tasks/verify.yml asserts the door.
 vaultwarden_signups_allowed: false
 
-# Invitation stays available whichever way the door above is set: it is what an
-# organization owner uses to add a member, and it is independent of whether a
-# stranger may register. There is no SMTP on this platform, so completing an
-# invitation is a manual act -- see docs/secrets.md for why the credential
-# direction inverts for this service and why that is a designed property rather
-# than a gap.
+# Independent of the door; with no SMTP an invitation is completed by hand (docs/secrets.md).
 vaultwarden_invitations_allowed: true
 
-# The whole of DATA_FOLDER: db.sqlite3 and its write-ahead log, attachments/,
-# sends/ and rsa_key.pem. recovery: critical in
-# inventory/group_vars/all/service_vaultwarden.yml -- see the declaration there for
-# what is and
-# is not recoverable from it.
+# The whole DATA_FOLDER (recovery: critical).
 vaultwarden_data_host_path: "{{ nas_docker_root }}/vaultwarden/data"
 
-# The file whose existence would mean the rendered environment is no longer in
-# force. Stated as a path rather than derived inline so the assertion and the
-# message that explains it read the same value.
 vaultwarden_config_json_path: "{{ vaultwarden_data_host_path }}/config.json"
 
-# WHERE roles/pre_upgrade_backup PUTS THE COPY IT TAKES, and it is inside
-# DATA_FOLDER rather than beside it. Bindery's backups land on its own config
-# bind mount for the same reason: the directory is already declared in
-# nas_storage, already created by host_prep at 0700 under the platform identity,
-# and already named by this role's deployment_target_extra_paths, so the copy
-# needs no second declaration anywhere and cannot drift from the storage
-# contract. The container can see it, which is the cost; it holds nothing the
-# container does not already hold, which is why that cost is acceptable.
-#
-# ONE GENERATION, DELIBERATELY. It is the state the last upgrade started from,
-# not an archive, and it is what makes a #511 rollback possible at all --
-# restore these files, pin the older image, converge. Nothing rotates it and
-# nothing prunes it, because a second generation would double the footprint of
-# a store under recovery: critical with no off-site copy behind it.
+# Inside DATA_FOLDER: already declared, created 0700 and named in the containment paths.
+# One generation, never rotated: what a #511 rollback restores.
 vaultwarden_pre_upgrade_backup_path: >-
   {{ vaultwarden_data_host_path }}/pre-upgrade-backup
 
@@ -152,73 +38,16 @@ vaultwarden_compose_project_name: >-
   {{ (platform_project_name ~ '-vaultwarden')
      if platform_project_name | default('') | length > 0 else 'vaultwarden' }}
 
-# THE HTTPS TERMINATION, AND WHY IT LIVES IN THIS ROLE RATHER THAN IN ONE OF ITS
-# OWN. Bitwarden clients and the web vault need a secure context for the browser
-# crypto to work at all, so this is the only service on this platform that is
-# not happy on host:port. A reverse proxy is out -- it would mean an ADM-managed
-# listener this repository does not control -- so Tailscale Serve terminates
-# TLS inside the tailnet with no ADM port opened and no public DNS record.
-#
-# A general tailnet_https role was considered and refused for now. It rests on a
-# premise #547 itself marks Unverified: whether `tailscale serve` can front
-# several ports on distinct paths cleanly. A role-local task is a two-way door
-# -- the second service that wants HTTPS is when the shape is known -- whereas a
-# role adopted by nothing is a committed interface with no second caller to
-# check it against.
-#
-# TWO HOST PREREQUISITES THIS PLATFORM DEPENDS ON, NAMES AND DOES NOT OWN.
-#
-# The reachability the platform cannot see: HTTPS certificates must be enabled
-# for the tailnet in the Tailscale admin console. No check in this repository
-# can read that setting, so tasks/serve.yml fails naming it.
-#
-# The permission it cannot grant: writing `tailscale serve` configuration is
-# privileged on Linux, and tailscaled takes it from root or from an account the
-# host has granted the operator role -- `sudo tailscale set --operator=<the
-# account this platform deploys as>`, once, persisted in tailscaled's own
-# preferences. Reading it is not privileged, which is why a host without the
-# grant gets all the way to the placement before anything refuses. This
-# repository escalates nowhere -- every `become` key under roles/ is
-# `become: false`, and ansible.cfg records why -- so the grant is a one-time
-# human act and tasks/serve.yml names it rather than working around it. It was
-# missing on the NAS on 2026-09-11, the first converge that reached this
-# placement: the run died at site.yml's LAST role on a bare rc=1, and every
-# five-minute poller tick after it died the same way until the operator ran the
-# grant by hand.
-#
-# AN ABSOLUTE PATH, DISCOVERED RATHER THAN ASSUMED. Measured on the NAS
-# 2026-09-10: `command -v tailscale` resolves /usr/local/bin/tailscale, and the
-# App Central package that owns it is `tailscale-native`, whose own copy is
-# /usr/local/AppCentral/tailscale-native/bin/tailscale, reporting version
-# 1.102.2. /usr/local/bin is on the default PATH there, so a bare name would
-# very likely work today -- the discovery is not there because Ansible cannot
-# see the binary.
-#
-# It is there because /usr/local/bin/tailscale belongs to an App Central package
-# whose layout is not this repository's to depend on: that entry is almost
-# certainly a symlink or wrapper the package installs, so it is exactly as
-# durable as the package's own layout, and the candidate below it is the one
-# that survives a re-layout. Discovery is also what makes the absent path
-# explicit rather than accidental -- the integration container, the Mac sandbox
-# and a workstation converging over SSH have no Tailscale at all.
-#
-# A stat over a stated list rather than `command -v`, because that needs a
-# shell, and a shell-out always claims a change and cannot simulate itself under
-# --check. A stat is a read in both modes.
-#
-# None matching is the absent path: a reporting skip and never a failure, since
-# a failure there would turn every CI lane and the whole Mac lane red.
-# Present-but-unusable is the opposite and tasks/serve.yml fails on it by name,
-# because that is a real fault on the one host that matters.
+# HTTPS via Tailscale Serve (clients need a secure context). The host needs tailnet HTTPS
+# certificates and `tailscale set --operator=<deploy account>`; tasks/serve.yml names both.
+# Discovered by stat (no shell, works under --check). None found skips with a report,
+# since CI and Mac lanes have no Tailscale.
 vaultwarden_tailscale_binary_candidates:
   - /usr/local/bin/tailscale
   - /usr/local/AppCentral/tailscale-native/bin/tailscale
   - /usr/bin/tailscale
 
-# The escape hatch: set this to an absolute path and discovery is skipped. Empty
-# means discover, which is what every inventory does today. It exists so an
-# operator whose App Central put the client somewhere else can converge without
-# editing a task file.
+# Set an absolute path to skip discovery.
 vaultwarden_tailscale_binary: ""
 
 vaultwarden_tailscale_serve_port: 443

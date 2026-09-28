@@ -1,15 +1,10 @@
 ---
-# Full first-installation run. Identical whether Ansible executes on the NAS
-# (inventory/local.yml) or reaches it from a workstation (inventory/remote.yml):
-# service and HTTP tasks run on the NAS host, so loopback addresses are correct
-# in both modes. Read-only source and Git checks are explicitly delegated to the
-# controller checkout.
+# Full first-installation run, identical from local.yml or remote.yml.
 - name: Install and configure the NAS platform
   hosts: platform_hosts
   gather_facts: true
   vars:
-    # Controller-side encrypted artifact used for report identity. Disposable
-    # harnesses override this with their encrypted copy.
+    # Encrypted artifact for report identity; harnesses override it.
     platform_vault_file: >-
       {{ lookup('env', 'PLATFORM_VAULT_FILE') |
          default(playbook_dir ~ '/inventory/group_vars/all', true) }}
@@ -89,49 +84,29 @@
     - role: downloaders
       tags: [downloaders, media, media_acquisition_phase1]
 
-    # Bindery is the first Phase 2 project that genuinely consumes platform
-    # APIs: it stores a Prowlarr instance and a SABnzbd download client, and it
-    # resolves the host in both URLs at write time, so neither row can be
-    # written until those two containers are up on media-control. That is why it
-    # converges after arr and downloaders rather than beside Kapowarr and
-    # Pinchflat. Audiobookshelf and Komga have already converged above and read
-    # the two libraries it writes from disk.
+    # Bindery resolves Prowlarr and SABnzbd at write time, so it follows arr
+    # and downloaders.
     - role: bindery
       tags: [bindery, media, media_acquisition_phase2]
 
-    # Kapowarr is self-contained in the same way: it consumes no platform API,
-    # and Komga reads the comics library it writes from disk. Komga has already
-    # converged above, so the library root it scans exists before Kapowarr
-    # claims it as its own.
+    # Kapowarr consumes no platform API; Komga (above) reads its library.
     - role: kapowarr
       tags: [kapowarr, media, media_acquisition_phase2]
 
-    # Pinchflat is self-contained: it consumes no platform API and Jellyfin
-    # reads its output from disk, so it converges before the reader that
-    # indexes the YouTube library it writes.
+    # Pinchflat consumes no platform API; Jellyfin (below) reads its output.
     - role: pinchflat
       tags: [pinchflat, media, media_acquisition_phase2]
 
-    # Trailarr is Phase 3. It reads Radarr and Sonarr over their own APIs,
-    # addressing them by Compose service name, and each connection it declares
-    # is validated with a live call at write time, so it joins media-control
-    # and converges after arr. It writes trailers into the same Movies and
-    # Series item directories Radarr and Sonarr own; Jellyfin, which indexes
-    # them as extras, converges below and needs no configuration for it.
+    # Trailarr validates its Radarr/Sonarr connections live, so it follows arr.
     - role: trailarr
       tags: [trailarr, media, media_acquisition_phase3]
 
     - role: jellyfin
       tags: [jellyfin, media]
 
-    # Seerr is Phase 4, and the last acquisition project. It is the request
-    # front end: household members ask for a film or a series and Radarr and
-    # Sonarr acquire it. It converges after Jellyfin because it imports
-    # Jellyfin's users and signs in to Jellyfin as the vault administrator to
-    # create its own owner — and that bootstrap has to happen in the same play
-    # that starts the container, because until a user row exists anyone who can
-    # reach port 5055 can point Seerr at a Jellyfin server they control and
-    # become its owner.
+    # Seerr follows Jellyfin: it bootstraps its owner from Jellyfin in the same
+    # play that starts it, because until then anyone reaching port 5055 can
+    # claim ownership.
     - role: seerr
       tags: [seerr, media, media_acquisition_phase4]
 
@@ -141,41 +116,21 @@
     - role: paperless_ngx
       tags: [paperless, documents]
 
-    # Nextcloud is last, and the position carries no dependency: nothing reads
-    # its API and it reads nobody's, so it converges after Paperless-ngx only
-    # because a project wired to nothing belongs at the end of the order. It
-    # took that place from Seafile, which #500 replaced and #501 removed.
-    #
-    # No `when:` here, deliberately: the gate is
-    # `nextcloud_deployment_enabled` and it lives inside the role, so the
-    # deployment_bundle target re-include and the deployment report still
-    # run when it is false.
+    # No `when:` here: the gate lives inside the role so the deployment_bundle
+    # re-include and report still run when it is disabled.
     - role: nextcloud
       tags: [nextcloud, documents]
 
-    # Vaultwarden, and the position carries no dependency either: it reads no
-    # platform service and none reads it. It was last because it was the newest,
-    # and a password manager that fails to converge should not be able to hold
-    # up the stacks that were already running.
-    #
-    # No `when:` here, deliberately, for the reason the entry above gives: the
-    # gate is `vaultwarden_deployment_enabled` and it lives inside the role, so
-    # the deployment_bundle target re-include and the deployment report
-    # still run when it is false.
+    # Gated inside the role, like Nextcloud above.
     - role: vaultwarden
       tags: [vaultwarden, secrets]
 
-    # Karakeep last: it reads no platform service and none reads it, and it is
-    # the newest -- the one whose first converge registers an administrator, so
-    # a failure there should hold up nothing that was already running. Its gate
-    # lives inside the role, for the reason the entries above give.
+    # Karakeep last: nothing depends on it. Gated inside the role.
     - role: karakeep
       tags: [karakeep, documents]
 
   post_tasks:
-    # After every service, so reaching it means the whole run converged: the
-    # summary reports a deployment that actually finished. The per-service
-    # reports remain the detail behind it.
+    # After every service, so the summary reports a finished deployment.
     - name: Summarize what the run deployed
       ansible.builtin.include_role:
         name: deployment_bundle

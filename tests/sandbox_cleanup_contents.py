@@ -1,25 +1,11 @@
-# Clear one disposable sandbox directory, from inside a container, without ever
+# Clear one disposable sandbox directory from inside a container, never
 # following a symlink out of it.
 #
 # usage: python sandbox_cleanup_contents.py NAME PRESERVE
 #
-# NAME is a basename under /sandbox-parent, which tests/sandbox_cleanup.sh
-# bind-mounts the sandbox's parent at, and PRESERVE is the ownership marker to
-# keep and restore if the final rmdir fails -- empty when there is none. Both
-# are validated against fixed patterns before anything is opened, because this
-# program deletes trees and the only thing standing between it and the wrong
-# tree is the shape of its first argument.
-#
-# Every traversal is by directory file descriptor with O_NOFOLLOW, so a symlink
-# planted mid-walk is unlinked rather than followed. That is what the
-# `--filter` and marker checks in the shell cannot provide and why this is
-# Python at all: `rm -rf` cannot express it.
-#
-# It arrived as a `cat <<'PY'` heredoc inside a shell function until #315, where
-# no linter reached it, `python -m py_compile` could not, and a reader had to
-# find it inside a wrapper. tests/sandbox_cleanup.sh redirects this file into
-# the container's standard input instead, which is byte for byte what the
-# heredoc piped there. The body below is unchanged.
+# NAME is a basename under /sandbox-parent; PRESERVE is the ownership marker to
+# keep (empty when none). Both are validated before anything is opened. Every
+# traversal uses directory fds with O_NOFOLLOW, which `rm -rf` cannot express.
 import os
 import re
 import stat

@@ -1,16 +1,8 @@
 """Bazarr provider declarations, settings projections and the settings POST.
 
-Bazarr has no JSON settings API. Its whole configuration is one HTML form
-POSTed as `settings-<section>-<key>` pairs, and it reads that form back as a
-nested JSON document with different types: a boolean is submitted as the string
-"true" and returned as a real boolean, an empty list is submitted as `["null"]`.
-The three value normalizers below are that asymmetry, named for the direction
-each one faces — desired, request, current — and they are why a Bazarr setting
-cannot be compared with the same primitives a Servarr field uses.
-
-Provider settings are keyed `settings-<provider>-<setting>` and Bazarr 1.6.0
-splits those keys on hyphens, so both halves are held to lowercase identifier
-tokens here rather than discovered to be ambiguous at runtime.
+Bazarr settings are one HTML form POSTed as `settings-<section>-<key>` and read
+back as typed JSON ("true" -> True, [] -> ["null"]); the desired/request/current
+normalizers below are that asymmetry.
 """
 
 from __future__ import annotations
@@ -26,14 +18,10 @@ from typing import Any
 from ansible.errors import AnsibleFilterError
 
 
-# module_utils/ is run by file path, never via sys.path: tests/policy_test.rb
-# says why, and fails any filter plugin that touches it.
+# module_utils/ is run by file path, never via sys.path (tests/policy_test.rb).
 _MODULE_UTILS = Path(__file__).resolve().parents[1] / "module_utils"
 _SCHEMA = SimpleNamespace(**runpy.run_path(str(_MODULE_UTILS / "acquisition_schema.py")))
 
-# The shared primitives, under the names the bodies below use. Only these are
-# shared: every rule about what a Prowlarr field, a Bazarr setting or a Configarr
-# profile may contain lives in the file that owns that domain.
 MASKED_VALUE = _SCHEMA.MASKED_VALUE
 _mapping = _SCHEMA.mapping
 _sequence = _SCHEMA.sequence
@@ -57,46 +45,27 @@ BAZARR_ARRAY_SETTINGS = {
 }
 
 
-# Bazarr 1.6.0's own `str_keys` (`app/bazarr/app/config.py`), the last
-# dash-segments it does *not* cast with `int()`. Membership decides both what a
-# desired value may be and, in `acquisition_bazarr_rejection_report`, whether
-# that cast can be blamed for a 406, so it must stay Bazarr's list rather than
-# grow a convenient entry.
+# Bazarr 1.6.0's own `str_keys` (app/config.py): keys it does not int()-cast.
+# Must mirror Bazarr exactly; the 406 blame report depends on it.
 BAZARR_STRING_SETTINGS = {
     "chmod", "log_include_filter", "log_exclude_filter", "password",
     "f_password", "hashed_password",
 }
 
 
-# Bazarr answers a settings POST it cannot validate with 406 and dynaconf's own
-# message, whose format is `default_messages`: "{name} must {operation}
-# {op_value} but it is {value}". Everything before the first " must " is the
-# setting's name and the value only ever appears after it, so splitting there is
-# what makes a 406 printable: for `sonarr.apikey` the rejected value *is* the
-# credential, and `roles/arr/tasks/reconcile_bazarr.yml` runs its requests under
-# `no_log` precisely so it never reaches a log.
+# dynaconf's 406 reads "{name} must ... but it is {value}": only the text before
+# " must " is printable, since the value may be a credential (sonarr.apikey).
 BAZARR_REJECTION_SEPARATOR = " must "
 
-# What a body that does not carry that message is reported as. Naming nothing is
-# the safe answer, because anything else would be echoing an unrecognised body
-# whose contents are unknown.
+# An unrecognised body is never echoed.
 BAZARR_REJECTION_WITHHELD = "an unnamed setting (Bazarr's response was withheld)"
 
-# dynaconf names a setting with dotted, bracketed identifier tokens. Taking the
-# trailing run of them survives a body that wraps the message — `{"error":
-# "sonarr.apikey must ...` yields `sonarr.apikey` — and reports nothing when the
-# prefix does not end in a name at all.
+# Trailing identifier run, so a wrapped body (`{"error": "x.y must`) still yields x.y.
 _BAZARR_REJECTED_NAME = re.compile(r"[A-Za-z0-9_.\[\]-]+\Z")
 
 
 def acquisition_bazarr_rejected_settings(value: Any) -> list[str]:
-    """Name the settings a Bazarr 406 rejected, never echoing their values.
-
-    `value` is one response body or a sequence of them. The result is the
-    setting names in first-seen order, with `BAZARR_REJECTION_WITHHELD` standing
-    for every body that does not carry a dynaconf validation message. It is safe
-    to print from a `fail_msg` because nothing after the first " must " is read.
-    """
+    """Name the settings a Bazarr 406 rejected, never echoing their values."""
     if isinstance(value, (str, bytes, bytearray)):
         bodies: list[Any] = [value]
     elif isinstance(value, (list, tuple)):
@@ -122,19 +91,10 @@ def acquisition_bazarr_rejected_settings(value: Any) -> list[str]:
 def acquisition_bazarr_rejection_report(
     value: Any, submitted_keys: Any = None
 ) -> dict[str, list[str]]:
-    """Sort what a Bazarr 406 named by what this request can be blamed for.
+    """Split a 406's names into `cast` (this request's int()-cast keys) and `stored`.
 
-    dynaconf revalidates every validator on any submit, so a 406 names a setting
-    the *schema* refused, not necessarily one the request carried. Only a setting
-    this request submits, and whose key Bazarr casts, can be explained by that
-    cast; everything else was already in Bazarr's configuration when the request
-    arrived. `settings` is every name, `cast` and `stored` are that split, and
-    `BAZARR_REJECTION_WITHHELD` is in neither because an unnamed setting cannot
-    be attributed either way.
-
-    `submitted_keys` is the request's form keys — never its values. Unusable
-    input leaves every name in `stored`, because the failure this is printed
-    from must not become a second failure.
+    dynaconf revalidates everything on submit, so a 406 may name a setting the
+    request never carried. Unusable input leaves every name in `stored`.
     """
     settings = acquisition_bazarr_rejected_settings(value)
     if isinstance(submitted_keys, (list, tuple, set, frozenset)):
@@ -228,18 +188,13 @@ def acquisition_bazarr_declarations(languages: Any, providers: Any) -> dict[str,
     for provider in _sequence(providers, "Bazarr provider declarations"):
         provider = _mapping(provider, "Bazarr provider declaration")
         name = _required_string(provider.get("name"), "Bazarr provider name")
-        # Bazarr v1.6.0 splits form keys on hyphens before indexing settings.
-        # Provider/input identifiers in the pinned provider registry therefore
-        # use lowercase identifier tokens, never additional delimiters:
+        # Bazarr splits form keys on hyphens, so identifiers carry no delimiters:
         # https://github.com/morpheus65535/bazarr/blob/v1.6.0/bazarr/app/config.py#L641
         if not re.fullmatch(r"[a-z][a-z0-9_]*", name):
             raise AnsibleFilterError("Bazarr provider names must use canonical lowercase values")
-        # An explicitly empty mapping declares a provider whose pinned schema
-        # takes no inputs at all -- wizdom is the only one in 1.6.1, and it is
-        # the free Hebrew source, so refusing it would have left Hebrew
-        # reachable only through a credentialed provider. The key itself stays
-        # required: a misspelled `setings:` therefore still fails here rather
-        # than enabling a credentialed provider with none of its credentials.
+        # `settings: {}` is allowed (wizdom takes no inputs), but the key is
+        # required so a misspelled `setings:` fails instead of enabling a
+        # credentialed provider with no credentials.
         settings = _mapping(provider.get("settings"), f"Bazarr provider {name!r} settings")
         prefix = f"settings-{name}-"
         normalized_settings = {}
@@ -262,12 +217,8 @@ def acquisition_bazarr_declarations(languages: Any, providers: Any) -> dict[str,
                 value, f"Bazarr provider setting {key!r}", setting_name
             )
         provider_names.append(name)
-        # Always, even when empty: _bazarr_provider_projections looks every
-        # declared name up here and _mapping(None) raises, so a missing entry
-        # would crash the projection rather than report a settings-free
-        # provider. An empty body is dropped instead -- such a provider is
-        # enabled by settings-general-enabled_providers in the connection body
-        # alone, and a POST carrying no keys would submit nothing.
+        # Settings always recorded (projection looks every name up); an empty
+        # body is dropped since enabled_providers alone enables such a provider.
         provider_settings[name] = normalized_settings
         if safe_body:
             provider_bodies[name] = safe_body
@@ -305,12 +256,7 @@ def _bazarr_path_mappings(value: Any, label: str) -> list[list[str]]:
 def _bazarr_connection_secrets(
     auth: dict[str, Any], radarr: dict[str, Any], sonarr: dict[str, Any]
 ) -> tuple[list[str], dict[str, str]]:
-    """Split the three connection secrets into masked names and readable values.
-
-    Bazarr returns a stored secret as a run of asterisks. That is neither the
-    value nor its absence, so a masked setting is reported by name and left out
-    of the comparison entirely rather than compared against the mask.
-    """
+    """Split connection secrets into masked names (asterisks) and readable values."""
     masked = []
     readable = {}
     for section_name, section, setting_name in [
@@ -346,12 +292,7 @@ def _bazarr_enabled_provider_state(general: dict[str, Any]) -> list[str]:
 
 
 def _bazarr_enabled_languages(language_state: Any) -> list[str]:
-    """Name the enabled languages in Bazarr's full language table.
-
-    Bazarr reports every language it knows with an `enabled` flag rather than
-    reporting the enabled ones, so the whole table is validated for identity and
-    only the enabled codes are returned.
-    """
+    """Name the enabled languages in Bazarr's full language table."""
     language_codes = []
     current_languages = []
     for entry in _sequence(language_state, "Bazarr language state"):
@@ -435,10 +376,8 @@ def _bazarr_provider_projections(
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     """Pair every declared provider's live settings with its declared ones.
 
-    A setting Bazarr masks is reported by name and dropped from both sides. A
-    setting Bazarr does not carry yet appears only in the desired projection, and
-    a setting this platform does not declare is carried into both sides
-    unchanged so it is preserved rather than reported as drift.
+    Masked settings are dropped from both sides; undeclared live settings are
+    copied to both sides so they are preserved rather than reported as drift.
     """
     current_projection = {}
     desired_projection = {}
@@ -488,46 +427,13 @@ def _bazarr_provider_projections(
     return current_projection, desired_projection, masked
 
 
-# The fixed half of the desired Bazarr connection. Every call returns a fresh
-# deep copy, so no projection shares a list or dict with another.
+# Always deep-copied, so no projection shares a list or dict with another.
 _BAZARR_DESIRED_GENERAL = {
     "use_radarr": True,
     "use_sonarr": True,
-    # Bazarr's Jellyfin integration is deliberately NOT used, and false
-    # is declared rather than left alone so a tick in Bazarr's web
-    # interface is reverted by the next run -- the property that makes
-    # this repository describe reality. Do not "finish" this by adding a
-    # URL and a token. The reasons, strongest first:
-    #
-    # 1. It needs a credential class this platform does not have. No
-    #    Jellyfin API key exists in the vault at all: `roles/jellyfin`
-    #    logs in and uses the returned AccessToken. Obtaining a key means
-    #    reading a value back out of a running service, which is the one
-    #    thing the architecture forbids -- credentials are authored in
-    #    the vault and pushed outward, which is why a run converges in a
-    #    single pass. `jellyfin.apikey` is also absent from
-    #    `app/config.py`'s `str_keys`, so the token would be exposed to
-    #    the int()-cast 406 `roles/arr/tasks/reconcile_bazarr.yml`
-    #    documents.
-    #
-    # 2. It buys little. The only entry point is `jellyfin_refresh_item`,
-    #    called from four sites (`subtitles/processing.py`,
-    #    `subtitles/upload.py`, `api/subtitles/subtitles.py`,
-    #    `subtitles/tools/delete.py`), each behind
-    #    `general.use_jellyfin and jellyfin.update_*_library`, all three
-    #    flags defaulting false in 1.6.0. Bazarr's inventory, searching
-    #    and downloading come from Radarr and Sonarr, so no function of
-    #    Bazarr's is lost by leaving it off.
-    #
-    # 3. What IS lost is real, and belongs elsewhere. Jellyfin runs with
-    #    `EnableRealtimeMonitor: false` and learns about new files only
-    #    on its undeclared 12-hour scan, so a subtitle Bazarr writes is
-    #    invisible until that scan runs, and this nudge would shorten
-    #    exactly that. It still loses: nothing notifies Jellyfin when
-    #    Radarr or Sonarr import an episode either, so wiring this up
-    #    would make subtitles more current than the episodes they belong
-    #    to -- treating one symptom of a gap whose cause is Jellyfin's
-    #    missing scan declaration. That gap is issue #273, not this flag.
+    # Deliberately off, and declared so a UI tick is reverted. Do not wire it:
+    # it needs a Jellyfin API key read back from the service (the vault has
+    # none), and it only refreshes subtitles; the real scan gap is #273.
     "use_jellyfin": False,
     "path_mappings": [],
     "path_mappings_movie": [],
@@ -645,15 +551,8 @@ def acquisition_bazarr_owned_projections(
     }
 
 
-# A projection key is spelled out in a difference only when it is a canonical
-# Bazarr identifier: the form `acquisition_bazarr_declarations` holds a provider
-# and each of its settings to, optionally carrying the single dot
-# `_bazarr_connection_secrets` uses to name a section's secret. Every other key
-# is named by its position instead, the way `immich_preference_schema` names a
-# collection keyed from the vault. Nothing reachable through the projections
-# today carries a key outside that form — an undeclared live setting is copied
-# to both sides and so never differs — but a difference list exists to be
-# printed, and a rule that only holds for the current callers is not one.
+# Only canonical identifier keys are printed in a difference; any other key is
+# named by position, since a difference list exists to be printed.
 BAZARR_NAMEABLE_KEY = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)?")
 
 
@@ -669,12 +568,7 @@ def _bazarr_differences(
 ) -> None:
     """Walk both projections together, recording paths and never values.
 
-    Recursion stops at anything that is not a mapping, so a list is one leaf and
-    is reported by its own path rather than by its differing elements: Bazarr's
-    languages, enabled providers and path mappings are all lists *of* values.
-    Two mappings differ exactly when a key is missing from one side or a shared
-    key's values differ, which is what `==` means for them, so an empty result
-    is the same verdict `current == desired` reaches.
+    A list is one leaf; an empty result means `current == desired`.
     """
     if not isinstance(current, dict) or not isinstance(desired, dict):
         if current != desired:
@@ -691,12 +585,8 @@ def _bazarr_differences(
 def acquisition_bazarr_projection_differences(projections: Any) -> list[str]:
     """Name every owned Bazarr setting that drifted, and never one of the values.
 
-    `acquisition_bazarr_owned_projections` returns two trees that carry the
-    Radarr and Sonarr API keys and the hash of the administrator password, so
-    every task holding them sets `no_log` and the drift assert could report only
-    that the two were unequal. `no_log` does not suppress `fail_msg`, so the
-    same comparison expressed as field paths is what turns that message into
-    "connection.radarr.port, connection.readable_secrets.sonarr.apikey".
+    The projections carry secrets and `no_log` does not suppress `fail_msg`, so
+    drift is reported as field paths only.
     """
     projections = _mapping(projections, "Bazarr owned projections")
     differences: list[str] = []
@@ -706,8 +596,6 @@ def acquisition_bazarr_projection_differences(projections: Any) -> list[str]:
         "",
         differences,
     )
-    # Every named first segment carries the separator its parent would have
-    # written; the outermost has no parent.
     return [difference.removeprefix(".") for difference in differences]
 
 

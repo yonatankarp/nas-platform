@@ -1,25 +1,9 @@
 #!/usr/bin/env python3
 """Contract tests for the Immich preference response schema filter.
 
-Every rejection case here corresponds to a condition the two duplicated
-36-condition `assert` tasks in `roles/immich/tasks/managed_users.yml` carried
-before the schema moved into `filter_plugins/immich_response_schema.py`.
-
-Two properties matter more than the rest, because getting either wrong turns a
-guard into decoration:
-
-* **An unknown key is accepted.** The condition this replaces required the twelve
-  known scopes to be present and said nothing about the rest. A schema that
-  refused a new Immich preference field would fail a converged deployment the
-  day Immich shipped one, so `test_accepts_fields_immich_may_add` is a
-  regression test against copying `immich_preference_schema`'s `_unsupported`.
-* **A missing key is refused.** The conditions read the field unguarded, so an
-  absent key was Undefined and already a rejection. Its sibling module treats
-  every field as optional, and inheriting that would validate nothing.
-
-The redaction tests exist because the calling task loops over `uri` results whose
-`item` is a vault managed-user record, under `no_log`, and prints this list from
-its `fail_msg`.
+Unknown keys are accepted (a new Immich field must not fail a run) and missing
+keys are refused (unlike the sibling immich_preference_schema). Redaction matters
+because the caller loops over vault managed-user records under no_log.
 """
 
 import copy
@@ -38,9 +22,7 @@ from immich_response_schema import (  # noqa: E402
     immich_preference_response_errors,
 )
 
-# What Immich v3 returns from GET /admin/users/<id>/preferences, restricted to
-# the scopes this platform reconciles. The role compares against this document
-# before it PATCHes anything.
+# GET /admin/users/<id>/preferences (v3), restricted to the reconciled scopes.
 RESPONSE = {
     "albums": {"defaultAssetOrder": "desc"},
     "cast": {"gCastEnabled": False},
@@ -57,9 +39,7 @@ RESPONSE = {
     "tags": {"enabled": False, "sidebarWeb": False},
 }
 
-# One rejected value per kind, chosen so the rejection cannot be explained by
-# anything except the type: an integer that equals a boolean, a boolean that
-# equals an integer, and a name outside the enum.
+# One rejected value per kind that only the type can explain (int==bool, enum miss).
 WRONG = {
     BOOLEAN: 1,
     INTEGER: True,
@@ -195,12 +175,7 @@ class ImmichResponseSchemaTest(unittest.TestCase):
             self.assertEqual(sorted(RESPONSE[scope]), sorted(fields), scope)
 
     def test_an_unknown_field_kind_is_refused_rather_than_unchecked(self):
-        """A kind the dispatch does not implement validated nothing, silently.
-
-        The kinds are module-level string literals, so CPython interning made the
-        `is` comparisons work and the missing `else` never bit — but a table entry
-        naming an unimplemented kind passed every value through unread (#648).
-        """
+        """A kind the dispatch does not implement must be refused, not passed through (#648)."""
         from ansible.errors import AnsibleFilterError
         import immich_response_schema as schema
 

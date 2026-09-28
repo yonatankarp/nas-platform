@@ -19,22 +19,16 @@ import tempfile
 import time
 from typing import Iterator
 
-# Images are pinned as repo:tag@sha256:..., so every Renovate bump pulls a new
-# image and leaves the superseded one behind. Nothing else on the NAS removes
-# them, which is what this exists to do.
+# Every pinned Renovate bump leaves the superseded image behind; nothing else removes it.
 
-# The names run_log writes. Spelled LOG_PATTERN rather than PRUNE_LOG_PATTERN
-# so rotate_logs below is byte-identical to the other script's copy of it and
-# can be held that way; the two values differ, and nothing requires them to
-# agree (#658).
+# Named LOG_PATTERN so rotate_logs stays byte-identical to the poller's copy (#658).
 LOG_PATTERN = re.compile(r"(\d{8}T\d{6}Z)-prune")
 RECLAIMED_PATTERN = re.compile(
     r"^Total reclaimed space:\s*([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z]{1,3})\s*$",
     re.MULTILINE,
 )
 DELETED_PATTERN = re.compile(r"^deleted:\s*sha256:[0-9a-f]{64}\s*$", re.MULTILINE)
-# Docker renders sizes with go-units, which is decimal. Binary suffixes are
-# accepted anyway rather than silently reading as zero if that ever changes.
+# go-units sizes are decimal; binary suffixes accepted rather than read as zero.
 BYTE_UNITS = {
     "b": 1,
     "kb": 1000,
@@ -48,26 +42,20 @@ BYTE_UNITS = {
     "tib": 1024**4,
     "pib": 1024**5,
 }
-# A same-day image is never a candidate. The window is a margin, not the
-# mutual exclusion: `until` filters on when an image was *created* upstream,
-# not on when this host pulled it, so a release published months ago and
-# pulled a minute ago is already outside any window. What actually keeps a
-# prune off a running deployment is the deployment lock below.
+# A margin, not mutual exclusion: `until` filters on upstream creation time, not pull
+# time. The deployment lock is what keeps a prune off a running deployment.
 MINIMUM_RETENTION_HOURS = 24
 PRUNE_TIMEOUT_SECONDS = 15 * 60
 INVENTORY_TIMEOUT_SECONDS = 60
 NOTIFICATION_TIMEOUT_SECONDS = 10
 LOCK_POLL_SECONDS = 15
-# Pushover's own caps, spelled exactly as services/dozzle/alert_relay.py and
-# scripts/production_auto_deploy.py spell them; tests/policy_test.rb holds the
-# copies identical. Over any of them is a 4xx and a lost message.
+# Pushover's caps; tests/policy_test.rb holds the copies across scripts identical.
 MAX_ESCAPED_FIELD_CHARACTERS = 384
 MAX_MESSAGE_CHARACTERS = 1024
 MAX_TITLE_CHARACTERS = 250
 # A reclaim is a record worth a week on the Containers app and no longer.
 RECLAIMED_TTL_SECONDS = 7 * 24 * 60 * 60
-# The palette scripts/production_auto_deploy.py documents, spelled as it spells
-# it; tests/policy_test.rb holds the copies identical.
+# Palette shared with scripts/production_auto_deploy.py; held identical by policy_test.
 COLOR_GREEN = "#2e7d32"
 COLOR_RED = "#c62828"
 COLOR_AMBER = "#f9a825"
@@ -86,22 +74,18 @@ class PruneError(RuntimeError):
 class Config:
     state_root: Path
     log_root: Path
-    # The poller's own lock. Held for the whole prune so a deployment can never
-    # be pulling an image while its layers are being removed underneath it.
+    # The poller's lock, held for the whole prune.
     deployment_lock: Path
     deployment_lock_wait_seconds: int
     retention_hours: int
     dangling_retention_hours: int
     log_retention_days: int
-    # Discovered by the installer. NAS firmwares scatter binaries across
-    # /usr/local, /usr/builtin and /opt, so no fixed directory is correct.
+    # Discovered by the installer: NAS firmwares scatter binaries.
     docker_path: Path
     curl_path: Path
     tool_path: str
-    # The protected curl config of each Pushover application the prune sends to
-    # (#558): Alerts for a failure, Containers for a reclaim -- Deployments is
-    # reserved for the one message per release. None means that
-    # application cannot be published to; see load_config.
+    # Curl configs of the Pushover apps (#558): Alerts for failure, Containers for a reclaim.
+    # None means cannot publish.
     pushover_alerts_curl_config: Path | None = None
     pushover_containers_curl_config: Path | None = None
 
@@ -139,12 +123,8 @@ def load_config(path: str | os.PathLike[str]) -> Config:
     unpublishable = []
     for field in fields(Config):
         if field.name in _PUSHOVER_FIELDS:
-            # Never a refusal, and checked before the non-empty and absolute
-            # rules below. The install play copies this script before it renders
-            # the file, so a prune started in that window, or after a failed
-            # render, reads a pre-Pushover configuration naming no Pushover config.
-            # Refusing it would stop the prune itself; reading it as "cannot
-            # publish" costs that run's notification and one stderr line.
+            # Never a refusal: a prune started before the install play renders this file reads a
+            # pre-Pushover config, and costs only that run's notification.
             raw = payload.get(field.name)
             usable = type(raw) is str and Path(raw).is_absolute()
             values[field.name] = Path(raw) if usable else None
@@ -170,9 +150,6 @@ def load_config(path: str | os.PathLike[str]) -> Config:
             values[field.name] = candidate
         else:
             values[field.name] = raw
-    # A dangling window wider than the unused one would claim to be the
-    # narrower policy while removing nothing the other pass had not already
-    # taken, so the difference between the two would stop meaning anything.
     if values["dangling_retention_hours"] > values["retention_hours"]:  # type: ignore[operator]
         raise ConfigurationError(
             "dangling_retention_hours must not exceed retention_hours"
@@ -186,13 +163,8 @@ def load_config(path: str | os.PathLike[str]) -> Config:
     return Config(**values)  # type: ignore[arg-type]
 
 
-# Two passes, narrowest policy last. The first removes every image no container
-# references; the second removes untagged leftovers on a shorter window,
-# because nothing can name them at all. Neither can reach a volume, a network
-# or a container: `docker image prune` has no argument that would.
-#
-# The platform forbids `build:`, so there is no build cache to prune and no
-# knob pretending otherwise.
+# Two passes, narrowest last: unreferenced images, then untagged leftovers on a shorter
+# window. `docker image prune` cannot reach volumes, networks or containers.
 PRUNE_PASSES = (
     ("unused", ("--all",), "retention_hours"),
     ("dangling", (), "dangling_retention_hours"),
@@ -220,12 +192,7 @@ def prune_commands(config: Config) -> list[tuple[str, list[str]]]:
 
 
 def _environment(config: Config) -> dict[str, str]:
-    """The narrow environment both tools run under.
-
-    HOME is carried because the Docker CLI reads its own configuration from
-    there; cron supplies no environment at all, and a Docker CLI without a home
-    warns on every invocation into the prune log.
-    """
+    """The narrow environment both tools run under; HOME stops Docker CLI warnings."""
 
     environment = {"PATH": config.tool_path, "LC_ALL": "C"}
     home = os.environ.get("HOME")
@@ -281,10 +248,6 @@ def format_bytes(count: int) -> str:
     return f"{size:.1f} PB"
 
 
-# The prune is timed with a monotonic clock, so its input is already seconds,
-# and a prune is minutes at worst -- the hour branch below is never reached
-# here. That is an observation about this program rather than about the
-# function, so it stays outside the docstring the other copy shares.
 def format_duration(seconds: int) -> str:
     """Render an elapsed span as hours, minutes and seconds.
 
@@ -482,14 +445,8 @@ def _write_private(path: Path, payload: bytes) -> None:
         os.close(directory_descriptor)
 
 
-# Why the prune is a second writer of the poller's record rather than leaving
-# the field to it: roles/deployment_bundle probes this file at the first task of
-# every role, and a holder it cannot identify is one it will not refuse. Left
-# unwritten, "no record" would mean either a prune or a poller too old to write
-# one, and a converge would race a prune every Sunday to keep the upgrade window
-# open. Written by the prune too, "no record" means exactly the pre-upgrade
-# poller and nothing else. That is this script's own reasoning, so it sits above
-# the definition, where the identity comparison below does not read it.
+# The prune also writes the lock holder record, so deployment_bundle's "no record"
+# means only a pre-upgrade poller.
 def _record_lock_holder(descriptor: int, holder: str) -> None:
     """Write who holds the lock, for a refused caller to name.
 
@@ -518,10 +475,8 @@ def _record_lock_holder(descriptor: int, holder: str) -> None:
 def deployment_lock(config: Config) -> Iterator[bool]:
     """Hold the poller's deployment lock; yield False when a deployment has it.
 
-    Taking the deploying process's own lock is what makes a scheduled prune
-    safe: between pulling an image and starting its container there is a window
-    where the new image is referenced by nothing, and an age filter does not
-    close it because the image was created upstream long before it was pulled.
+    A freshly pulled image is referenced by nothing until its container starts,
+    and no age filter covers that window.
     """
 
     descriptor = os.open(config.deployment_lock, os.O_WRONLY | os.O_CREAT, 0o600)
@@ -542,17 +497,13 @@ def deployment_lock(config: Config) -> Iterator[bool]:
         try:
             yield True
         finally:
-            # Cleared while the lock is still held, exactly as the poller
-            # clears its own, so nothing reads this prune's record from under
-            # a lock it no longer holds.
+            # Cleared while still holding the lock, as the poller does.
             with contextlib.suppress(OSError):
                 os.ftruncate(descriptor, 0)
     finally:
         os.close(descriptor)
 
 
-# Called with a fixed suffix: the prune is scheduled, so a stamp names it
-# uniquely and there is no second identity to record.
 @contextmanager
 def run_log(config: Config, suffix: str):
     """Open one private run log and point 'latest' at it.
@@ -581,7 +532,6 @@ def run_log(config: Config, suffix: str):
             sink.flush()
 
 
-# The logs are one per scheduled prune, all named alike.
 def rotate_logs(config: Config, now: datetime) -> None:
     """Delete run logs older than the configured retention window.
 
@@ -656,9 +606,7 @@ def record_state(config: Config, state: dict) -> None:
 
 
 OUTCOMES = {
-    # Pushover application, title, priority. A prune that reclaimed nothing is
-    # not in here on purpose: a weekly no-op notification is noise, and the
-    # weeks that reclaim nothing are most of them.
+    # Application, title, priority. A no-op prune is deliberately silent.
     "reclaimed": ("containers", "\U0001f9f9 Images pruned", -1),
     "failed": ("alerts", "\U0001f534 Image prune failed", 1),
 }
@@ -690,8 +638,6 @@ def render_notification(config: Config, outcome: str, summary: dict) -> tuple[st
             log,
             window,
         ]
-        # The prune is scheduled, never retried by hand, and a failure changes
-        # nothing about the next run: it finds the same images, one week older.
         closing = "<i>The next scheduled prune tries again.</i>"
     else:
         size = format_bytes(summary["reclaimed_bytes"])
@@ -704,9 +650,7 @@ def render_notification(config: Config, outcome: str, summary: dict) -> tuple[st
             details.append(f"\U0001f4da <b>Remaining</b> {_images(summary['images_remaining'])}")
         details += [took, window, log]
         closing = ""
-    # A lock screen shows the title and little else, so the reclaimed size is
-    # the one number worth putting there. A failure says so in the title
-    # already and does not need it said twice.
+    # A lock screen shows little beyond the title, so the reclaimed size goes there.
     headline = (
         f"{title} · {format_bytes(summary['reclaimed_bytes'])}"
         if outcome == "reclaimed"
@@ -714,7 +658,6 @@ def render_notification(config: Config, outcome: str, summary: dict) -> tuple[st
     )
     fields = {"title": headline, "message": compose_message(lead, details, closing), "priority": priority}
     if outcome == "reclaimed":
-        # A ttl is never sent with priority 2, which none of these is.
         fields["ttl"] = RECLAIMED_TTL_SECONDS
     return app, fields
 
@@ -728,8 +671,6 @@ def publish(config: Config, app: str, fields: dict) -> bool:
     the vault keys to fix and never a value, and nothing here raises.
     """
 
-    # An application this script configures no curl config for reads as cannot
-    # publish, like an unconfigured one, rather than raising.
     curl_config = getattr(config, f"pushover_{app}_curl_config", None)
     if curl_config is None:
         return False
@@ -740,11 +681,7 @@ def publish(config: Config, app: str, fields: dict) -> bool:
         "--disable",
         "--silent",
         "--show-error",
-        # The same deadline curl enforces on the transfer and _run enforces on
-        # the process below, spelled once. It was the literal 10 while the line
-        # underneath already read NOTIFICATION_TIMEOUT_SECONDS, so lowering that
-        # constant -- which tests/policy_test.rb requires be done in both
-        # scripts at once -- would have left curl waiting the old ten (#658).
+        # One deadline for curl and _run (#658).
         "--max-time",
         str(NOTIFICATION_TIMEOUT_SECONDS),
         "--config",
@@ -756,8 +693,7 @@ def publish(config: Config, app: str, fields: dict) -> bool:
     try:
         result = _run(arguments, timeout=NOTIFICATION_TIMEOUT_SECONDS, config=config)
     except (OSError, ValueError, subprocess.SubprocessError):
-        # ValueError is a NUL byte in a field, which no argv can carry: nothing
-        # was sent, and a notice that cannot be sent must not raise either.
+        # ValueError is a NUL byte in a field: nothing was sent, and this must not raise.
         return False
     verdict = pushover_verdict(result.returncode, result.stdout)
     if verdict == "refused":
@@ -785,9 +721,7 @@ def notify(config: Config, outcome: str, summary: dict) -> bool:
 def run_passes(config: Config, log) -> tuple[int, int]:
     """Run every prune pass in order, returning reclaimed bytes and image count.
 
-    A pass that cannot run, or that Docker fails, raises rather than being
-    counted as a clean zero: a prune that silently stopped working looks
-    exactly like a week with nothing to reclaim.
+    A failed pass raises rather than counting as a clean zero.
     """
 
     reclaimed = 0
@@ -814,8 +748,6 @@ def prune(config: Config) -> bool:
 
     with deployment_lock(config) as acquired:
         if not acquired:
-            # A deployment is running. Skipping is the whole point of asking:
-            # the next scheduled prune finds the same images, one week older.
             record_state(
                 config,
                 {
@@ -926,8 +858,7 @@ def main(argv=None) -> int:
     try:
         config = load_config(config_path)
     except ConfigurationError:
-        # The notifier's paths live in this file, so an unusable configuration
-        # cannot be reported through Pushover.
+        # The notifier's paths live in this config, so this cannot go through Pushover.
         print("image prune: unusable configuration", file=sys.stderr)
         return 1
     if mode == "status":
@@ -936,9 +867,7 @@ def main(argv=None) -> int:
     try:
         succeeded = prune(config)
     except OSError as error:
-        # A private directory the installer owns is missing or unwritable.
-        # Cron keeps only the most recent output, so this has to read as a
-        # sentence rather than as a traceback a week after the fact.
+        # Cron keeps only the latest output, so say it as a sentence, not a traceback.
         print(f"image prune: {error.filename or 'a managed path'} is unusable",
               file=sys.stderr)
         return 1

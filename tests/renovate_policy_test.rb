@@ -35,13 +35,8 @@ check(failures, config["platformAutomerge"] == true,
       "Renovate must use GitHub-native automerge")
 check(failures, config["automergeStrategy"] == "rebase",
       "Renovate automerge must use the rebase strategy")
-# auto, and not behind-base-branch, which this file required from e56d9728
-# until #831. behind-base-branch rebased every open branch after every merge,
-# and each rebase re-ran CI: 22 of 40 runs and 37% of runner-minutes, most of
-# them held pull requests that sit open longest. Renovate resolves auto per
-# branch from that branch's own automerge verdict, so the split #831 decided --
-# automerged branches stay current, held ones rebase only on a conflict -- needs
-# no second copy of the held set. The resolution is asserted per package below.
+# auto, not behind-base-branch (#831): Renovate resolves auto per branch from its own
+# automerge verdict, so held branches rebase only on conflict. Asserted per package below.
 check(failures, config["rebaseWhen"] == "auto",
       "Renovate's rebaseWhen must be auto, which rebases an automerged branch that falls " \
       "behind the base and a held one only when it conflicts (#831)")
@@ -71,95 +66,24 @@ check(failures, immich_rule && immich_rule["automerge"] == false,
 check(failures, immich_rule && rules.index(immich_rule) > rules.index(eligible_rule),
       "The Immich override must follow the general automerge rule") if eligible_rule
 
-# #511: an application image whose container migrates its own store when it
-# starts is not a freely reversible pin. Bindery v1.34.0 migrated its SQLite
-# store to schema_migrations 81, the host went back to a release pinning
-# v1.33.3, and v1.33.3 refused to open it -- correctly, and inside the
-# container, where the only symptom was exit 1 every minute for three days.
-# The bump that got there was an application MINOR, which the routine rule
-# automerges; the existing manual set gated database MAJORS, which is a
-# different hazard.
-#
-# Stated as a property over the services rather than rule by rule, and that is
-# the point: they are withheld by different mechanisms, so an assertion
-# written against one of them would pass while another silently reopened.
-# What has to hold is that no automerging update type reaches any of them.
-#
-# All of them are withheld by `automerge: false` today -- Immich on its own
-# coupling rule, the rest on the self-migrating rule #511 added. That
-# rule deliberately does NOT carry `dependencyDashboardApproval`, unlike the
-# database-major and Nextcloud-major rules it sits beside: those match only
-# majors, where a suppressed pull request is a rare decision deferred, while
-# this one reaches minor and patch on services that ship them continuously, and
-# there a suppressed pull request is an update nobody ever sees. Keep this
-# assertion phrased over the mechanisms rather than over one of them, because
-# which mechanism withholds which service has already changed once.
-#
-# The key is the image and the value is the services/ directory that pins it,
-# because a list of package names is exactly the kind of subject that goes
-# stale invisibly: #501 removed Seafile, which was in this set and had a
-# Renovate carve-out of its own. A name that no longer appears as an `image:`
-# in the tree is a rule guarding nothing.
+# Images whose container migrates its own store on start: a one-way pin (#511). Stated
+# as a property over every withholding mechanism, not one rule. Keyed image => services/
+# directory so a name no longer pinned anywhere fails rather than guarding nothing.
 SELF_MIGRATING_APPLICATION_IMAGES = {
   "ghcr.io/immich-app/immich-server" => "immich",
   "ghcr.io/paperless-ngx/paperless-ngx" => "paperless-ngx",
   "docker.io/library/nextcloud" => "nextcloud",
-  # #551: Karakeep runs its drizzle migrations against db.db before it serves,
-  # and Meilisearch upgrades an index an older version wrote -- only because
-  # MEILI_UPGRADE_DB tells it to, and one-way either way. Both pins live in the
-  # one Karakeep stack.
+  # #551: Karakeep migrates db.db; Meilisearch upgrades an index (with MEILI_UPGRADE_DB).
   "ghcr.io/karakeep-app/karakeep" => "karakeep",
   "docker.io/getmeili/meilisearch" => "karakeep",
-  # #671: Kapowarr v1.3.2 migrated a v1.3.1 store from database version 45 to
-  # 51 on start. It was absent from this set, so a green bump would have
-  # automerged that migration; only a red lane stopped it.
+  # #671: Kapowarr v1.3.2 migrated database version 45 to 51 on start.
   "docker.io/mrcas/kapowarr" => "kapowarr",
-  # The 12.1 bump. Upstream says it outright rather than leaving it to be read
-  # off a changelog: 12.0 "includes database changes that prevent rolling back
-  # without a full restore". Playlists and collections became relational behind
-  # a new LinkedChildren table, OwnerId and PrimaryVersionId became real GUID
-  # foreign keys, ExtraIds was dropped, and cleanup migrations rewrite existing
-  # rows on first boot.
+  # Jellyfin 12.0 "includes database changes that prevent rolling back".
   "docker.io/jellyfin/jellyfin" => "jellyfin"
 }.freeze
-# A stated count, not non-emptiness: a set that quietly became empty satisfies
-# every loop below and reports a pass. Seven is what the tree documents --
-# services/immich/compose.yml, services/paperless-ngx/compose.yml,
-# services/nextcloud/compose.yml, services/kapowarr/compose.yml and
-# services/jellyfin/compose.yml each say their application migrates its own store
-# on start and refuses to go back, and services/karakeep/compose.yml says it of
-# both the application and Meilisearch.
-#
-# TWO IMAGES HAVE LEFT THIS SET, for reasons that are not the same one, and the
-# difference is the whole point of keeping both notes.
-#
-# Vaultwarden left in #547 because its pin became REVERSIBLE: it migrates its
-# store too, but an older image still starts on a newer one, so its minors and
-# patches automerge and only its majors are withheld.
-# services/vaultwarden/compose.yml carries the evidence.
-#
-# Bindery left in #781 with its pin still ONE-WAY -- #511 is its incident and it
-# has not been repealed. What changed is coverage, not reversibility: the
-# upgrade integration lane converges the base pin, seeds a row through Bindery's
-# own API, repins, converges again so the head image migrates a store the base
-# image wrote, reads the row back, and stops the head container asserting a clean
-# exit. #511's exact mode, run on the pull request proposing the bump.
-#
-# Kapowarr stays despite the lane being able to take it as a subject, because as
-# of #781 it never has -- every real execution has been Bindery -- and #671's
-# shutdown race is uncovered for both. A lane that has only ever passed at stub
-# level is not grounds for removing a human.
-#
-# Both departures are pinned in both directions by the rows after the Gotenberg
-# tripwire below, so neither can drift back silently.
-#
-# Jellyfin ARRIVED rather than departed, and it reads against Bindery rather than
-# against Vaultwarden: its pin is one-way like Bindery's was, and what it lacks is
-# Bindery's coverage. The upgrade lane cannot take it -- no
-# tests/contracts/jellyfin-upgrade.rb -- so every lane that touches Jellyfin
-# creates /config empty and takes the fresh-install path, and a green run says
-# nothing about the store on the NAS. That is the whole reason it is here and not
-# automerging.
+# A stated count, so a set that quietly emptied cannot pass. Vaultwarden left (#547,
+# reversible pin); Bindery left (#781, one-way but covered by the upgrade lane). Jellyfin
+# stays: the upgrade lane cannot take it. Both departures are pinned below.
 check(failures, SELF_MIGRATING_APPLICATION_IMAGES.length == 7,
       "the self-migrating application set must name seven images, not " \
       "#{SELF_MIGRATING_APPLICATION_IMAGES.length}")
@@ -172,11 +96,7 @@ SELF_MIGRATING_APPLICATION_IMAGES.each do |package, directory|
         "pins no such image; a rule naming an image the tree no longer has guards nothing")
 end
 
-# Withholding Meilisearch's automerge is only half of what its pin needs. Without
-# MEILI_UPGRADE_DB the engine refuses an index an older version wrote and
-# crash-loops -- measured, v1.53.2 on a v1.41.0 index -- so the first pull request
-# anybody merges would stop the host exactly as #511 did. services/karakeep/compose.yml
-# carries the measurement; this is what fails if the line goes.
+# Without MEILI_UPGRADE_DB Meilisearch crash-loops on an older index (#511's mode).
 karakeep_compose_path = File.join(ROOT, "services", "karakeep", "compose.yml")
 karakeep_compose = File.file?(karakeep_compose_path) ? File.read(karakeep_compose_path) : ""
 meilisearch_service = karakeep_compose[/^  meilisearch:\n(.*?)(?=^  \S|^\S)/m, 1].to_s
@@ -184,10 +104,7 @@ check(failures, meilisearch_service.match?(/^      MEILI_UPGRADE_DB: "true"$/),
       "services/karakeep/compose.yml must set MEILI_UPGRADE_DB: \"true\" on the meilisearch " \
       "service: without it a Meilisearch version bump crash-loops on the existing index")
 
-# The resolver below reads matchPackageNames, matchUpdateTypes, matchDatasources
-# and matchCategories and ignores matchFileNames, which is sound only while no
-# rule narrows by file without also naming its packages. Asserted rather than
-# assumed, because a rule that did would apply here when Renovate would not.
+# The resolver ignores matchFileNames, sound only while no rule narrows by file alone.
 check(failures, rules.none? do |rule|
   rule.key?("matchFileNames") && Array(rule["matchPackageNames"]).empty?
 end, "a Renovate rule narrows by file name without naming its packages; the " \
@@ -207,13 +124,8 @@ def rule_reaches?(rule, package, update_type, datasource = "docker")
   categories.empty? || (datasource == "docker" && categories.include?("docker"))
 end
 
-# Later rules win, which is Renovate's own resolution order.
-#
-# `key?` rather than a truthiness filter, and the difference is not pedantic:
-# `filter_map { rule["automerge"] }` drops `false` along with `nil`, so the
-# Immich rule -- which withholds every update type with `automerge: false` --
-# resolved to the routine rule's `true` and this file reported that an Immich
-# minor would automerge. Measured on the first run, not imagined.
+# Later rules win, as in Renovate. `key?`, not truthiness: filter_map drops `false`,
+# which once made Immich's `automerge: false` read as true.
 def last_declared(rules, key)
   rules.select { |rule| rule.key?(key) }.map { |rule| rule[key] }.last
 end
@@ -225,31 +137,12 @@ def automerge_verdict(config, rules, package, update_type, datasource = "docker"
   [automerge, last_declared(reaching, "dependencyDashboardApproval") == true]
 end
 
-# minor and patch only. pin, pinDigest and digest move no version, so they run
-# no migration and are ordinary here -- which is the one automerged type this
-# set deliberately keeps.
+# pin, pinDigest and digest move no version, so they stay automerged.
 MIGRATING_UPDATE_TYPES = %w[major minor patch].freeze
 
-# EVERY DEPENDENCY MUST REACH A PULL REQUEST. Withholding a merge is a decision a
-# human makes; withholding the pull request is a decision nobody ever gets to
-# make, because the dashboard row is the only place the update exists and nothing
-# ever raises it again. The two mechanisms that do that are banned here rather
-# than argued about per rule:
-#
-#   dependencyDashboardApproval  suppresses the pull request until somebody ticks
-#                                a checkbox. Carried by the database-major and
-#                                Nextcloud-major rules until this check landed;
-#                                both now use automerge false, so the pull
-#                                request opens and only the merge waits.
-#   enabled: false               suppresses the dependency entirely. No rule may
-#                                silence an update; a pin that genuinely must not
-#                                move on its own says so with automerge false and
-#                                a needs-manual-coupling label, which is visible.
-#
-# This also makes the self-migrating assertion below strictly stronger than it
-# reads: `automerge == false || approved` can no longer be satisfied by the
-# approval half, because nothing may declare it. The `approved` term is kept so
-# the resolver still reports which mechanism withheld a package if one returns.
+# Every dependency must reach a pull request: dependencyDashboardApproval and
+# `enabled: false` are banned; withhold with `automerge: false` instead. The `approved`
+# term below stays only to report which mechanism withheld a package.
 rules.each_with_index do |rule, index|
   subject = Array(rule["matchPackageNames"]).join(", ")
   subject = "<every package>" if subject.empty?
@@ -273,12 +166,8 @@ MIGRATING_UPDATE_TYPES.each do |update_type|
   end
 end
 
-# The tripwire the loop above needs, and it is not decoration. Every assertion
-# there is satisfied by a resolver that reports every package as withheld --
-# a mistyped key, an inverted return, a rules list read as empty -- and such a
-# resolver would report a pass on a configuration that automerges everything.
-# Gotenberg converts documents and holds no store; its minor bumps do automerge,
-# and this row fails if the resolver has stopped being able to say so.
+# Tripwire: a resolver reporting everything withheld would pass the loop above.
+# Gotenberg holds no store, so its minors must automerge.
 open_automerge, open_approval = automerge_verdict(config, rules,
                                                   "docker.io/gotenberg/gotenberg", "minor")
 check(failures, open_automerge == true && !open_approval,
@@ -286,9 +175,7 @@ check(failures, open_automerge == true && !open_approval,
       "withheld. It holds no migrating store and the routine rule automerges it, so the " \
       "resolver is answering the same way for every package and the assertions above prove nothing")
 
-# Vaultwarden left the self-migrating set: its majors wait for a human, and its
-# minors and patches automerge, because an older image still starts on a newer
-# store (services/vaultwarden/compose.yml). Both halves, so neither drifts back.
+# Vaultwarden: majors held, minors/patches automerge. Both halves, so neither drifts.
 { "major" => false, "minor" => true, "patch" => true }.each do |update_type, expected|
   automerge, approved = automerge_verdict(config, rules, "docker.io/vaultwarden/server", update_type)
   check(failures, (automerge == true && !approved) == expected,
@@ -296,12 +183,7 @@ check(failures, open_automerge == true && !open_approval,
         "#{expected ? 'automerge' : 'wait for a human'}; see services/vaultwarden/compose.yml")
 end
 
-# Bindery left the same set in #781, and its halves are the same shape for a
-# different reason: not a reversible pin, but #511's mode covered by the upgrade
-# lane before the merge. Majors still wait for a human -- the routine rule never
-# matches a major -- and minors and patches are what the lane actually gates.
-# Pinned in both directions, so restoring the hold or widening it to majors both
-# fail here rather than drifting.
+# Bindery (#781): the same shape, because the upgrade lane gates minors and patches.
 { "major" => false, "minor" => true, "patch" => true }.each do |update_type, expected|
   automerge, approved = automerge_verdict(config, rules, "ghcr.io/vavallee/bindery", update_type)
   check(failures, (automerge == true && !approved) == expected,
@@ -310,18 +192,8 @@ end
         "on the pull request, and a major still waits for a human")
 end
 
-# #607: the Beszel Intel agent runs as root with host networking, CAP_SYS_RAWIO,
-# CAP_SYS_ADMIN and raw access to the SATA bays and the NVMe pair. The hazard is
-# not a version at all: a tag re-pushed upstream arrives as a digest update, which
-# the routine rule automerges and the poller deploys within five minutes. So this
-# set differs from the self-migrating one above in exactly the type that set
-# keeps -- here no update type may automerge, digest refreshes included.
-#
-# The hub and the portable agent are held with it, and the group rule is asserted
-# alongside, because the three share one Renovate branch and one release train:
-# withholding only the agent would let the hub automerge ahead of it into skew.
-# The same mechanism-neutral verdict as above, and the same stated count and
-# in-tree pin, for the same reasons.
+# #607: the Beszel agent is root-equivalent, and a re-pushed tag arrives as a digest, so
+# no update type may automerge. Hub and portable agent share its branch and are held too.
 HOST_ROOT_EQUIVALENT_IMAGE_GROUP = %w[
   ghcr.io/henrygd/beszel/beszel
   ghcr.io/henrygd/beszel/beszel-agent
@@ -352,26 +224,14 @@ EVERY_UPDATE_TYPE.each do |update_type|
           "update to its release group may merge without a human")
   end
 end
-# The tripwire for the type this block adds: the resolver must still be able to
-# say that a digest refresh of an image outside the group automerges.
 digest_automerge, digest_approval = automerge_verdict(config, rules,
                                                       "docker.io/gotenberg/gotenberg", "digest")
 check(failures, digest_automerge == true && !digest_approval,
       "the automerge resolver reports that a digest refresh of docker.io/gotenberg/gotenberg is " \
       "withheld. The routine rule automerges it, so the Beszel digest assertions above prove nothing")
 
-# #828: any container that mounts the Docker socket holds the Docker API, and
-# the `:ro` on that mount restricts nothing at the API level -- so the image is
-# root-equivalent on the host for exactly the Beszel agent's reason, and a
-# re-pushed tag arriving as a digest must not merge without a human either.
-# lscr.io/linuxserver/socket-proxy sat in both the Beszel and Dozzle stacks
-# under the routine automerge rule, digests included, until this block.
-#
-# Derived rather than listed, because a list is what let the socket proxy
-# through: every image whose service mounts the socket in any
-# services/*/compose*.yml. The stated set under it is the floor, closed both
-# ways -- a derivation that quietly matches nothing (a renamed key, a long-form
-# volume) would otherwise pass every loop below.
+# #828: a Docker-socket mount is root on the host (`:ro` restricts nothing at the API).
+# Derived from services/*/compose*.yml, with a stated set closed both ways as the floor.
 DOCKER_SOCKET_IMAGES = %w[lscr.io/linuxserver/socket-proxy].to_set.freeze
 
 def compose_image_repository(image)
@@ -416,22 +276,9 @@ EVERY_UPDATE_TYPE.each do |update_type|
   end
 end
 
-# #831: the rebase each branch actually gets, closed both ways against the
-# automerge verdict above rather than against a list of held images. An
-# automerged branch must stay behind-base-branch, so nothing automerges
-# untested against the current main; a held one must be conflicted, so it stops
-# re-running CI after every merge while it waits for a human.
-#
-# auto is resolved the way Renovate 44's determineRebaseWhenValue resolves it,
-# less three inputs this file cannot see, each of which would move a held
-# branch back to behind-base-branch or an automerged one to conflicted: a
-# keep-updated label (refused below, since it lives in this file), the main
-# ruleset requiring up-to-date branches (strict_required_status_checks_policy
-# is false), and a merge queue (none). Those two are repository settings.
-# Also not modelled: Renovate's built-in `pin` object sets rebaseWhen
-# behind-base-branch, so a pin update of a held package would rebase behind
-# the base. Every dependency here is already exact- or digest-pinned, so no pin
-# update is reachable.
+# #831: automerged branches must stay behind-base-branch, held ones conflicted, per the
+# automerge verdict. auto is resolved as Renovate 44's determineRebaseWhenValue, less
+# keep-updated labels (refused below) and repository settings this file cannot see.
 check(failures, !config.key?("keepUpdatedLabel") && rules.none? { |rule| rule.key?("keepUpdatedLabel") },
       "keepUpdatedLabel makes Renovate rebase a labelled held branch behind the base, which " \
       "undoes #831's rebaseWhen split for it")
@@ -477,9 +324,6 @@ rebase_subjects.each do |package, datasource|
                           'every merge (#831)'}")
   end
 end
-# Floors both ways, and a named subject on each side: a universe that read
-# nothing, or a resolver that reached no withholding rule, passes every check in
-# the loop above.
 check_floor(failures, rebase_verdicts["conflicted"], 1, "the rebase check found no held update")
 check_floor(failures, rebase_verdicts["behind-base-branch"], 1,
             "the rebase check found no automerged update")
@@ -492,28 +336,9 @@ check_floor(failures, rebase_verdicts["behind-base-branch"], 1,
         "resolver have stopped meaning what its assertions read them as")
 end
 
-# The batching group, and the reason it needs an assertion of its own rather
-# than a reading of the rule. Grouping is a CI-cost measure -- the fixed gate is
-# about 37 of a run's ~50 runner-minutes and is paid once per pull request, not
-# once per image -- so it is a rule whose whole safety property lives in what it
-# EXCLUDES. Those exclusions are a second copy of the sets above, and a second
-# copy of a set is exactly what went stale when #501 removed Seafile and left
-# its carve-out behind. Here the drift would not be a rule guarding nothing; it
-# would be a self-migrating image joining an automerged batch, which is #511
-# reopened and reaching the host within five minutes of the merge.
-#
-# So: equality in both directions against the union of the two withheld sets,
-# derived from those constants rather than restated, and a floor under the
-# group's own reach so a negation list that swallowed everything cannot pass by
-# excluding the whole registry.
-# Not in IMMICH_PACKAGES, and deliberately a set of its own: that constant is
-# compared for exact equality against the manual-coupling rule's subjects, so
-# widening it to hold the database image would break the assertion it exists for.
-# This image is withheld for a different reason from the two application images
-# beside it -- its major moves only by a hand-run dump and restore, so it
-# carries a version ceiling as well as automerge false: the registry publishes
-# higher majors under the identical suffix, and a plain enable would offer one
-# as though it were routine.
+# The batching group's safety lives in its exclusions, which must equal the union of the
+# withheld sets (derived, not restated) with a floor on its reach. COUPLED_DATABASE_IMAGES
+# is separate from IMMICH_PACKAGES, which is compared exactly against the coupling rule.
 COUPLED_DATABASE_IMAGES = %w[ghcr.io/immich-app/postgres].freeze
 
 GROUP_EXCLUDED_IMAGES = (SELF_MIGRATING_APPLICATION_IMAGES.keys +
@@ -529,11 +354,7 @@ check(failures, batching_rules.length == 1,
 
 batching_rule = batching_rules.first
 if batching_rule
-  # Last, and that is load-bearing rather than tidy. A held package that matched
-  # this rule would carry its groupName onto a shared branch, and the automerge
-  # verdict for a branch whose members disagree is Renovate's business rather
-  # than something this repository should have to know. Ordering it after every
-  # withholding rule makes the question unaskable.
+  # Last, so a held package can never join a shared branch with automerged ones.
   check(failures, rules.index(batching_rule) == rules.length - 1,
         "the batching group must be the last package rule, so no withholding rule can " \
         "follow it and leave a held image carrying its groupName")
@@ -548,29 +369,8 @@ if batching_rule
         "requirements.yml and tests/integration.sh are unmapped paths that fall open to every " \
         "lane and all six idempotence shards, so batching one in costs more than the group saves")
 
-  # All negations and nothing else, which is two properties in one assertion,
-  # and #780 put the lint job's renovate-config-validator underneath only one of
-  # them. The half the validator now owns is "*": it refuses a
-  # matchPackageNames holding "*" alongside other patterns, refuses the whole
-  # config for it, and exits non-zero -- which is #775, where this rule shipped
-  # in #771 opening with "*" because this test required it to and Renovate
-  # stopped repository-wide the day after. That half is no longer this
-  # assertion's to catch first.
-  #
-  # The half it does NOT own is the one that keeps this line here, and it is a
-  # measurement rather than a reading of the source: renovate-config-validator
-  # 44.103.2 accepts ["ghcr.io/linuxserver/sonarr", "!...", ...] with exit 0 and
-  # "Config validated successfully". A positive pattern that is not "*" is valid
-  # Renovate config, and it silently collapses this group's reach from every
-  # image except eleven to that one image -- while the exclusion-equality check
-  # below passes on it, because that one reads only the "!"-prefixed entries.
-  # So the property this assertion carries is the original one: the group
-  # reaches every image and narrows by negation, because an explicit allowlist
-  # would silently omit every service added after it was written. Dropping "*"
-  # cost nothing either way -- matchRegexOrGlobList skips its positive-pattern
-  # check when there are no positive patterns, so ["!a"] and ["*", "!a"] resolve
-  # identically -- and the validator, not this line, is now what stops "*" being
-  # put back for readability.
+  # All negations: renovate-config-validator refuses "*" beside other patterns (#775), but
+  # accepts a single positive pattern, which would silently shrink the group to one image.
   names = Array(batching_rule["matchPackageNames"])
   check(failures, names.any? && names.all? { |name| name.start_with?("!") },
         "the batching group must be a list of negations and nothing else. It must narrow by " \
@@ -586,23 +386,15 @@ if batching_rule
         "#{(excluded.to_set - GROUP_EXCLUDED_IMAGES).to_a.sort.inspect}. A withheld image that " \
         "is not excluded joins an automerged batch, which is #511 arriving faster than before")
 
-  # The tripwire the equality needs. Every assertion above is satisfied by a rule
-  # that reaches nothing at all -- a negation list naming the whole registry, a
-  # matchPackageNames that stopped matching -- and such a rule would report a pass
-  # while batching no pull request and saving nothing. Gotenberg holds no store
-  # and is in no withheld set, so it must be reached.
+  # Tripwire: a group reaching nothing would pass the checks above.
   check(failures, !excluded.include?("docker.io/gotenberg/gotenberg"),
         "docker.io/gotenberg/gotenberg is excluded from the batching group. It holds no " \
         "migrating store and is in no withheld set, so the exclusions have stopped meaning " \
         "what the assertions above read them as")
 end
 
-# Every pinned version in the integration harness must be tracked by a custom
-# manager. Without this, a pin silently stops being bumped: nothing fails until
-# the pinned value leaves its upstream index, and then every suite fails at
-# sandbox setup on a change that has nothing to do with it. The pins are found
-# by shape rather than by name so a newly added one is covered too, and the
-# managers' own matchStrings are the oracle for whether it is tracked.
+# Every harness pin must be tracked by a custom manager, found by shape; the managers'
+# matchStrings are the oracle.
 HARNESS_PATH = File.join(ROOT, "tests", "integration.sh")
 PIN_ASSIGNMENT = /^[a-z_]+='?[^']*\d+\.\d+/.freeze
 
@@ -624,14 +416,8 @@ harness_lines.each do |line|
         "no Renovate custom manager tracks the pin #{line.inspect}")
 end
 
-# The controller toolchain is authored in controller-requirements.in and compiled
-# into the hash-locked controller-requirements.txt (#827). Renovate owns the lock
-# through its pip-compile manager, which reads the .in named in the lock's header,
-# bumps a pin there and re-runs that header's command, so the hashes move with the
-# version. A regex manager over the lock is the route that must not come back: its
-# pattern still matches the lock's `ansible-core==X.Y.Z \` lines, and it would
-# rewrite a version without regenerating a hash, which is a lock pip refuses on
-# every host that installs it.
+# The lock is owned by Renovate's pip-compile manager (#827). A regex manager over it
+# must not return: it would bump a version without regenerating its hash.
 controller_source_path = File.join(ROOT, "controller-requirements.in")
 controller_lines = File.file?(controller_source_path) ? File.readlines(controller_source_path, chomp: true) : []
 controller_requests_pins = controller_lines.filter_map do |line|
@@ -672,13 +458,7 @@ end
 check(failures, config.dig("lockFileMaintenance", "enabled") == true,
       "lockFileMaintenance must be enabled, or the controller lock's transitive pins never move")
 
-# The renovate-config-validator pin in the lint job, held to the same rule as
-# the harness and controller pins above: a version this repository writes down
-# is a version a custom manager has to track, or it stops moving and nothing
-# says so until the pinned release leaves the registry. Both directions, because
-# each half fails silently on its own -- a pin the manager's regex no longer
-# matches is untracked while every other check stays green, and a manager whose
-# pin was deleted tracks nothing while still looking like coverage.
+# The lint job's validator pin must be tracked, both directions.
 WORKFLOW_PATH = File.join(ROOT, ".github", "workflows", "ci.yml")
 workflow_source = File.read(WORKFLOW_PATH)
 validator_pins = workflow_source.scan(/^\s*renovate_pin=renovate@\d+\.\d+\.\d+$/).map(&:strip)
@@ -705,9 +485,7 @@ end
 check(failures, workflow_managers.all? { |manager| manager["datasourceTemplate"] == "npm" },
       "the workflow pin must resolve against npm, which is where renovate ships")
 
-# Alpine package pins must be resolved from the release branch that supplies
-# the runner image. Repology can lag a new Alpine release and report no-result
-# even while the packages are present in Alpine's own repositories.
+# Alpine pins resolve from the runner's release branch; Repology can lag.
 alpine_datasource = config.dig("customDatasources", "alpine-3.24-main")
 check(failures,
       alpine_datasource == {
@@ -731,16 +509,8 @@ check(failures, Array(config["customManagers"]).none? do |manager|
     manager["depNameTemplate"].to_s.start_with?("alpine_3_24/")
 end, "Alpine 3.24 pins must not depend on Repology coverage")
 
-# A container image pinned outside a Compose file is a second copy of a pin
-# Renovate cannot see: enabledManagers covers docker-compose plus the custom
-# managers above, and none of them look at roles/**, inventory/**, config/** or
-# tests/contracts/**. The Configarr digest hashed into the Arr reconciliation
-# fingerprint drifted two releases behind the deployed image exactly that way,
-# which silently disabled the reconcile a version bump exists to force. The
-# Dozzle contract's disposable fixture image drifted a release behind the same
-# way, so CI pulled a second copy of that image on every dozzle leg for the sake of an
-# image it picked because the platform had already pulled it. The Compose
-# definition is the one pin; everything else reads the image out of it.
+# An image pinned outside Compose is invisible to Renovate and drifts (the Configarr
+# fingerprint did). The Compose definition is the one pin.
 RESTATED_PIN_TREES = ["roles", "inventory", "config", "tests/contracts"].freeze
 RESTATED_PIN_TEXT = /\.(ya?ml|j2|json|py|rb|sh|cfg|txt|md)\z/.freeze
 IMAGE_PIN = %r{[a-z0-9][a-z0-9._/-]*:[\w][\w.-]*@sha256:[0-9a-f]{64}}.freeze
@@ -751,23 +521,12 @@ restated_pin_files = RESTATED_PIN_TREES.to_h do |tree|
   end]
 end
 
-# The sweep below is a per-line negative assertion, so it is the shape that
-# reports success loudest when it reads nothing at all -- and it is the only
-# guard against a pin restated outside services/. Two floors, because the two
-# ways it can go quiet fail differently. A tree that is renamed or emptied takes
-# its whole contribution with it, which the presence check names by tree; the
-# extension filter losing a common suffix thins every tree at once, which only a
-# count over the total can see. Neither catches RESTATED_PIN_TEXT dropping just
-# `.cfg` or `.txt`, and nothing cheap would: those extensions are a handful of
-# files and a floor sized to notice them would fail on ordinary churn.
+# Two floors for this negative sweep: per tree (rename/empty) and total (lost suffix).
 RESTATED_PIN_TREES.each do |tree|
   check_floor(failures, restated_pin_files.fetch(tree).length, 1,
               "the restated-pin sweep of #{tree}/ matched no file")
 end
-# 150 against today's 257 (roles 192, tests/contracts 56, inventory 7, config 2).
-# Sized so that losing any tree but roles/ still clears it -- those are removals
-# a reviewer would see -- while roles/ collapsing, or the filter no longer
-# recognising .yml or .j2, does not.
+# Sized so losing roles/ or .yml/.j2 recognition fails, smaller trees do not.
 check_floor(failures, restated_pin_files.values.sum(&:length), 150,
             "the restated-pin sweep read too few files across #{RESTATED_PIN_TREES.join(', ')}")
 
@@ -783,27 +542,15 @@ restated_pin_files.each_value do |paths|
   end
 end
 
-# #826: withholding the merge is the half that runs before a pin reaches the
-# host; roles/image_downgrade_guard is the half that runs on it, refusing a pin
-# older than one that has already migrated the store. Every image in
-# SELF_MIGRATING_APPLICATION_IMAGES therefore needs a guard call on the Compose
-# service that runs it, and #784 and #797 moved two of them with none. Derived
-# from the call sites rather than listed, and closed both ways: an image in the
-# set with no call is the gap #826 found, and a call guarding an image outside
-# the set is either a set that went stale or an exception nobody wrote down.
-#
-# Two call sites are outside the set on purpose, for different reasons, and
-# roles/image_downgrade_guard is the same control either way:
+# #826: every self-migrating image needs an image_downgrade_guard call on its Compose
+# service, derived from the call sites and closed both ways. Exceptions:
 DOWNGRADE_GUARD_EXCEPTIONS = {
-  # Left in #781 with its pin still one-way; the upgrade lane now proves its
-  # bumps before the merge, and the guard still refuses a rollback after it.
+  # One-way pin; the upgrade lane proves its bumps (#781).
   "ghcr.io/vavallee/bindery" => "bindery",
-  # Left in #547 because an older image still opens a newer store, but its call
-  # site carries a second reason: a CVE floor under the pin.
+  # Reversible (#547), but its call site also carries a CVE floor.
   "docker.io/vaultwarden/server" => "vaultwarden"
 }.freeze
-# The stated floor, so a walk that quietly matched nothing -- a renamed module,
-# a role that moved its tasks -- fails here instead of passing every loop.
+# Stated floor, so a walk that matched nothing fails.
 EXPECTED_DOWNGRADE_GUARD_CALLS = [
   %w[bindery bindery], %w[immich immich-server], %w[jellyfin jellyfin],
   %w[kapowarr kapowarr], %w[karakeep karakeep], %w[karakeep meilisearch],

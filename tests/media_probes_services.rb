@@ -1,11 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#
-# Per-service lifecycle probes and the check-mode and verify-tag contracts.
-#
-# Required by media_managed_users_test.rb, which owns the probe selection so the
-# MEDIA_MANAGED_USERS_PROBES contract keeps naming one group rather than a file set.
-# Fixtures and helpers come from media_managed_users_support.rb.
+
+# Per-service lifecycle probes and the check-mode and verify-tag contracts,
+# required by media_managed_users_test.rb.
 
 def exercise_audiobookshelf(failures)
   default_permissions = {
@@ -83,16 +80,9 @@ def exercise_audiobookshelf(failures)
   end
 end
 
-# The run where nothing needs creating and nothing needs repairing, which
-# exercise_audiobookshelf above never reaches: it drives a missing identity and a
-# drifted one, so every guard it exercises is exercised on its FAILING branch.
-# A fail_msg that dies when it is finalized dies on the PASSING one, and since
-# #647 routed this service's messages and conditions through roles/managed_users
-# a converged fixture is the only run that asks whether reconciliation can
-# report success at all. It is also what proves the repair decision is a
-# decision: exercise_audiobookshelf would still pass if every identity were
-# always repaired. The pinned-exact username is part of the fixture: the login
-# response echoes it exactly, which is the only thing this service accepts.
+# A converged fixture: a fail_msg that dies on finalization dies on the PASSING
+# branch, which only this run reaches; it also proves repair is a decision. The
+# login echoes the username exactly, the only form this service accepts.
 def exercise_audiobookshelf_converged(failures)
   permissions = {
     "download" => true, "update" => false, "delete" => false, "upload" => false,
@@ -163,11 +153,8 @@ def exercise_audiobookshelf_converged(failures)
       requests.all? { |request| request["method"] == "GET" && request["target"] == "/api/users" }
   end
 
-  # The refusal this service has always made and komga does not: a login that
-  # succeeds but echoes the declared username in another case is not proof the
-  # declared identity holds that password. roles/managed_users compares komga's
-  # emails normalised, so this is the row that fails if audiobookshelf ever
-  # inherits that comparison.
+  # A login that echoes the username in another case is not proof; this fails
+  # if audiobookshelf ever inherits komga's normalised comparison.
   recased = lambda do |request|
     request["target"] == "/login" ? [200, { "user" => { "username" => "Reader" } }] : responder.call(request)
   end
@@ -272,12 +259,8 @@ def exercise_jellyfin(failures)
   end
 end
 
-# A converged Jellyfin, driven through every phase its role passes -- preflight,
-# reconcile, verify -- and then the two shapes production reaches separately:
-# a --check review of reconcile, and verify alone, which is what verify.yml runs
-# hourly. Nothing may be created or repaired, preflight may send nothing but the
-# listing and one login per existing identity, and the review plans nothing.
-# Preflight is the phase only Jellyfin has, so this is its only behavioural probe.
+# A converged Jellyfin through preflight, reconcile and verify, plus a --check
+# review and verify alone; nothing may be created, repaired or planned.
 def exercise_jellyfin_converged(failures)
   policy = {
     "AuthenticationProviderId" => "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider",
@@ -388,14 +371,8 @@ def exercise_komga(failures)
   end
 end
 
-# The run where nothing needs creating and nothing needs repairing. exercise_komga
-# above drives a service that is missing one identity and has the wrong roles on
-# another, so every guard it exercises is exercised on its FAILING branch -- and
-# a fail_msg that dies when it is finalized dies on the PASSING one, after every
-# earlier assertion has held. A converged fixture is the only run that asks
-# whether this reconciliation can report success at all, and it is also what
-# proves the repair decision is a decision: exercise_komga would still pass if
-# every identity were always repaired.
+# A converged fixture: only it reaches the PASSING branch of every guard, and it
+# proves repair is a decision.
 def exercise_komga_converged(failures)
   users = [{ "id" => "komga-reader", "email" => "reader@example.invalid",
              "password" => "reader-secret", "roles" => %w[USER PAGE_STREAMING] },
@@ -437,13 +414,8 @@ def exercise_komga_converged(failures)
   end
 end
 
-# Both branches of the capability-register read, and both directions of each.
-# The review branch exists because deployment_bundle stages and activates
-# nothing under --check, so on the first converge that ships the register
-# platform_current_dir still names a release that predates it. A probe that
-# forgot to name a release at all would land in that branch and report green,
-# which is why the first row asserts the token is ABSENT when the register is
-# there.
+# Both branches of the capability-register read. The review branch (no register
+# under --check on the first converge) must not be where a probe lands by mistake.
 def exercise_komga_capability_register(failures)
   managed = [{ "email" => "reader@example.invalid", "password" => "reader-secret",
                "roles" => ["PAGE_STREAMING"] }]
@@ -502,18 +474,9 @@ def exercise_komga_capability_register(failures)
   end
 end
 
-# The verify phase's REFUSAL branch, which nothing else reaches: every other
-# probe drives the final verification on its passing branch, and after #647 the
-# three conditions travel through two indirections before `assert` sees them --
-# komga_managed_users_verify_conditions, the role's
-# managed_users_verify_conditions, and `that:` templating the list. A list of
-# non-empty strings is truthy, so plumbing that delivered them as VALUES rather
-# than as expressions would print exactly what a converged run prints. Only a
-# state the conditions must reject tells the two apart.
-#
-# The absent-identity row is also the short-circuit proof: the second and third
-# conditions read the single match, which does not exist for an identity with
-# none, so a `that:` list evaluated all at once would raise instead of refusing.
+# The verify phase's refusal branch: conditions passed through two indirections
+# could arrive as truthy strings, which only a rejected state exposes (#647).
+# The absent-identity row also proves the conditions short-circuit.
 def exercise_komga_verification(failures)
   managed = [{ "email" => "reader@example.invalid", "password" => "reader-secret",
                "roles" => ["PAGE_STREAMING"] }]
@@ -545,8 +508,7 @@ def exercise_komga_verification(failures)
         failures << "Komga #{label} verification #{expected ? 'failed' : 'succeeded'}: " \
                     "#{failure_tail(output)}"
       end
-      # The duplicate is refused earlier, by the ambiguity guard, so only the two
-      # rows the final verification itself owns assert its diagnostic.
+      # The duplicate is refused earlier by the ambiguity guard.
       failures << "Komga #{label} verification did not refuse with its own diagnostic" if
         ["drifted roles", "absent identity"].include?(label) &&
         !HttpFixtureSupport.refused_with?(output, drift)
@@ -556,20 +518,15 @@ def exercise_komga_verification(failures)
   end
 end
 
-# roles/managed_users takes six parameters meta/argument_specs.yml cannot
-# declare, because Ansible templates every declared option at role entry and
-# each of these is a template over a per-identity `item` or over the match the
-# role binds. The role asserts their PRESENCE instead, through q('varnames'),
-# which is a mechanism nothing else here uses -- so it is exercised rather than
-# trusted, by dropping one from a copy of the shim.
+# roles/managed_users asserts undeclarable parameters via q('varnames'); exercised
+# by dropping one from a copy of the shim.
 def exercise_komga_parameter_contract(failures)
   shim = YAML.safe_load_file(KOMGA_SHIM, aliases: false)
   %w[managed_users_create_body managed_users_repair_condition
      managed_users_list_json].each do |dropped|
     mutant = Marshal.load(Marshal.dump(shim))
     mutant.find { |task| task.key?("ansible.builtin.include_role") }.fetch("vars").delete(dropped)
-    # The shim's parameter and Komga's default for it are the same value by two
-    # names, so both have to go or the default still supplies it.
+    # The shim parameter and Komga's default are one value by two names.
     overrides = HARNESS_MANAGED_USER_DEFAULTS.reject do |name, _value|
       name == dropped.sub("managed_users_", "komga_managed_users_")
     end
@@ -593,12 +550,8 @@ def exercise_komga_parameter_contract(failures)
   end
 end
 
-# What a --check review REPORTS. The two plan literals were unpinned before
-# #647, which was neutral while they were `msg:` constants in Komga's own file;
-# they are now a parameter, and the decision behind the repair one is a fact the
-# role resolves from a caller-supplied template. A repair decision that silently
-# resolved false, or a plan message that arrived empty, would leave a review
-# printing nothing and changed=0 -- which reads exactly like a converged host.
+# What a --check review reports: a plan that resolved false or empty would read
+# exactly like a converged host (#647).
 def exercise_komga_review_plan(failures)
   managed = [{ "email" => "reader@example.invalid", "password" => "reader-secret",
                "roles" => ["PAGE_STREAMING"] },
@@ -623,8 +576,7 @@ def exercise_komga_review_plan(failures)
       requests.any? { |request| %w[POST PUT PATCH DELETE].include?(request["method"]) }
   end
 
-  # The other direction: a converged host must report neither plan, or the
-  # decision is not a decision.
+  # A converged host must report neither plan.
   converged = [{ "id" => "komga-reader", "email" => "reader@example.invalid",
                  "roles" => %w[USER PAGE_STREAMING] }]
   with_http_service(->(_request) { [200, converged] }) do |port, _requests|
@@ -705,11 +657,8 @@ def exercise_jellyfin_fresh_check_mode(failures)
       task["ansible.builtin.include_tasks"] =
         File.join(ROOT, "roles", "jellyfin", "tasks", "settings.yml")
     elsif include_value.is_a?(Hash) && include_value["file"] == "qsv_probe.yml"
-      # The QSV probe is fatal and verify-only (#535), so its `never` tag keeps
-      # it out of this untagged check-mode run and the rewrite below resolves
-      # nothing today. It stays anyway: it is what makes a dropped gate show up
-      # as the assertion further down naming the probe, instead of as an
-      # unresolvable include path that says nothing about why.
+      # The QSV probe is verify-only (#535); resolving it makes a dropped gate
+      # fail naming the probe rather than an unresolvable include.
       include_value["file"] = File.join(ROOT, "roles", "jellyfin", "tasks", "qsv_probe.yml")
     end
   end
@@ -734,10 +683,7 @@ def exercise_jellyfin_fresh_check_mode(failures)
         "vault_jellyfin_opensubtitles_password" => "subtitle-secret",
         "vault_managed_jellyfin_users" => [],
         "platform_kind" => "nas",
-        # Only the QSV probe reads the render device path, and it is withheld
-        # from this path. The variable stays defined so that a run which does
-        # reach the probe fails on the probe rather than on an undefined
-        # variable, which is a different message about a different defect.
+        # Kept defined so a run reaching the probe fails on the probe itself.
         "platform_render_device_path" => "/dev/dri/renderD128",
         "platform_current_dir" => ROOT,
         "platform_runtime_dir" => directory,
@@ -767,14 +713,8 @@ def exercise_jellyfin_fresh_check_mode(failures)
       expected_plans.each do |plan|
         failures << "Jellyfin fresh check mode omits #{plan}" unless output.include?(plan)
       end
-      # JELLYFIN_PLAN_QSV_PROBE used to be in that list, and the probe reported
-      # a plan here because it ran for real under --check. #535 made the probe
-      # fatal and moved it behind the verification tags, which is a stronger
-      # property than the marker was: the check-mode review the platform
-      # requires before applying cannot fail on a hardware fault, because it no
-      # longer reaches the hardware. A skipped-by-`when` task still prints its
-      # own banner, so naming the task inside the probe file is what separates
-      # "was not included" from "was included and did nothing".
+      # #535: check mode must never reach the fatal hardware probe; the task name
+      # inside the probe separates "not included" from "included and skipped".
       failures << "Jellyfin fresh check mode reached the fatal QSV hardware probe" if
         output.include?("Probe the Jellyfin QSV hardware device")
       failures << "Jellyfin fresh check mode performed a mutation" if requests.any? do |request|

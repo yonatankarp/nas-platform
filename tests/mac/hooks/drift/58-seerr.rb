@@ -1,21 +1,5 @@
 #!/usr/bin/env ruby
-# Turn Seerr's newPlexLogin on by hand, which is the drift the Mac lane's
-# reconcile repairs.
-#
-# usage: 58-seerr.rb   (no arguments; every input is an environment variable)
-#
-# tests/mac/hooks/drift/58-seerr.sh is the hook this belongs to. It requires
-# PLATFORM_SEERR_PORT, PLATFORM_MAC_VAULT_FILE and
-# PLATFORM_MAC_VAULT_PASSWORD_FILE, runs this program, then runs verify.yml
-# alone and insists it refuses the deployment with a fixed diagnostic. Only the
-# mutation lives here, and the hook's comment records why this toggle is the one
-# the whole permission design rests on.
-#
-# It ran from a `<<'RUBY'` heredoc in that hook until #315, opened as a bare
-# `ruby -` with no `-r` preloads, where nothing syntax-checked it, no linter
-# reached it and no reader could open it. The body below is byte-identical to
-# what that heredoc rendered, its own requires included, and the hook resolves
-# it from its own checkout rather than from any tree under inspection.
+# Turn Seerr's newPlexLogin on: the drift 58-seerr.sh verifies is refused (#315).
 require "json"
 require "net/http"
 require "open3"

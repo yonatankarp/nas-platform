@@ -344,13 +344,8 @@
   no_log: true
   tags: [platform_verify_arr]
 
-# The projections carry the Radarr and Sonarr API keys and the hash of the
-# administrator password, so this task stays redacted. `no_log` does not
-# suppress `fail_msg`, and the filter above emits setting paths with no values,
-# so the message names which of the roughly twenty owned settings moved instead
-# of reporting only that the two projections are unequal. The condition remains
-# the projection comparison itself: the difference list is what the operator
-# reads, not what decides the verdict.
+# Redacted: the projections carry API keys and a password hash. fail_msg survives
+# no_log and lists only the moved setting paths, never values.
 - name: Verify Bazarr authentication and identical-path connections
   ansible.builtin.assert:
     that:

@@ -1,20 +1,7 @@
 ---
-# Audiobookshelf, one stage per file, in the order they run. This file is the
-# index: what the role does, and nothing about how.
-#
-# The stage files are imported statically. verify.yml lists this role with
-# tags: [never], and a role-level tag reaches a statically imported task exactly
-# as it reaches an inline one, so each verification task still carries
-# [never, platform_verify_audiobookshelf] and --tags platform_verify_audiobookshelf
-# selects the same twelve tasks it selected when they lived here. A dynamic
-# include would be skipped under never before its file was ever read, which is
-# why roles/arr pairs include_tasks with apply: tags: -- and why this role does
-# not need to. Static imports are also expanded by --list-tasks, so the
-# transcript the operator reviews before touching the NAS is unchanged.
-#
-# managed_users.yml stays a dynamic include: it is a phase-gated file, called
-# twice with a different <service>_managed_users_phase, and vars: on a static
-# import would apply to the whole rest of the role.
+# Audiobookshelf, one stage per file, in run order. Stages are imported
+# statically so the role-level [never] tag and --list-tasks reach them;
+# managed_users.yml stays a dynamic include because it is phase-gated.
 - name: Deploy the Audiobookshelf stack
   ansible.builtin.import_tasks: deploy.yml
 

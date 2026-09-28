@@ -1,38 +1,10 @@
 #!/usr/bin/env ruby
-# The runtime half of the Immich service contract: what only a deployed Immich
-# can answer -- that the stack is healthy and contained, that the managed
-# settings and every managed user's preference profile are exactly what the
-# vault authored, that an asset survives upload, thumbnailing and CPU machine
-# learning, and that all of it persists across a container recreation.
-#
-# usage: immich-runtime.rb MODE [ARG...]
-#
-# MODE selects which of those it proves: run, seed, assert-persistence, drift,
-# drift-verify, clean-restore-seed, clean-restore-assert. Everything else is
-# read from the environment tests/contracts/immich.sh exports -- the four
-# container names, the three roots, the port, the platform, and
-# PLATFORM_CONTRACT_REPO_DIR, which this program reads as REPO_DIR. On failure it
-# writes one `Immich contract failed: ...` line to stderr and exits 1.
-#
-# Note which root REPO_DIR is: the tree under inspection, not the checkout this
-# file was loaded from. The wrapper resolves this program from its own checkout
-# and passes the inspected tree through the environment, and those two are not
-# interchangeable.
-#
-# The heredoc this replaced ran as `ruby - "$mode" "$@"` with no `-r` preloads at
-# all -- it requires what it needs on the lines below -- so the invocation that
-# replaced it carries none either.
-#
-# Until #147 these 850 lines were a `<<'RUBY'` heredoc inside
-# tests/contracts/immich.sh, which `sh -n` reads as opaque text and no test could
-# reach. The body below is byte-identical to what that heredoc rendered.
-#
-# Two things read this file's source rather than running it, and both slice it
-# with a regular expression, so a method's `def` must stay at column zero:
-# tests/immich_smart_search_retry_test.rb evals `request` and
-# `assert_cpu_machine_learning` out of it, and immich-static.rb requires the
-# supported-unowned-sentinel logic below to be live in it rather than commented
-# out.
+# Runtime half of the Immich contract: health, containment, managed settings,
+# upload/thumbnail/CPU ML, and persistence across recreation.
+# usage: immich-runtime.rb MODE [ARG...]; the environment comes from
+# tests/contracts/immich.sh, and REPO_DIR is the tree under inspection.
+# Keep each `def` at column zero: immich_smart_search_retry_test.rb and
+# immich-static.rb slice this source with regular expressions.
 require "json"
 require "digest"
 require "net/http"
@@ -75,11 +47,8 @@ MANAGED_SETTINGS = {
   ["storageTemplate", "template"] => "{{y}}/{{y}}-{{MM}}-{{dd}}/{{filename}}"
 }.freeze
 
-# Both fixtures are produced by the pinned server image's own ffmpeg with
-# bitexact flags, so regenerating them yields these exact bytes. They are
-# deliberately tiny: the contract proves that the pipeline ran, not that the
-# encoder is fast. unpack1 rather than the base64 library, which is not a
-# default gem on the Ruby 3.4 the integration lane runs.
+# Produced by the pinned image's ffmpeg with bitexact flags; unpack1 because base64
+# is not a default gem on Ruby 3.4.
 PHOTO_FIXTURE = (
   "/9j/4AAQSkZJRgABAgAAAQABAAD/2wBDAAgICAkICQsLCwsLCw0MDQ0NDQ0NDQ0NDQ0ODg4REREO" \
   "Dg4NDQ4OEBARERITEhERERETExQUFBgYFxccHB0iIin/xABNAAEBAAAAAAAAAAAAAAAAAAAABgEB" \
@@ -196,8 +165,7 @@ def multipart_body(fields, boundary)
   body.force_encoding(Encoding::BINARY)
 end
 
-# /api/server/ping answers before the container health check reports healthy, so
-# readiness here is the application answering for its own initialization state.
+# /api/server/ping answers before the container health check reports healthy.
 def wait_for_application
   deadline = Time.now + 300
   loop do
@@ -232,8 +200,7 @@ def inspect_container(name)
   JSON.parse(docker_capture("inspect", name)).fetch(0)
 end
 
-# The plan's containment requirement: only the application is reachable from the
-# host. A published database or cache port is a LAN-facing database.
+# Only the application may be reachable from the host.
 def assert_container_capabilities
   server = inspect_container(SERVER_CONTAINER)
   bindings = server.dig("HostConfig", "PortBindings") || {}
@@ -285,10 +252,7 @@ def deep_merge(left, right)
 end
 
 def managed_user_policy
-  # Immich's preference policy lives with the rest of that service's settings.
-  # The fixture deep-merged below happens to carry every key this needs, so
-  # reading main.yml here would still pass -- by luck rather than because the
-  # base is right, which is the kind of pass that stops being one silently.
+  # Read the service file, not main.yml: the fixture would make main.yml pass by luck.
   base = YAML.safe_load_file(
     REPO_DIR.join("inventory", "group_vars", "all", "service_immich.yml"), aliases: false
   )
@@ -491,8 +455,7 @@ def upload_fixture(token, fixture)
       { name: "fileModifiedAt", value: "2026-01-01T00:00:00.000Z" }
     ]
   )
-  # An identical re-upload answers 200 "duplicate" with the same identifier, so
-  # seeding is naturally re-runnable and both answers are correct here.
+  # An identical re-upload answers 200 "duplicate", so seeding is re-runnable.
   fail_contract("unexpected upload status #{payload['status'].inspect}") unless
     %w[created duplicate].include?(payload["status"])
   safe_id(payload.fetch("id"))
@@ -515,9 +478,7 @@ def wait_for_thumbnail(token, id, timeout:)
   end
 end
 
-# Smart search is the only assertion that proves the machine learning container
-# actually ran an inference: the query text is embedded by CLIP on the CPU and
-# matched against embeddings the same stack produced for the fixtures.
+# Smart search is the only proof the ML container ran an inference (CLIP on CPU).
 def assert_cpu_machine_learning(
   token, expected_ids,
   clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
@@ -709,8 +670,6 @@ managed_users = vault.fetch("vault_managed_immich_users")
 policy = managed_user_policy
 
 wait_for_application
-# A rejected login answers JSON here, unlike some other services in this
-# platform, so the parsed body is safe to ask for.
 request(
   "post", "/api/auth/login", expected: [401],
   body: { "email" => email, "password" => "contract-wrong-password" }
@@ -751,8 +710,7 @@ assert_user_onboarding(token)
 
 seed_managed_user_state(token, managed_users, policy) if MODE == "seed"
 
-# Creating a second administrator must be refused by the server itself, which is
-# what makes the role's create-once behavior safe to rerun.
+# The server itself must refuse a second administrator.
 request(
   "post", "/api/auth/admin-sign-up", expected: [400],
   body: { "email" => "contract-intruder@example.invalid",
@@ -802,9 +760,7 @@ if MODE == "clean-restore-seed"
   backup_root = MEDIA_ROOT.join("Immich-backups", "database")
   fail_contract("database backup root is unavailable or unsafe") unless
     backup_root.directory? && !backup_root.symlink?
-  # Immich keeps its own bookkeeping entries inside every folder it mounts, so
-  # the guard is that no database dump predates this run rather than that the
-  # directory is bare.
+  # Immich keeps bookkeeping entries in every folder, so check dump age, not emptiness.
   stale_backups = routine_backups(backup_root).map { |path| path.basename.to_s }
   fail_contract(
     "clean-restore backup root already holds #{stale_backups.join(', ')}"
@@ -910,8 +866,7 @@ end
 assert_originals_open(token, records)
 assert_cpu_machine_learning(token, records.map { |record| record.fetch("id") }) if MODE == "seed"
 
-# Generated derivatives must land on the redirected Docker-root volume rather
-# than beside the originals, which is the whole point of the nested bind layout.
+# Derivatives must land on the Docker-root volume, not beside the originals.
 thumbnail_root = DOCKER_ROOT.join("immich", "data", "thumbs")
 thumbnail_root = Pathname.new(ENV.fetch("PLATFORM_IMMICH_THUMBNAIL_ROOT", thumbnail_root.to_s)).expand_path
 fail_contract("the generated asset volume is unavailable or unsafe") unless

@@ -2,13 +2,8 @@
 services:
   karakeep:
     container_name: ${PLATFORM_PROJECT_NAME:?}-karakeep
-    # The host side comes from the rendered environment rather than a literal,
-    # so the Mac lane can run several copies side by side. tests/mac/run.sh
-    # allocates a free port for it from MAC_SERVICE_PORT_ORDER and exports it as
-    # PLATFORM_KARAKEEP_PORT, which inventory/group_vars/mac_hosts/main.yml reads
-    # back into karakeep_port. The bind address is carried over from the
-    # canonical file, because the bootstrap's loopback phase depends on it here
-    # too.
+    # Host port comes from the environment (tests/mac/run.sh allocates it) so the
+    # Mac lane can run several copies; the bind address stays as in compose.yml.
     ports: !override
       - "${KARAKEEP_PUBLISH_ADDRESS:?}:${KARAKEEP_HOST_PORT:?}:3000"
 

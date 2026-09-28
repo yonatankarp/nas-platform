@@ -1,8 +1,6 @@
 ---
-# include_tasks never applies meta/argument_specs.yml, and the tasks below are
-# gated on this phase, so an unrecognised value would silently skip them while
-# the run still reported success. verify.yml reaches its verification tasks
-# through exactly this mechanism.
+# include_tasks never applies argument_specs, so an unrecognised phase would
+# silently skip every gated task below.
 - name: Validate the Jellyfin settings phase
   ansible.builtin.assert:
     that:
@@ -12,12 +10,8 @@
       implement. The tasks in this file are gated on jellyfin_settings_phase,
       so an unrecognised phase silently skips them.
 
-# Jellyfin exposes transcoding policy as the named `encoding` configuration.
-# Read off 10.11.11 and still the route on 12.1: 12.0 removed the GLOBAL SUBTITLE
-# configuration -- subtitle settings are per-library now -- but left the encoding
-# document where it was, and this role never declared a subtitle key in it.
 # Reads are kept separate from mutations so every ambiguity is rejected before
-# any owned application setting changes.
+# any owned setting changes.
 - name: Read Jellyfin encoding configuration for preflight
   ansible.builtin.uri:
     url: "{{ jellyfin_api }}/System/Configuration/encoding"
@@ -31,11 +25,8 @@
   check_mode: false
   no_log: true
 
-# Deliberately not redacted. Unlooped, so the result dict carries only the source
-# text of the failing condition, and every condition reads the encoding document
-# Jellyfin returned, which holds no credential material. Hiding it would leave the
-# operator with a fail_msg that says the document is incomplete without saying which
-# of the 13 pinned encoding keys is missing or mistyped.
+# Not redacted: the encoding document holds no credentials, and hiding the
+# result would hide which of the 13 pinned keys failed.
 - name: Require complete Jellyfin encoding configuration
   ansible.builtin.assert:
     that:
@@ -99,11 +90,7 @@
   when: jellyfin_settings_phase == 'preflight'
   no_log: true
 
-# Normalization and the merge below live in filter_plugins/jellyfin_plugin_repositories.py.
-# The merge is a dictionary lookup with a fallback over a list, which Jinja can
-# only express as a nested loop, and the accumulators that expressed it here left
-# the POST ordering as an accident of task order. The module docstring records
-# the parity rules the loops had, including which of them are deliberate warts.
+# Normalization and the merge live in filter_plugins/jellyfin_plugin_repositories.py.
 - name: Resolve normalized Jellyfin plugin repositories
   ansible.builtin.set_fact:
     jellyfin_repository_inventory: >-
@@ -112,13 +99,8 @@
       {{ jellyfin_plugin_repositories | jellyfin_repositories_by_url }}
   when: jellyfin_settings_phase == 'preflight'
 
-# Deliberately not redacted. Unlooped, so the result dict adds only the source text of
-# the failing condition, and both conditions read plugin repository URLs: the live
-# inventory and jellyfin_plugin_repositories, a static literal in the role defaults. No
-# Open Subtitles credential is in reach here, unlike the plugin-configuration asserts
-# further down this file, which stay redacted. The fail_msg only ever says "duplicated",
-# but the second condition is not a duplicate at all: it catches the normalized-URL index
-# losing an entry, which is a bug in this role rather than something to resolve manually.
+# Not redacted: only plugin repository URLs in reach. The second condition is a
+# role bug (the normalized index lost an entry), not a real duplicate.
 - name: Refuse duplicate Jellyfin plugin repository URLs
   ansible.builtin.assert:
     that:
@@ -133,9 +115,7 @@
       trailing-slash normalization; resolve them manually before mutation.
   when: jellyfin_settings_phase == 'preflight'
 
-# Deliberately after the duplicate refusal, not folded into the task above it:
-# the merge is only meaningful once the URLs are known to be distinct, and
-# keeping the order means a duplicate still aborts with the message above.
+# After the duplicate refusal: the merge is meaningful only for distinct URLs.
 - name: Preserve and merge current Jellyfin plugin repositories
   ansible.builtin.set_fact:
     jellyfin_repositories_merged: >-
@@ -596,35 +576,9 @@
   changed_when: true
   no_log: true
 
-# Omitting the version is deliberate: Jellyfin selects the latest COMPATIBLE
-# version after the assembly and repository identities are fixed. Existing
-# versions are never supplied, updated, downgraded, or rewritten.
-#
-# That this role rewrites no plugin version is why the 12.1 bump needed no
-# operator step, and the sequence was measured rather than reasoned about --
-# 10.11.11 bootstrapped, both plugins installed through these very tasks and
-# restarted to Active, the store snapshotted, then 12.1 started on it:
-#
-#   t+6s   Intro Skipper 1.10.11.24 NotSupported; Open Subtitles 24.0.0.0 ACTIVE
-#   t+8s   Intro Skipper 12.0.4.0 appears, Restart
-#   t+10s  Open Subtitles 25.0.0.0 appears, Restart; 24.0.0.0 Superseded
-#   after one restart: 12.0.4.0 and 25.0.0.0 Active, the stale versions gone
-#
-# Two things in that are worth keeping. A stale plugin is NOT rejected on its
-# stated ABI -- PluginManager compares `_appVersion >= targetAbi`, and 12.1 >=
-# 10.11.8 is true -- so Open Subtitles 24.0.0.0 simply kept working, and only
-# Intro Skipper failed, at `assembly.GetTypes()`, which is what NotSupported
-# means. And Jellyfin repaired it itself: its own plugin update staged a
-# 12-compatible build from the repositories this role already declares. Upstream
-# advises removing non-built-in plugins before migrating; on this platform that
-# was unnecessary, and it is also the thing NOT to do, because removing them
-# races the five-minute poller -- an emptied plugin directory is refilled with
-# old-ABI builds on the next tick while the old pin is still deployed.
-#
-# The residual is the repositories being unreachable at that moment: the stale
-# build then stays NotSupported, no replacement is staged, and the preflight
-# refusal above stops the converge. That heals on a later tick rather than
-# needing a human, which is why it is recorded here and not as a procedure.
+# The version is omitted on purpose: Jellyfin picks the latest compatible build,
+# which is how plugins self-healed across the 12.x bump. Do not remove plugins
+# before migrating: the five-minute poller would reinstall old-ABI builds.
 
 - name: Install absent Jellyfin plugins without a version pin
   ansible.builtin.uri:
@@ -687,10 +641,8 @@
     - jellyfin_settings_phase == 'activate'
     - not ansible_check_mode
 
-# Activations are deliberately accumulated before this single barrier. A plugin
-# in Restart state cannot serve its credential endpoint until after restart, so
-# Open Subtitles validation follows this barrier immediately and all unrelated
-# encoding/configuration writes remain in the later reconcile phase.
+# Activations accumulate before this single barrier; a plugin in Restart state
+# cannot serve its credential endpoint until after it.
 - name: Restart Jellyfin once for pending plugins
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/jellyfin"

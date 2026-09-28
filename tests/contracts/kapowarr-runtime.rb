@@ -1,6 +1,5 @@
 #!/usr/bin/env ruby
-# The runtime half of the Kapowarr service contract: what can only be decided
-# against a deployed Kapowarr, its SQLite database and the encrypted vault.
+# Runtime half of the Kapowarr service contract, against a deployed Kapowarr.
 #
 # usage: kapowarr-runtime.rb
 #
@@ -13,14 +12,9 @@ require "yaml"
 READY_TIMEOUT_SECONDS = 120
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_KAPOWARR_PORT'), 10)}")
 CONTAINER = ENV.fetch("PLATFORM_KAPOWARR_CONTAINER")
-# Kapowarr's whole state is one SQLite database beneath the declared config
-# root. It is what has to survive a container recreation, and its absence is
-# what a wrongly owned or wrongly mounted config bind looks like.
+# Its absence is what a wrongly owned or mounted config bind looks like.
 DATABASE = File.join(ENV.fetch("PLATFORM_DOCKER_ROOT"), "kapowarr", "config", "Kapowarr.db")
-# The container path the comics library is reached at, which is the offset of the
-# one bind mount of the Books share rather than a mount of its own: the library
-# and the staging directory that feeds it have to share a mount or every import
-# is a cross-device copy.
+# An offset of the one Books bind mount, shared with staging to keep imports renames.
 LIBRARY_ROOT = "/data/books/Comics"
 
 def fail_contract(message)
@@ -61,8 +55,7 @@ begin
 rescue JSON::ParserError
   fail_contract("Kapowarr public endpoint did not answer JSON")
 end
-# 2 is the username-and-password mode. 1 accepts any username against the
-# password, and 0 is no login at all, so anything below 2 is an open writer.
+# Mode 2 is username and password; below 2 is an open writer.
 fail_contract("Kapowarr does not enforce the username and password pair") unless
   document.dig("result", "authentication_method") == 2
 
@@ -84,10 +77,6 @@ vault_error.replace("\0" * vault_error.bytesize)
 username = vault.fetch("vault_kapowarr_admin_username")
 password = vault.fetch("vault_kapowarr_admin_password")
 
-# A successful login is what hands out the API key that authorizes every route
-# that renames or deletes comics, so all three outcomes are asserted: refused
-# with no credential, refused with the wrong one, accepted with exactly the
-# vault's.
 fail_contract("Kapowarr logged in a caller with no credential") unless
   post("/api/auth", {}).code == "401"
 fail_contract("Kapowarr logged in a caller with a wrong password") unless
@@ -109,10 +98,7 @@ fail_contract("Kapowarr does not own exactly the declared comics library root") 
 fail_contract("Kapowarr did not persist its database in the declared config root") unless
   File.file?(DATABASE) && File.size?(DATABASE)
 
-# The static half proves the role declares these settings and gates the write on
-# a difference. This half proves the deployed application actually holds them,
-# which is the only place the merge, the value types and the application's own
-# validation are exercised against a real Kapowarr.
+# The only place the application's own validation meets the declared settings.
 settings = get("/api/settings?api_key=#{api_key}")
 fail_contract("Kapowarr refused to report its settings") unless settings.code == "200"
 deployed_settings = JSON.parse(settings.body).fetch("result")
@@ -128,9 +114,7 @@ unless mismatched.empty?
   )
 end
 
-# Since v1.3.2 the service order lives on the GetComics indexer rather than in
-# the settings (#671). Exactly one such indexer is what the application creates
-# and what the role reconciles, so none or two is refused here as it is there.
+# The service order is on the single GetComics indexer since v1.3.2 (#671).
 indexers = get("/api/indexers?api_key=#{api_key}")
 fail_contract("Kapowarr refused to list its indexers") unless indexers.code == "200"
 getcomics = Array(JSON.parse(indexers.body).fetch("result")).select do |entry|
@@ -138,11 +122,7 @@ getcomics = Array(JSON.parse(indexers.body).fetch("result")).select do |entry|
 end
 fail_contract("Kapowarr does not hold exactly one GetComics indexer") unless getcomics.length == 1
 
-# The declared order is a partial one: the services it names must appear in that
-# relative order, and a service the deployed version knows and the declaration
-# does not is free to sit anywhere. Filtering both lists by the other is what
-# makes this a statement about order rather than about membership. An empty
-# deployed order satisfies that vacuously, so it is refused first.
+# A partial order: compare only services both lists name. Empty is refused first.
 declared_order = Array(role_defaults.fetch("kapowarr_service_preference"))
 deployed_order = Array(getcomics.first["gc_service_preference"])
 fail_contract("Kapowarr does not hold the declared download service order") unless

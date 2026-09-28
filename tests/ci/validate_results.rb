@@ -1,28 +1,16 @@
 #!/usr/bin/env ruby
 
 module ValidateResults
-  # Every value GitHub can report in `needs.<job>.result`. Anything else is a
-  # typo or a schema change, never a verdict, so it is refused for every job --
-  # including the non-blocking ones, whose tolerance would otherwise swallow it
-  # and turn the aggregate check into a rubber stamp.
+  # Every value `needs.<job>.result` can hold; anything else is refused for every
+  # job, non-blocking ones included, or their tolerance would swallow a typo.
   KNOWN_RESULTS = %w[success skipped failure cancelled].freeze
 
   # What a blocking job may report without failing the gate.
   ALLOWED_RESULTS = %w[success skipped].freeze
 
-  # Jobs whose result is reported rather than enforced, because the workflow
-  # declares them non-blocking and means it.
-  #
-  # `toolchain` publishes the controller image to ghcr.io as an optimization:
-  # tests/integration.sh builds the image locally when it cannot pull one and
-  # installs the toolchain inside the run when it cannot build one, which is
-  # exactly what every suite leg did before the job existed. The suites matrix
-  # therefore depends on it *without* the implicit success gate `needs` carries,
-  # so a failed publish costs time rather than coverage. Failing the gate on it
-  # here made the optimization a precondition after all -- a registry hiccup
-  # reddened a run whose coverage was complete -- which is the contradiction
-  # issue #360 filed. tests/ci/workflow_test.rb derives this list back out of the
-  # suites condition, so the two cannot drift apart again.
+  # Reported, not enforced: `toolchain` only publishes an image the suites can
+  # build themselves, so a failed publish costs time, not coverage (#360).
+  # tests/ci/workflow_test.rb derives this list from the suites condition.
   NON_BLOCKING_JOBS = %w[toolchain].freeze
 
   JOB_NAME = /\A[A-Za-z0-9_][A-Za-z0-9_-]*\z/
@@ -46,10 +34,7 @@ module ValidateResults
           abort "unexpected result for #{job}: #{result.inspect}"
         end
 
-        # Reported, not enforced. The job is red in the run's own check list
-        # already; this is what keeps a permanently broken publish visible in the
-        # one place that reads every result, instead of only in the leg nobody
-        # opens once it stops blocking anything.
+        # Keeps a permanently broken publish visible in the one place that reads every result.
         warn "non-blocking: #{job} reported #{result.inspect}"
       end
 
