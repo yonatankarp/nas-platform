@@ -1237,6 +1237,21 @@ VAULT_STUB = <<~STUB
   cat "$DOZZLE_STUB_VAULT"
 STUB
 
+# `docker ps` names one Dozzle container and `docker logs` prints the line the
+# contract reads as proof the platform's agent TLS pair was loaded, unless a row
+# asks for the image's silent fallback instead.
+RUNTIME_DOCKER_STUB = <<~STUB
+  #!/bin/sh
+  case $1 in
+    ps) printf 'dozzle\n' ;;
+    logs)
+      [ "${DOZZLE_STUB_TLS_LOG:-loaded}" = loaded ] &&
+        printf '{"message":"Loaded custom dozzle certificate and key"}\n'
+      printf '{"message":"Accepting connections on :8080"}\n' ;;
+    *) exit 1 ;;
+  esac
+STUB
+
 def with_runtime_stub(state, relay_port: 8081, recorder: false)
   merged = { dispatchers: [desired_dispatcher(relay_port)], rules: desired_rules }.merge(state)
   # Only the beszel-notify rows open the recorder, and they get a real free port.
@@ -1260,6 +1275,8 @@ def with_runtime_stub(state, relay_port: 8081, recorder: false)
     FileUtils.mkdir_p(bin)
     File.write(File.join(bin, "ansible-vault"), VAULT_STUB)
     File.chmod(0o755, File.join(bin, "ansible-vault"))
+    File.write(File.join(bin, "docker"), RUNTIME_DOCKER_STUB)
+    File.chmod(0o755, File.join(bin, "docker"))
     # Everything above is setup the runtime subprocess must not race; from here
     # the port belongs to whatever the block spawns.
     recorder_reservation&.release_to_binder
@@ -1288,6 +1305,9 @@ end
 RUNTIME_ROWS = [
   { name: "a converged deployment", mode: "verify", state: {}, expects: nil,
     prints: "Dozzle contract passed" },
+  { name: "a Dozzle that fell back to the image's public agent pair", mode: "verify",
+    state: {}, environment: { "DOZZLE_STUB_TLS_LOG" => "absent" },
+    expects: "Dozzle did not load the platform's agent TLS pair" },
   {
     # The dispatcher URL is built from the role default's declared port, not from
     # a number repeated in the contract. A deployment on a different port must

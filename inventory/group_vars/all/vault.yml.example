@@ -31,6 +31,17 @@ vault_dozzle_admin_password_hash: $2b$12$000000000000000000000000000000000000000
 # secret is published in this repository, and nothing downstream would fail to
 # say so. Replace it.
 vault_dozzle_alert_relay_token: "0000000000000000000000000000000000000000000000000000000000000000"
+# The mTLS pair Dozzle and golem's Dozzle agent authenticate each other with,
+# generated as one pair (docs/secrets.md) and copied into golem-platform's vault
+# under the same names. PEM; the key is PKCS#8.
+vault_dozzle_agent_certificate: |
+  -----BEGIN CERTIFICATE-----
+  example-only-not-a-real-certificate
+  -----END CERTIFICATE-----
+vault_dozzle_agent_private_key: |
+  -----BEGIN PRIVATE KEY-----
+  example-only-not-a-real-private-key
+  -----END PRIVATE KEY-----
 
 # -> inventory/group_vars/all/vault_immich.yml
 vault_immich_admin_email: admin@example.invalid

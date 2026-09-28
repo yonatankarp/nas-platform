@@ -8,4 +8,6 @@ vault_keys:
   - vault_dozzle_admin_password
   - vault_dozzle_admin_password_hash
   - vault_dozzle_admin_username
+  - vault_dozzle_agent_certificate
+  - vault_dozzle_agent_private_key
   - vault_dozzle_alert_relay_token

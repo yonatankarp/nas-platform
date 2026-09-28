@@ -9,6 +9,8 @@
     deployment_target_extra_paths:
       - "{{ platform_current_dir }}/services/dozzle/alert_relay.py"
       - "{{ nas_docker_root }}/dozzle/data/users.yml"
+      - "{{ nas_docker_root }}/dozzle/data/agent-cert.pem"
+      - "{{ nas_docker_root }}/dozzle/data/agent-key.pem"
 
 - name: Select the Dozzle mounted state root
   ansible.builtin.set_fact:
@@ -195,6 +197,25 @@
   register: dozzle_users_file
   no_log: true
 
+# The pair golem's agent authenticates the hub with, and the hub presents when
+# it dials. Owned like the administrator file for the same reason; no_log
+# because a diff would echo the key.
+- name: Render the Dozzle agent TLS pair
+  ansible.builtin.copy:
+    content: "{{ item.content }}"
+    dest: "{{ dozzle_state_root }}/{{ item.name }}"
+    owner: "{{ nas_uid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
+    group: "{{ nas_gid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
+    mode: "0600"
+    unsafe_writes: false
+  loop:
+    - {name: agent-cert.pem, content: "{{ vault_dozzle_agent_certificate }}"}
+    - {name: agent-key.pem, content: "{{ vault_dozzle_agent_private_key }}"}
+  loop_control:
+    label: "{{ item.name }}"
+  register: dozzle_agent_tls_files
+  no_log: true
+
 - name: Render the Dozzle environment
   ansible.builtin.template:
     src: env.j2
@@ -295,8 +316,9 @@
 
 # Not a handler: handlers run at the end of the play, but the health check and
 # API reconciliation immediately below require the restarted container. Deferring
-# the restart would run them against the old process.
-- name: Restart Dozzle after changing its administrator file # noqa: no-handler
+# the restart would run them against the old process. Dozzle reads the agent
+# TLS pair only at start, so a rotated pair needs the same restart.
+- name: Restart Dozzle after changing its administrator file or agent TLS pair # noqa: no-handler
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/dozzle"
     project_name: "{{ dozzle_compose_project_name }}"
@@ -306,7 +328,7 @@
     state: restarted
     wait: true
     wait_timeout: "{{ platform_compose_wait_timeout }}"
-  when: dozzle_users_file.changed
+  when: dozzle_users_file.changed or dozzle_agent_tls_files.changed
 
 - name: Verify Dozzle effective container CPU policy
   ansible.builtin.include_role:

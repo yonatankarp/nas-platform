@@ -196,7 +196,9 @@ def _valid_value(key, rules):
         if kind == EXACT:
             return argument
         if kind == CONTAINS:
-            return HUB_KEY
+            # Built from the rule's own marker, so a PEM rule and the OpenSSH
+            # rule each get a value their own marker accepts.
+            return f"-----{argument}-----\nAAAA\n"
     return "operator-supplied-value"
 
 

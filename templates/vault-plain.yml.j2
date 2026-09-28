@@ -12,6 +12,10 @@ vault_dozzle_admin_password_hash: "{{ dozzle_admin_password_hash }}"
 {# Minted on its own and shared with nothing else: Dozzle stores this one at
    rest in its own /data volume and serves it back over its API (#172). #}
 vault_dozzle_alert_relay_token: {{ dozzle_alert_relay_token | to_json }}
+vault_dozzle_agent_certificate: |
+{{ dozzle_agent_certificate | indent(2, true) }}
+vault_dozzle_agent_private_key: |
+{{ dozzle_agent_private_key | indent(2, true) }}
 
 vault_immich_admin_email: {{ immich_admin_email }}
 vault_immich_admin_password: {{ immich_admin_password }}

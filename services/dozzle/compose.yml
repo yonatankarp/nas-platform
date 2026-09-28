@@ -89,6 +89,14 @@ services:
       DOZZLE_ENABLE_SHELL: "false"
       DOZZLE_NO_ANALYTICS: "true"
       DOZZLE_REMOTE_HOST: tcp://socket-proxy:2375
+      # golem's agent, dialled over the tailnet (dozzle_remote_agent). Dozzle
+      # falls back to the image's public pair when a DOZZLE_CERT path does not
+      # exist, silently, so these name exactly where roles/dozzle writes the
+      # platform's own pair inside the /data mount, and the runtime contract
+      # reads the log line proving it was loaded.
+      DOZZLE_REMOTE_AGENT: ${DOZZLE_REMOTE_AGENT:?}
+      DOZZLE_CERT: /data/agent-cert.pem
+      DOZZLE_KEY: /data/agent-key.pem
       TZ: ${TZ:?}
     # Dozzle is the proxy's only consumer, so the proxy cannot be isolated from
     # it; the internal docker-api network keeps everything else, the relay
