@@ -24,7 +24,7 @@ abort "Beszel Ansible telemetry test requires ansible-core #{REQUIRED_ANSIBLE_CO
   version_status.success? &&
   version_output.start_with?("ansible-playbook [core #{REQUIRED_ANSIBLE_CORE}]")
 
-def run_play(tasks, vars, vars_files: [], check: false)
+def run_play(tasks, vars, vars_files: [], check: false, tags: nil)
   play = [{
     "hosts" => "localhost",
     "gather_facts" => false,
@@ -37,7 +37,7 @@ def run_play(tasks, vars, vars_files: [], check: false)
     File.write(path, YAML.dump(play), mode: "w", perm: 0o600)
     Open3.capture3(
       { "ANSIBLE_NOCOLOR" => "1" }, "ansible-playbook", "-i", "localhost,",
-      "-c", "local", *(check ? ["--check"] : []), path
+      "-c", "local", *(check ? ["--check"] : []), *(tags ? ["--tags", tags] : []), path
     )
   end
 end
@@ -265,6 +265,97 @@ if remote_tasks.all? && remote_include
   end
 else
   failures << "Beszel remote-system tasks are absent"
+end
+
+# Alert reconciliation through configure.yml's own two includes and the real
+# alert.yml, against a fake hub that serves, creates and patches alert records.
+# verify.yml runs only platform_verify_beszel tasks, so create and patch never
+# run there: a remote system that registered after site.yml has no alerts yet
+# when verify reads them (#911). That absence is pending the next converge,
+# never a failure; a duplicate or a wrong value still is, and the NAS system's
+# own alerts are never pending, because site.yml created them before verify ran.
+def with_fake_alert_hub(alerts)
+  server = TCPServer.new("127.0.0.1", 0)
+  requests = []
+  thread = Thread.new do
+    loop do
+      client = server.accept
+      request_line = client.gets.to_s
+      length = 0
+      loop do
+        header = client.gets
+        break if header.nil? || header == "\r\n"
+
+        length = header.split(":", 2).last.to_i if header.downcase.start_with?("content-length:")
+      end
+      body = length.positive? ? JSON.parse(client.read(length)) : {}
+      method, path = request_line.split
+      requests << method
+      reply = case method
+              when "POST" then (alerts << body.merge("id" => "alert-#{alerts.length}")).last
+              when "PATCH" then alerts.find { |a| path.end_with?("/#{a['id']}") }.merge!(body)
+              else { "items" => alerts, "totalPages" => 1 }
+              end
+      payload = JSON.generate(reply)
+      client.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n")
+      client.write("Content-Length: #{payload.bytesize}\r\nConnection: close\r\n\r\n#{payload}")
+      client.close
+    end
+  rescue IOError, Errno::EBADF
+    nil
+  end
+  yield server.local_address.ip_port, requests
+ensure
+  server&.close
+  thread&.join(5)
+end
+
+alert_includes = ["Reconcile each managed alert", "Reconcile each remote managed alert"].map do |name|
+  include_task = tasks.find { |task| task["name"] == name }
+  include_task&.merge("ansible.builtin.include_tasks" => File.join(ROOT, "roles/beszel/tasks/alert.yml"))
+end
+if alert_includes.all?
+  nas_include, remote_include_task = alert_includes
+  status_alert = { "name" => "Status", "value" => 1, "min" => 2 }
+  record = ->(id, system, value = 1) { { "id" => id, "system" => system, "name" => "Status", "value" => value, "min" => 2 } }
+  verify = "platform_verify_beszel"
+  # [label, system, run tags, alerts on the hub, success, output line, POSTs]
+  [
+    ["remote absent under verify", :remote, verify, [], true, "pending the next converge", 0],
+    ["remote absent under a converge", :remote, nil, [], true, nil, 1],
+    ["remote present under verify", :remote, verify, [record.call("a1", "sys-golem")], true, nil, 0],
+    ["remote duplicate under verify", :remote, verify,
+     [record.call("a1", "sys-golem"), record.call("a2", "sys-golem")], false, "a1,a2", 0],
+    ["remote mismatch under verify", :remote, verify, [record.call("a1", "sys-golem", 9)], false,
+     "differs from threshold", 0],
+    ["NAS absent under verify", :nas, verify, [], false, "is absent, duplicated, or differs", 0],
+    ["NAS absent under a converge", :nas, nil, [], true, nil, 1]
+  ].each do |label, system, tags, alerts, expected_success, expected_line, expected_posts|
+    with_fake_alert_hub(alerts) do |port, requests|
+      vars = {
+        "beszel_port" => port, "beszel_auth" => { "json" => { "token" => "token-safe" } },
+        "beszel_user_id" => "user-safe", "beszel_system_name" => "nas", "beszel_alerts" => [status_alert],
+        "beszel_systems" => { "json" => { "items" => [{ "id" => "sys-nas", "name" => "nas", "users" => ["user-safe"] }] } },
+        "beszel_remote_systems" => [{ "name" => "golem", "alerts" => [status_alert] }],
+        "beszel_remote_systems_read" => {
+          "json" => { "items" => [{ "id" => "sys-golem", "name" => "golem", "users" => ["user-safe"] }], "totalPages" => 1 }
+        }
+      }
+      stdout, stderr, status = run_play([system == :nas ? nas_include : remote_include_task], vars,
+                                        vars_files: [ROLE_VARS], tags: tags)
+      output = stdout + stderr
+      failures << "alerts #{label}: #{expected_success ? 'failed' : 'was accepted'}: " \
+                  "#{output.lines.grep(/fatal:|ERROR!/).last(3).join}" unless status.success? == expected_success
+      failures << "alerts #{label}: output lacks #{expected_line}" if expected_line && !output.include?(expected_line)
+      failures << "alerts #{label}: reported a pending alert it should not have" if
+        expected_line != "pending the next converge" && output.include?("pending the next converge")
+      failures << "alerts #{label}: #{requests.count('POST')} creations, wanted #{expected_posts}" unless
+        requests.count("POST") == expected_posts
+      failures << "alerts #{label}: patched an alert under verify" if tags && requests.include?("PATCH")
+    end
+  end
+else
+  failures << "Beszel alert include tasks are absent"
 end
 
 created = (Time.now.utc - 30).strftime("%Y-%m-%d %H:%M:%S.%LZ")

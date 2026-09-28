@@ -1,7 +1,17 @@
 ---
-# One alert on one system. The caller binds beszel_alert, beszel_alert_system_id
-# and beszel_alert_system_name as include vars; they are per-item, so they are
-# deliberately absent from meta/argument_specs.yml.
+# One alert on one system. The caller binds beszel_alert, beszel_alert_system_id,
+# beszel_alert_system_name and beszel_alert_absent_is_pending as include vars;
+# they are per-include, so they are deliberately absent from
+# meta/argument_specs.yml, and the last has no default so an includer that
+# forgets it fails rather than silently choosing.
+#
+# beszel_alert_absent_is_pending is true only for a remote system under
+# verify.yml (#911). Verify runs only platform_verify_beszel tasks, so the create
+# and patch below never run there, and a remote agent that registered between
+# the poller's site.yml and its verify.yml has no alerts yet: that absence is
+# pending the next converge, not a failure. A duplicate or a wrong value still
+# fails. The NAS system's own alerts pass false in every mode, because site.yml
+# created them before verify could read them.
 - name: Query managed-identity alerts for {{ beszel_alert.name }}
   tags: [platform_verify_beszel]
   ansible.builtin.uri:
@@ -112,6 +122,17 @@
     beszel_current_alerts: >-
       {{ beszel_refreshed_alerts.json.get('items', []) }}
 
+- name: Report a remote alert pending the next converge for {{ beszel_alert.name }}
+  tags: [platform_verify_beszel]
+  ansible.builtin.debug:
+    msg: >-
+      Managed {{ beszel_alert.name }} alert on system {{ beszel_alert_system_name }}
+      is absent; its system registered after the last converge, so it is
+      pending the next converge rather than a failure.
+  when:
+    - beszel_alert_absent_is_pending | bool
+    - beszel_current_alerts | length == 0
+
 - name: Verify exact alert configuration for {{ beszel_alert.name }}
   tags: [platform_verify_beszel]
   ansible.builtin.assert:
@@ -122,4 +143,6 @@
     fail_msg: >-
       Managed {{ beszel_alert.name }} alert on system {{ beszel_alert_system_name }}
       is absent, duplicated, or differs from threshold and duration configuration.
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - not (beszel_alert_absent_is_pending | bool and beszel_current_alerts | length == 0)
