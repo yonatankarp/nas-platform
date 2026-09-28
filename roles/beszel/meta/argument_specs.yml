@@ -98,6 +98,29 @@ argument_specs:
           min:
             type: int
             required: true
+      beszel_remote_systems:
+        type: list
+        elements: dict
+        required: false
+        description: Systems another repository's agent registers; absent ones are reported, not refused.
+        options:
+          name:
+            type: str
+            required: true
+          alerts:
+            type: list
+            elements: dict
+            required: true
+            options:
+              name:
+                type: str
+                required: true
+              value:
+                type: int
+                required: true
+              min:
+                type: int
+                required: true
       beszel_notification_url:
         type: str
         required: false

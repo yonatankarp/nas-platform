@@ -314,6 +314,12 @@ cannot split those: it sends a problem and its recovery through one URL at one
 priority. The cost is that host alerts need the relay running, and they share
 its daily ceiling with container alerts.
 
+The hub also alerts on systems whose agents are deployed from other
+repositories, listed in `beszel_remote_systems` in
+`roles/beszel/defaults/main.yml` (today `golem`), through the same relay. A
+listed system that has not registered yet is reported by the converge and does
+not fail it; its alerts are created on the first converge after it registers.
+
 What should get you out of your chair reaches Pushover's Alerts application at
 priority 1, which rings through quiet hours: a failed deployment, a revision CI
 refuses to release, a deployment poller that has gone blind, a failed

@@ -45,6 +45,25 @@ beszel_wrong_owner_systems: >-
      | selectattr('name', 'equalto', beszel_system_name)
      | rejectattr('users', 'contains', beszel_user_id | default('')) | list }}
 
+# beszel_remote_systems, read in one request. The read is skipped when the list
+# is empty (an empty filter is not a filter), so every reader defaults its json.
+beszel_remote_system_names: "{{ beszel_remote_systems | map(attribute='name') | list }}"
+beszel_remote_system_filter: >-
+  {{ beszel_remote_system_names | map('to_json') | map('regex_replace', '^', 'name = ')
+     | join(' || ') }}
+beszel_remote_system_records: >-
+  {{ (beszel_remote_systems_read.json | default({}, true)).get('items', [])
+     | selectattr('name', 'in', beszel_remote_system_names) | list }}
+beszel_remote_owned_systems: >-
+  {{ beszel_remote_system_records
+     | selectattr('users', 'contains', beszel_user_id | default('')) | list }}
+beszel_remote_wrong_owner_systems: >-
+  {{ beszel_remote_system_records
+     | rejectattr('users', 'contains', beszel_user_id | default('')) | list }}
+beszel_remote_absent_names: >-
+  {{ beszel_remote_system_names
+     | reject('in', beszel_remote_owned_systems | map(attribute='name') | list) | list }}
+
 beszel_agent_enabled: >-
   {{ (platform_beszel_agent_available | bool) and
      (platform_beszel_agent_kind == 'portable' or preflight_gpu_available | bool) }}
