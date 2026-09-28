@@ -37,11 +37,11 @@ VERIFY_TASKS = [
 def role_tasks(names)
   tasks = YAML.safe_load_file(ROLE_TASKS, aliases: true)
   names.map do |name|
-    tasks.find { |task| task["name"] == name } or fail_test("#{ROLE_TASKS} has no task named #{name}")
+    tasks.find { |task| task["name"] == name } or abort("#{ROLE_TASKS} has no task named #{name}")
   end
 end
 
-# The v3.2.2 server default (server/src/dtos/config.dto.ts), plus an unmanaged
+# The pinned server's default (server/src/dtos/config.dto.ts), plus an unmanaged
 # secret the whole-document PUT must carry back untouched.
 def server_default
   {
