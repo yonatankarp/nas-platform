@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 import http.client
 import importlib.util
@@ -211,6 +211,11 @@ class DozzleAlertRelayTest(unittest.TestCase):
         clock = mock.patch.object(self.relay_module, "utc_now", return_value=FIXED_NOW)
         clock.start()
         self.addCleanup(clock.stop)
+        # Most cases post one envelope repeatedly to reach a ceiling, which the
+        # duplicate window would drop; every server this case creates gets none.
+        # The duplicate cases put the deployed window back.
+        self.deployed_duplicate_window = self.relay_module.DUPLICATE_WINDOW
+        self.relay_module.DUPLICATE_WINDOW = timedelta(0)
         self.config = self.relay_module.Config.from_mapping(self.environment())
         self.relay = self.relay_module.create_server(("127.0.0.1", 0), self.config)
         self.relay_thread = threading.Thread(target=self.relay.serve_forever, daemon=True)
@@ -2710,14 +2715,14 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(container["user"], PUSHOVER_USER_KEY)
         self.assertEqual(host["user"], PUSHOVER_USER_KEY)
 
-    # Beszel 0.20.0 titles about golem, one per shape the relay routes on.
+    # Beszel 0.20.0 titles about Golem, one per shape the relay routes on.
     GOLEM_SUBJECTS = (
-        ("Connection to golem is down \U0001f534", "Connection to golem is down "),
-        ("golem CPU above threshold", "CPU averaged 93.20% for the previous 10 minutes."),
-        ("golem memory below threshold", "Memory averaged 40.00% for the previous 10 minutes."),
-        ("golem disk usage above threshold",
+        ("Connection to Golem is down \U0001f534", "Connection to Golem is down "),
+        ("Golem CPU above threshold", "CPU averaged 93.20% for the previous 10 minutes."),
+        ("Golem memory below threshold", "Memory averaged 40.00% for the previous 10 minutes."),
+        ("Golem disk usage above threshold",
          "Usage of / averaged 85.12% for the previous 10 minutes."),
-        ("Failed services on golem \U0001f534", "1 failed service on golem: cron.service"),
+        ("Failed services on Golem \U0001f534", "1 failed service on Golem: cron.service"),
     )
 
     def test_golem_alerts_publish_on_the_golem_application(self):
@@ -2726,17 +2731,26 @@ class DozzleAlertRelayTest(unittest.TestCase):
             with self.subTest(title=title):
                 self.assertEqual(self.post_beszel(self.beszel(title, body, link))[0], 204)
                 form = self.pushover.requests[-1]["form"]
-                self.assertEqual(form["token"], GOLEM_TOKEN, "golem must publish on the Golem application")
+                self.assertEqual(form["token"], GOLEM_TOKEN, "Golem must publish on the Golem application")
                 self.assertEqual(form["user"], PUSHOVER_USER_KEY)
                 self.assertEqual(form["url"], link)
-                self.assertIn("golem", form["title"])
+                self.assertIn("Golem", form["title"])
                 self.assertNotIn("Reason", form["message"])
-        self.assertIn("\U0001f5a5\ufe0f <b>Host</b> golem", self.pushover.requests[0]["form"]["message"])
+        self.assertIn("\U0001f5a5\ufe0f <b>Host</b> Golem", self.pushover.requests[0]["form"]["message"])
+
+    def test_the_former_golem_system_name_still_publishes_on_the_golem_application(self):
+        # Until roles/beszel renames the hub record, Beszel titles carry the old name.
+        for title, body in self.GOLEM_SUBJECTS:
+            title, body = title.replace("Golem", "golem"), body.replace("Golem", "golem")
+            with self.subTest(title=title):
+                self.assertEqual(self.post_beszel(self.beszel(title, body))[0], 204)
+                self.assertEqual(self.pushover.requests[-1]["form"]["token"], GOLEM_TOKEN)
 
     def test_the_nas_and_lookalike_systems_stay_on_the_alerts_application(self):
         for title, body in (
             self.BESZEL_SUBJECTS[0][:2],
             ("golem-2 CPU above threshold", "CPU averaged 93.20% for the previous 10 minutes."),
+            ("GOLEM CPU above threshold", "CPU averaged 93.20% for the previous 10 minutes."),
             ("Connection to notgolem is down \U0001f534", "Connection to notgolem is down "),
             ("Unhealthy container golem on ASUSTOR-AS6704T \U0001f534", "golem is unhealthy"),
             ("golem2 containers are healthy \u2705", "golem2 containers are healthy"),
@@ -2760,11 +2774,11 @@ class DozzleAlertRelayTest(unittest.TestCase):
                     self.assertEqual(self.post_beszel(self.beszel(title, body))[0], 204)
                 form = self.pushover.requests[-1]["form"]
                 self.assertEqual(form["token"], ALERTS_TOKEN,
-                                 "a golem alert must still be delivered without the Golem token")
+                                 "a Golem alert must still be delivered without the Golem token")
                 self.assertIn(reason, form["message"])
                 self.assertEqual(recorder.writes, [
                     "alert-relay: PUSHOVER_GOLEM_TOKEN is not set; "
-                    "a golem alert was sent on the Alerts application\n",
+                    "a Golem alert was sent on the Alerts application\n",
                 ])
         recorder = RecordingStderr()
         with contextlib.redirect_stderr(recorder):
@@ -2784,7 +2798,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
 
     def test_the_golem_system_name_is_one_beszel_manages(self):
         defaults = (ROOT / "roles/beszel/defaults/main.yml").read_text()
-        name = re.escape(self.relay_module.GOLEM_BESZEL_SYSTEM)
+        name = "(?:" + "|".join(map(re.escape, self.relay_module.GOLEM_BESZEL_SYSTEMS)) + ")"
         self.assertRegex(
             defaults, rf"(?m)^beszel_remote_systems:\n(?:[ #].*\n|\n)*?  - name: {name}$",
             "GOLEM_BESZEL_SYSTEM must name a system in beszel_remote_systems",
@@ -2818,7 +2832,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(self.published_forms()[0]["priority"], "2", "an OOM keeps its emergency priority")
 
     def test_nas_and_lookalike_container_hosts_stay_on_the_containers_application(self):
-        for host in ("nas", "golem-2", "notgolem", "Golem", "golem "):
+        for host in ("nas", "golem-2", "notgolem", "GOLEM", "golem ", "Golem "):
             with self.subTest(host=host):
                 self.assertEqual(self.post(self.envelope("Unexpected exit", host=host))[0], 204)
                 self.assertEqual(self.pushover.requests[-1]["form"]["token"], PUSHOVER_TOKEN)
@@ -2832,14 +2846,14 @@ class DozzleAlertRelayTest(unittest.TestCase):
                   "; sent on Containers")
         recorder = RecordingStderr()
         with contextlib.redirect_stderr(recorder):
-            self.assertEqual(self.post(self.envelope("Unexpected exit", host="golem"))[0], 204)
+            self.assertEqual(self.post(self.envelope("Unexpected exit", host="Golem"))[0], 204)
         form = self.pushover.requests[-1]["form"]
         self.assertEqual(form["token"], PUSHOVER_TOKEN,
-                         "a golem event must still be delivered without the Golem token")
+                         "a Golem event must still be delivered without the Golem token")
         self.assertIn(reason, form["message"])
         self.assertEqual(recorder.writes, [
             "alert-relay: PUSHOVER_GOLEM_TOKEN is not set; "
-            "a golem container event was sent on the Containers application\n",
+            "a Golem container event was sent on the Containers application\n",
         ])
         recorder = RecordingStderr()
         with contextlib.redirect_stderr(recorder):
@@ -2851,23 +2865,134 @@ class DozzleAlertRelayTest(unittest.TestCase):
         # One container id on both hosts: golem going unhealthy must not read as
         # a duplicate of the NAS's, and its recovery closes only its own entry.
         self.assertEqual(self.post(self.envelope("Unhealthy"))[0], 204)
-        self.assertEqual(self.post(self.envelope("Unhealthy", host="golem"))[0], 204)
+        self.assertEqual(self.post(self.envelope("Unhealthy", host="Golem"))[0], 204)
         self.assertEqual(self.post(self.envelope(
-            "Recovery", host="golem", timestamp="2026-08-15T01:23:13Z"))[0], 204)
+            "Recovery", host="Golem", timestamp="2026-08-15T01:23:13Z"))[0], 204)
         self.assertEqual([form["token"] for form in self.published_forms()],
                          [PUSHOVER_TOKEN, GOLEM_TOKEN, GOLEM_TOKEN])
         states = {entry["identity"].split("\0")[0]: entry["state"]
                   for entry in self.read_state()["entries"]}
-        self.assertEqual(states, {"nas": "unhealthy", "golem": "healthy"})
+        self.assertEqual(states, {"nas": "unhealthy", "Golem": "healthy"})
+
+    def test_the_former_golem_host_is_the_same_host(self):
+        # An agent still on the old DOZZLE_HOSTNAME is Golem too: its recovery
+        # closes an Unhealthy the renamed agent opened, on one identity.
+        self.assertEqual(self.post(self.envelope("Unhealthy", host="golem"))[0], 204)
+        self.assertEqual(self.post(self.envelope(
+            "Recovery", host="Golem", timestamp="2026-08-15T01:23:13Z"))[0], 204)
+        forms = self.published_forms()
+        self.assertEqual([form["token"] for form in forms], [GOLEM_TOKEN, GOLEM_TOKEN])
+        self.assertIn("\U0001f5a5️ <b>Host</b> Golem", forms[0]["message"])
+        self.assertEqual([entry["identity"].split("\0")[0] for entry in self.read_state()["entries"]],
+                         ["Golem"])
+
+    def test_health_state_under_the_former_host_name_is_carried_over(self):
+        self.write_state({
+            "version": 3,
+            "entries": [self.state_entry(CONTAINER_ID, "unhealthy", "2026-08-15T01:22:13Z", host="golem")],
+            "budget": self.budget(),
+        })
+        self.assertEqual(self.post(self.envelope(
+            "Recovery", host="Golem", timestamp="2026-08-15T01:23:13Z"))[0], 204)
+        self.assertEqual([form["token"] for form in self.published_forms()], [GOLEM_TOKEN])
+        self.assertEqual(self.read_state()["entries"],
+                         [self.state_entry(CONTAINER_ID, "healthy", "2026-08-15T01:23:13Z", host="Golem")])
 
     def test_a_ceiling_a_golem_container_trips_is_announced_on_the_containers_application(self):
-        event = self.envelope("Unexpected exit", host="golem")
+        event = self.envelope("Unexpected exit", host="Golem")
         for _index in range(CONTAINER_CEILING + 1):
             self.assertEqual(self.post(event)[0], 204)
         *alerts, notice = self.published_forms()
         self.assertEqual(len(alerts), CONTAINER_CEILING)
         self.assertEqual({form["token"] for form in alerts}, {GOLEM_TOKEN})
         self.assertEqual(notice["token"], PUSHOVER_TOKEN)
+
+    # --- exact repeats of one /alerts envelope --------------------------------
+
+    def deduplicate(self):
+        """Give the running server the deployed duplicate window back."""
+        self.relay_module.DUPLICATE_WINDOW = self.deployed_duplicate_window
+        self.relay.delivered_events = self.relay_module.DeliveredEvents()
+
+    def test_the_deployed_relay_drops_repeats(self):
+        self.assertGreater(load_relay_module().DUPLICATE_WINDOW, timedelta(0))
+
+    def test_an_exact_repeat_is_acknowledged_and_not_published_or_charged(self):
+        self.deduplicate()
+        event = self.envelope("Unexpected exit", host="Golem")
+        for _attempt in range(3):
+            self.assertEqual(self.post(event)[0], 204)
+        self.assertEqual(len(self.published_forms()), 1)
+        self.assertEqual(self.read_state()["budget"]["count"], 1)
+
+    def test_the_former_host_name_repeats_the_renamed_one(self):
+        self.deduplicate()
+        self.assertEqual(self.post(self.envelope("Unexpected exit", host="golem"))[0], 204)
+        self.assertEqual(self.post(self.envelope("Unexpected exit", host="Golem"))[0], 204)
+        self.assertEqual(len(self.published_forms()), 1)
+
+    def test_concurrent_repeats_publish_once(self):
+        self.deduplicate()
+        event = self.envelope("OOM", host="Golem")
+        statuses = []
+        threads = [threading.Thread(target=lambda: statuses.append(self.post(event)[0]))
+                   for _index in range(3)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+        self.assertEqual(statuses, [204, 204, 204])
+        self.assertEqual(len(self.published_forms()), 1)
+
+    def test_a_different_timestamp_container_event_or_host_is_still_sent(self):
+        self.deduplicate()
+        base = self.envelope("Unexpected exit")
+        for event in (
+            base,
+            dict(base, timestamp="2026-08-15T01:22:13.000000001Z"),
+            dict(base, containerId="ba9876543210"),
+            self.envelope("OOM"),
+            dict(base, host="Golem"),
+        ):
+            with self.subTest(event=event):
+                before = len(self.published_forms())
+                self.assertEqual(self.post(event)[0], 204)
+                self.assertEqual(len(self.published_forms()), before + 1)
+
+    def test_an_equal_time_unhealthy_repeat_is_now_dropped(self):
+        # It used to republish (the 2026-08-15 ordering design); a repeat with
+        # the same stamp is the same delivery, so it is dropped like any other.
+        self.deduplicate()
+        unhealthy = self.envelope("Unhealthy")
+        self.assertEqual(self.post(unhealthy)[0], 204)
+        self.assertEqual(self.post(unhealthy)[0], 204)
+        self.assertEqual(len(self.published_forms()), 1)
+
+    def test_a_repeat_of_a_refused_publish_is_sent(self):
+        self.deduplicate()
+        event = self.envelope("Unexpected exit")
+        self.pushover.response_status = 500
+        with contextlib.redirect_stderr(RecordingStderr()):
+            self.assertEqual(self.post(event)[0], 502)
+        self.pushover.response_status = 200
+        self.assertEqual(self.post(event)[0], 204)
+        self.assertEqual(self.pushover.requests[-1]["form"]["token"], PUSHOVER_TOKEN)
+        self.assertEqual(self.post(event)[0], 204)
+        self.assertEqual(len(self.pushover.requests), 2)
+
+    def test_repeats_expire_with_the_window_and_the_capacity(self):
+        delivered = self.relay_module.DeliveredEvents(window=timedelta(minutes=10), capacity=2)
+        first, second, third = (self.envelope("OOM", containerId=f"{index:012x}")
+                                for index in range(3))
+        delivered.record(first, FIXED_NOW)
+        self.assertTrue(delivered.seen(first, FIXED_NOW + timedelta(minutes=9)))
+        self.assertFalse(delivered.seen(first, FIXED_NOW + timedelta(minutes=10)))
+        delivered.record(first, FIXED_NOW)
+        delivered.record(second, FIXED_NOW)
+        delivered.record(third, FIXED_NOW)
+        self.assertFalse(delivered.seen(first, FIXED_NOW), "the oldest goes past capacity")
+        self.assertTrue(delivered.seen(second, FIXED_NOW))
+        self.assertTrue(delivered.seen(third, FIXED_NOW))
 
     def test_the_golem_dozzle_host_is_the_label_of_the_remote_agent(self):
         inventory = (ROOT / "inventory/group_vars/all/service_dozzle.yml").read_text()

@@ -47,15 +47,33 @@ beszel_wrong_owner_systems: >-
 # beszel_remote_systems, read in one request. The read is skipped when the list
 # is empty (an empty filter is not a filter), so every reader defaults its json.
 beszel_remote_system_names: "{{ beszel_remote_systems | map(attribute='name') | list }}"
+# former_names -> name. The hub keeps the name an agent first registered under,
+# so a rename is made on the record (configure.yml), found by its former name.
+beszel_remote_former_pairs: "{{ beszel_remote_systems | subelements('former_names', skip_missing=True) }}"
+beszel_remote_former_to_current: >-
+  {{ dict(beszel_remote_former_pairs | map('last')
+          | zip(beszel_remote_former_pairs | map('first') | map(attribute='name'))) }}
+beszel_remote_system_read_names: "{{ beszel_remote_system_names + (beszel_remote_former_to_current | list) }}"
 beszel_remote_system_filter: >-
-  {{ beszel_remote_system_names | map('to_json') | map('regex_replace', '^', 'name = ')
+  {{ beszel_remote_system_read_names | map('to_json') | map('regex_replace', '^', 'name = ')
      | join(' || ') }}
 beszel_remote_system_records: >-
   {{ (beszel_remote_systems_read.json | default({}, true)).get('items', [])
-     | selectattr('name', 'in', beszel_remote_system_names) | list }}
-beszel_remote_owned_systems: >-
+     | selectattr('name', 'in', beszel_remote_system_read_names) | list }}
+beszel_remote_owned_records: >-
   {{ beszel_remote_system_records
      | selectattr('users', 'contains', beszel_user_id | default('')) | list }}
+beszel_remote_owned_former_records: >-
+  {{ beszel_remote_owned_records
+     | selectattr('name', 'in', beszel_remote_former_to_current | list) | list }}
+# Under their current names, a record configure.yml renames included as {id, name}.
+beszel_remote_owned_systems: >-
+  {{ (beszel_remote_owned_records | selectattr('name', 'in', beszel_remote_system_names) | list)
+     + (beszel_remote_renames | default([])) }}
+# A former-name record beside one under the current name: not renamed, reported.
+beszel_remote_lingering_systems: >-
+  {{ beszel_remote_owned_former_records
+     | rejectattr('id', 'in', beszel_remote_renames | default([]) | map(attribute='id') | list) | list }}
 beszel_remote_wrong_owner_systems: >-
   {{ beszel_remote_system_records
      | rejectattr('users', 'contains', beszel_user_id | default('')) | list }}

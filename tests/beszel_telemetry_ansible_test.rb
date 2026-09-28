@@ -208,7 +208,12 @@ end
 # ever meets the absent case.
 remote_names = ["Read the remote managed systems", "Require the complete remote system result set",
                 "Refuse remote systems outside the managed user relation",
+                "Start the remote system renames empty",
+                "Resolve remote systems still under a former name",
                 "Refuse duplicate remote managed systems",
+                "Report planned remote system renames",
+                "Rename remote systems to their current name",
+                "Report remote systems left under a former name",
                 "Report remote systems that have not registered yet"]
 remote_tasks = remote_names.map { |name| tasks.find { |task| task["name"] == name } }
 remote_include = tasks.find { |task| task["name"] == "Reconcile each remote managed alert" }
@@ -219,23 +224,32 @@ if remote_tasks.all? && remote_include
       "msg" => "PAIR={{ beszel_alert_system_name }}:{{ beszel_alert_system_id }}:{{ beszel_alert.name }}"
     }
   )
-  golem = [{ "name" => "golem", "alerts" => [{ "name" => "Status", "value" => 0, "min" => 0 },
-                                             { "name" => "CPU", "value" => 90, "min" => 10 }] }]
-  owned = ->(id) { { "id" => id, "name" => "golem", "users" => ["user-safe"] } }
+  golem = [{ "name" => "Golem", "former_names" => ["golem"],
+             "alerts" => [{ "name" => "Status", "value" => 0, "min" => 0 },
+                          { "name" => "CPU", "value" => 90, "min" => 10 }] }]
+  owned = ->(id, name = "Golem") { { "id" => id, "name" => name, "users" => ["user-safe"] } }
   [
     ["absent", golem, [], 1, true, [], true],
     ["present", golem, [owned.call("sys-golem"), { "id" => "sys-other", "name" => "other", "users" => [] }],
-     1, true, ["PAIR=golem:sys-golem:Status", "PAIR=golem:sys-golem:CPU"], false],
-    ["duplicate", golem, [owned.call("sys-a"), owned.call("sys-b")], 1, false, ["golem:sys-a,golem:sys-b"], false],
+     1, true, ["PAIR=Golem:sys-golem:Status", "PAIR=Golem:sys-golem:CPU"], false],
+    # The hub keeps the registered name; the record is renamed and its alerts follow its id.
+    ["former name", golem, [owned.call("sys-golem", "golem")], 1, true,
+     ["Would rename Beszel system golem (sys-golem) to Golem", "PAIR=Golem:sys-golem:Status"], false, true],
+    # A fresh registration beside the old record: the new one is monitored, the old reported.
+    ["former name lingering", golem, [owned.call("sys-old", "golem"), owned.call("sys-new")], 1, true,
+     ["PAIR=Golem:sys-new:Status", "Beszel system record sys-old still carries a former name"], false, true],
+    ["two former records", golem, [owned.call("sys-a", "golem"), owned.call("sys-b", "golem")], 1, false,
+     ["Golem:sys-a,Golem:sys-b"], false, true],
+    ["duplicate", golem, [owned.call("sys-a"), owned.call("sys-b")], 1, false, ["Golem:sys-a,Golem:sys-b"], false],
     ["wrong owner", golem, [{ "id" => "sys-foreign", "name" => "golem", "users" => ["someone"] }],
      1, false, ["sys-foreign"], false],
     ["incomplete", golem, [], 2, false, [], false],
     ["none declared", [], nil, 0, true, [], false]
-  ].each do |label, declared, items, pages, expected_success, expected_lines, expect_absence|
+  ].each do |label, declared, items, pages, expected_success, expected_lines, expect_absence, check = false|
     vars = { "beszel_user_id" => "user-safe", "beszel_remote_systems" => declared }
     play_tasks = items.nil? ? remote_tasks : remote_tasks.drop(1)
     vars["beszel_remote_systems_read"] = { "json" => { "items" => items, "totalPages" => pages } } unless items.nil?
-    stdout, stderr, status = run_play(play_tasks + [pair_task], vars, vars_files: [ROLE_VARS])
+    stdout, stderr, status = run_play(play_tasks + [pair_task], vars, vars_files: [ROLE_VARS], check: check)
     output = stdout + stderr
     failures << "remote systems #{label}: #{expected_success ? 'failed' : 'was accepted'}: " \
                 "#{output.lines.grep(/fatal:|ERROR!/).last(3).join}" unless status.success? == expected_success
@@ -243,10 +257,12 @@ if remote_tasks.all? && remote_include
       failures << "remote systems #{label}: output lacks #{line}" unless output.include?(line)
     end
     failures << "remote systems #{label}: absence report #{expect_absence ? 'missing' : 'unexpected'}" unless
-      output.include?("golem has not") == expect_absence
+      output.include?("Golem has not") == expect_absence
     failures << "remote systems #{label}: reconciled alerts it should not have" if
       expected_lines.none? { |line| line.start_with?("PAIR") } && output.include?("PAIR=")
   end
+  rename_task = tasks.find { |task| task["name"] == "Rename remote systems to their current name" }
+  failures << "remote system rename runs under verify.yml" if Array(rename_task&.fetch("tags", nil)).any?
 else
   failures << "Beszel remote-system tasks are absent"
 end
@@ -319,9 +335,9 @@ if alert_includes.all?
         "beszel_port" => port, "beszel_auth" => { "json" => { "token" => "token-safe" } },
         "beszel_user_id" => "user-safe", "beszel_system_name" => "nas", "beszel_alerts" => [status_alert],
         "beszel_systems" => { "json" => { "items" => [{ "id" => "sys-nas", "name" => "nas", "users" => ["user-safe"] }] } },
-        "beszel_remote_systems" => [{ "name" => "golem", "alerts" => [status_alert] }],
+        "beszel_remote_systems" => [{ "name" => "Golem", "alerts" => [status_alert] }],
         "beszel_remote_systems_read" => {
-          "json" => { "items" => [{ "id" => "sys-golem", "name" => "golem", "users" => ["user-safe"] }], "totalPages" => 1 }
+          "json" => { "items" => [{ "id" => "sys-golem", "name" => "Golem", "users" => ["user-safe"] }], "totalPages" => 1 }
         }
       }
       stdout, stderr, status = run_play([system == :nas ? nas_include : remote_include_task], vars,
@@ -339,6 +355,25 @@ if alert_includes.all?
   end
 else
   failures << "Beszel alert include tasks are absent"
+end
+
+# The rename against a fake hub: one PATCH of the name alone, on the record's id.
+if remote_tasks.all?
+  hub_records = [{ "id" => "sys-golem", "name" => "golem", "users" => ["user-safe"] }]
+  with_fake_alert_hub(hub_records) do |port, requests|
+    vars = {
+      "beszel_port" => port, "beszel_auth" => { "json" => { "token" => "token-safe" } },
+      "beszel_user_id" => "user-safe",
+      "beszel_remote_systems" => [{ "name" => "Golem", "former_names" => ["golem"], "alerts" => [] }],
+      "beszel_remote_systems_read" => { "json" => { "items" => hub_records.map(&:dup), "totalPages" => 1 } }
+    }
+    stdout, stderr, status = run_play(remote_tasks.drop(1), vars, vars_files: [ROLE_VARS])
+    failures << "remote rename failed: #{(stdout + stderr).lines.grep(/fatal:|ERROR!/).last(3).join}" unless
+      status.success?
+    failures << "remote rename sent #{requests.inspect}, wanted one PATCH" unless requests == ["PATCH"]
+    failures << "remote rename left #{hub_records.inspect}" unless
+      hub_records == [{ "id" => "sys-golem", "name" => "Golem", "users" => ["user-safe"] }]
+  end
 end
 
 created = (Time.now.utc - 30).strftime("%Y-%m-%d %H:%M:%S.%LZ")

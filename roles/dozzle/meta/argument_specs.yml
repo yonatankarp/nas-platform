@@ -55,6 +55,10 @@ argument_specs:
       dozzle_dispatcher:
         type: dict
         required: false
+      dozzle_dispatcher_former_names:
+        type: list
+        elements: str
+        required: false
       vault_dozzle_admin_username:
         type: str
         required: true

@@ -966,7 +966,7 @@ DESIRED_ALERTS = {
 
 def desired_dispatcher(port = 8081)
   {
-    "id" => "disp01", "name" => "ntfy nas-critical", "type" => "webhook",
+    "id" => "disp01", "name" => "alert relay", "type" => "webhook",
     "url" => "http://alert-relay:#{port}/alerts", "template" => EXPECTED_TEMPLATE,
     "headers" => { "Authorization" => "Bearer #{VAULT_FIXTURE.fetch('vault_dozzle_alert_relay_token')}" }
   }

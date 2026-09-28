@@ -119,7 +119,7 @@ end
 
 def require_desired_fixture_state(dispatchers, rules)
   fail_contract("check-mode fixture requires exact managed identities") unless
-    dispatchers.length == 1 && dispatchers.fetch(0).fetch("name") == "ntfy nas-critical" &&
+    dispatchers.length == 1 && dispatchers.fetch(0).fetch("name") == "alert relay" &&
     rules.map { |entry| entry.fetch("name") }.sort == ALERTS.keys.sort
 end
 
@@ -333,17 +333,17 @@ rules = request("get", endpoint(DOZZLE, "/api/notifications/rules"), cookie: coo
 
 case MODE
 when "duplicate-dispatcher-create"
-  managed = dispatchers.select { |entry| entry["name"] == "ntfy nas-critical" }
+  managed = dispatchers.select { |entry| entry["name"] == "alert relay" }
   fail_contract("dispatcher duplicate fixture requires one managed identity") unless managed.length == 1
   _response, created = request(
     "post", endpoint(DOZZLE, "/api/notifications/dispatchers"), cookie: cookie,
-    body: { name: "ntfy nas-critical", type: "webhook",
+    body: { name: "alert relay", type: "webhook",
             url: "https://example.invalid/dozzle-duplicate", template: "{}", headers: {} },
     expected: [201]
   )
   created_id = safe_id(created.fetch("id"))
   current = request("get", endpoint(DOZZLE, "/api/notifications/dispatchers"), cookie: cookie).last
-  matching_ids = current.select { |entry| entry["name"] == "ntfy nas-critical" }
+  matching_ids = current.select { |entry| entry["name"] == "alert relay" }
                         .map { |entry| safe_id(entry.fetch("id")) }.sort
   fail_contract("dispatcher duplicate fixture was not created") unless matching_ids.length == 2 &&
     matching_ids.include?(created_id)
@@ -351,7 +351,7 @@ when "duplicate-dispatcher-create"
   write_artifact("duplicate-dispatcher-matching-ids", matching_ids)
   exit 0
 when "duplicate-dispatcher-verify"
-  matching_ids = dispatchers.select { |entry| entry["name"] == "ntfy nas-critical" }
+  matching_ids = dispatchers.select { |entry| entry["name"] == "alert relay" }
                             .map { |entry| safe_id(entry.fetch("id")) }.sort
   fail_contract("dispatcher duplicate fixture changed") unless
     matching_ids == read_artifact("duplicate-dispatcher-matching-ids").sort
@@ -369,7 +369,7 @@ when "duplicate-dispatcher-cleanup"
     cookie: cookie, expected: [204]
   )
   current = request("get", endpoint(DOZZLE, "/api/notifications/dispatchers"), cookie: cookie).last
-  remaining_ids = current.select { |entry| entry["name"] == "ntfy nas-critical" }
+  remaining_ids = current.select { |entry| entry["name"] == "alert relay" }
                          .map { |entry| safe_id(entry.fetch("id")) }
   fail_contract("dispatcher duplicate cleanup did not preserve exactly the managed original") unless
     remaining_ids.length == 1 && !remaining_ids.include?(created_id)
@@ -377,7 +377,7 @@ when "duplicate-dispatcher-cleanup"
   remove_artifact("duplicate-dispatcher-matching-ids")
   exit 0
 when "duplicate-rule-create"
-  managed_dispatchers = dispatchers.select { |entry| entry["name"] == "ntfy nas-critical" }
+  managed_dispatchers = dispatchers.select { |entry| entry["name"] == "alert relay" }
   managed_rules = rules.select { |entry| entry["name"] == "OOM" }
   fail_contract("rule duplicate fixture requires exact managed identities") unless
     managed_dispatchers.length == 1 && managed_rules.length == 1
@@ -427,7 +427,7 @@ when "duplicate-rule-cleanup"
   exit 0
 when "surplus-create"
   fail_contract("surplus fixture requires exact managed state") unless
-    dispatchers.length == 1 && dispatchers.fetch(0).fetch("name") == "ntfy nas-critical" &&
+    dispatchers.length == 1 && dispatchers.fetch(0).fetch("name") == "alert relay" &&
     rules.map { |entry| entry.fetch("name") }.sort == ALERTS.keys.sort
   _response, created_dispatcher = request(
     "post", endpoint(DOZZLE, "/api/notifications/dispatchers"), cookie: cookie,
@@ -618,7 +618,7 @@ expected_template = JSON.generate(
   exitCode: '{{ index .Event.Attributes `exitCode` }}',
   timestamp: '{{ .Event.Timestamp.UTC.Format `2006-01-02T15:04:05.999999999Z07:00` }}'
 )
-fail_contract("managed dispatcher name differs") unless dispatcher["name"] == "ntfy nas-critical"
+fail_contract("managed dispatcher name differs") unless dispatcher["name"] == "alert relay"
 fail_contract("managed dispatcher type differs") unless dispatcher["type"] == "webhook"
 fail_contract("managed dispatcher URL differs") unless dispatcher["url"] == expected_url
 fail_contract("managed dispatcher template differs") unless dispatcher["template"] == expected_template

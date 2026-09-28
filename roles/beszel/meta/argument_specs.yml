@@ -107,6 +107,11 @@ argument_specs:
           name:
             type: str
             required: true
+          former_names:
+            type: list
+            elements: str
+            required: false
+            description: Earlier names of this system; a record still under one is renamed to name in place.
           alerts:
             type: list
             elements: dict

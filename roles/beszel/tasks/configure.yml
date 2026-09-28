@@ -502,6 +502,29 @@
           {{ beszel_remote_wrong_owner_systems | map(attribute='id') | join(',') }}
       no_log: false
 
+    - name: Start the remote system renames empty
+      tags: [platform_verify_beszel]
+      ansible.builtin.set_fact:
+        beszel_remote_renames: []
+
+    # Beszel 0.20.0 names a system once, when a universal-token agent first
+    # registers (internal/hub/agent_connect.go: createSystem); a known
+    # fingerprint reconnects to its record unchanged, so SYSTEM_NAME alone
+    # renames nothing. The record is renamed here instead, when nothing holds
+    # the current name yet.
+    - name: Resolve remote systems still under a former name
+      tags: [platform_verify_beszel]
+      ansible.builtin.set_fact:
+        beszel_remote_renames: >-
+          {{ beszel_remote_renames
+             + [{'id': item.id, 'name': beszel_remote_former_to_current[item.name], 'former': item.name}] }}
+      loop: "{{ beszel_remote_owned_former_records }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: >-
+        beszel_remote_former_to_current[item.name] not in
+        (beszel_remote_owned_records | map(attribute='name') | list)
+
     - name: Refuse duplicate remote managed systems
       tags: [platform_verify_beszel]
       ansible.builtin.assert:
@@ -514,6 +537,48 @@
              | zip(beszel_remote_owned_systems | map(attribute='id'))
              | map('join', ':') | join(',') }}
       no_log: false
+
+    - name: Report planned remote system renames
+      ansible.builtin.debug:
+        msg: >-
+          Would rename Beszel system {{ item.former }} ({{ item.id }}) to {{ item.name }}.
+      loop: "{{ beszel_remote_renames }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: ansible_check_mode
+      changed_when: true
+
+    # Name only: status is untouched, so the hub's update hook sees no up/down
+    # transition and sends no Status alert (internal/hub/systems/system_manager.go:
+    # onRecordAfterUpdateSuccess). Alerts are keyed by record id and stay.
+    - name: Rename remote systems to their current name
+      ansible.builtin.uri:
+        url: "{{ beszel_api }}/api/collections/systems/records/{{ item.id }}"
+        method: PATCH
+        headers:
+          Authorization: "{{ beszel_auth.json.token }}"
+        body_format: json
+        body:
+          name: "{{ item.name }}"
+        status_code: [200]
+      loop: "{{ beszel_remote_renames }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: not ansible_check_mode
+      changed_when: true
+      no_log: true
+
+    # Only when the agent registered afresh (a lost fingerprint) beside the old
+    # record. Deleting a system deletes its history, so that is left to a person.
+    - name: Report remote systems left under a former name
+      tags: [platform_verify_beszel]
+      ansible.builtin.debug:
+        msg: >-
+          Beszel system record {{ beszel_remote_lingering_systems | map(attribute='id') | join(', ') }}
+          still carries a former name ({{ beszel_remote_lingering_systems | map(attribute='name') | join(', ') }})
+          beside a record under the current name. It is not monitored any more; delete
+          it in Beszel.
+      when: beszel_remote_lingering_systems | length > 0
 
     - name: Report remote systems that have not registered yet
       tags: [platform_verify_beszel]
