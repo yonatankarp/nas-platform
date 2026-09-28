@@ -274,7 +274,9 @@ end
 # when verify reads them (#911). That absence is pending the next converge,
 # never a failure; a duplicate or a wrong value still is, and the NAS system's
 # own alerts are never pending, because site.yml created them before verify ran.
-def with_fake_alert_hub(alerts)
+# A hub that accepts a create and then does not serve it is the one way to meet
+# an absence on a converge, so it proves the pending branch is verify's alone.
+def with_fake_alert_hub(alerts, keep_creates: true)
   server = TCPServer.new("127.0.0.1", 0)
   requests = []
   thread = Thread.new do
@@ -292,7 +294,10 @@ def with_fake_alert_hub(alerts)
       method, path = request_line.split
       requests << method
       reply = case method
-              when "POST" then (alerts << body.merge("id" => "alert-#{alerts.length}")).last
+              when "POST"
+                created = body.merge("id" => "alert-#{alerts.length}")
+                alerts << created if keep_creates
+                created
               when "PATCH" then alerts.find { |a| path.end_with?("/#{a['id']}") }.merge!(body)
               else { "items" => alerts, "totalPages" => 1 }
               end
@@ -319,10 +324,11 @@ if alert_includes.all?
   status_alert = { "name" => "Status", "value" => 1, "min" => 2 }
   record = ->(id, system, value = 1) { { "id" => id, "system" => system, "name" => "Status", "value" => value, "min" => 2 } }
   verify = "platform_verify_beszel"
-  # [label, system, run tags, alerts on the hub, success, output line, POSTs]
+  # [label, system, run tags, alerts on the hub, success, output line, POSTs, hub keeps creates]
   [
     ["remote absent under verify", :remote, verify, [], true, "pending the next converge", 0],
     ["remote absent under a converge", :remote, nil, [], true, nil, 1],
+    ["remote create lost under a converge", :remote, nil, [], false, "is absent, duplicated, or differs", 1, false],
     ["remote present under verify", :remote, verify, [record.call("a1", "sys-golem")], true, nil, 0],
     ["remote duplicate under verify", :remote, verify,
      [record.call("a1", "sys-golem"), record.call("a2", "sys-golem")], false, "a1,a2", 0],
@@ -330,8 +336,8 @@ if alert_includes.all?
      "differs from threshold", 0],
     ["NAS absent under verify", :nas, verify, [], false, "is absent, duplicated, or differs", 0],
     ["NAS absent under a converge", :nas, nil, [], true, nil, 1]
-  ].each do |label, system, tags, alerts, expected_success, expected_line, expected_posts|
-    with_fake_alert_hub(alerts) do |port, requests|
+  ].each do |label, system, tags, alerts, expected_success, expected_line, expected_posts, keep_creates = true|
+    with_fake_alert_hub(alerts, keep_creates: keep_creates) do |port, requests|
       vars = {
         "beszel_port" => port, "beszel_auth" => { "json" => { "token" => "token-safe" } },
         "beszel_user_id" => "user-safe", "beszel_system_name" => "nas", "beszel_alerts" => [status_alert],
