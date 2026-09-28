@@ -564,3 +564,81 @@
       loop_control:
         loop_var: beszel_alert
         label: "{{ beszel_alert.name }}"
+      vars:
+        beszel_alert_system_id: "{{ (beszel_matching_systems | first).id }}"
+        beszel_alert_system_name: "{{ beszel_system_name }}"
+
+    # Systems whose agent another repository deploys (beszel_remote_systems).
+    # Their absence is reported, never refused: the poller converges every five
+    # minutes and a system that registers hours later must not fail every tick
+    # until it does. Once present, the NAS system's strictness applies -- no
+    # wrong owner, no duplicate, exact alerts -- except the telemetry probe, which
+    # proves an agent this repository deploys and so is not asked of these.
+    - name: Read the remote managed systems
+      tags: [platform_verify_beszel]
+      ansible.builtin.uri:
+        url: >-
+          {{ beszel_api }}/api/collections/systems/records?perPage=500&filter={{
+             beszel_remote_system_filter | urlencode }}
+        headers:
+          Authorization: "{{ beszel_auth.json.token }}"
+      register: beszel_remote_systems_read
+      when: beszel_remote_systems | length > 0
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require the complete remote system result set
+      tags: [platform_verify_beszel]
+      ansible.builtin.assert:
+        that: (beszel_remote_systems_read.json | default({}, true)).get('totalPages', 0) | int <= 1
+        fail_msg: Remote system names returned more than 500 records; refusing incomplete reconciliation.
+
+    - name: Refuse remote systems outside the managed user relation
+      tags: [platform_verify_beszel]
+      ansible.builtin.assert:
+        that: beszel_remote_wrong_owner_systems | length == 0
+        fail_msg: >-
+          Same-name wrong-owner remote system record IDs:
+          {{ beszel_remote_wrong_owner_systems | map(attribute='id') | join(',') }}
+      no_log: false
+
+    - name: Refuse duplicate remote managed systems
+      tags: [platform_verify_beszel]
+      ansible.builtin.assert:
+        that: >-
+          beszel_remote_owned_systems | length ==
+          beszel_remote_owned_systems | map(attribute='name') | unique | list | length
+        fail_msg: >-
+          Duplicate remote managed system records (name:id):
+          {{ beszel_remote_owned_systems | map(attribute='name')
+             | zip(beszel_remote_owned_systems | map(attribute='id'))
+             | map('join', ':') | join(',') }}
+      no_log: false
+
+    - name: Report remote systems that have not registered yet
+      tags: [platform_verify_beszel]
+      ansible.builtin.debug:
+        msg: >-
+          Beszel system {{ beszel_remote_absent_names | join(', ') }} has not
+          registered with the hub yet, so its alerts were skipped. This is not a
+          failure; they are created on the first converge after its agent
+          registers.
+      when: beszel_remote_absent_names | length > 0
+
+    - name: Reconcile each remote managed alert
+      tags: [platform_verify_beszel]
+      ansible.builtin.include_tasks: alert.yml
+      loop: >-
+        {{ beszel_remote_systems
+           | selectattr('name', 'in', beszel_remote_owned_systems | map(attribute='name') | list)
+           | subelements('alerts') }}
+      loop_control:
+        loop_var: beszel_remote_alert
+        label: "{{ beszel_remote_alert.0.name }} {{ beszel_remote_alert.1.name }}"
+      vars:
+        beszel_alert: "{{ beszel_remote_alert.1 }}"
+        beszel_alert_system_name: "{{ beszel_remote_alert.0.name }}"
+        beszel_alert_system_id: >-
+          {{ (beszel_remote_owned_systems
+              | selectattr('name', 'equalto', beszel_remote_alert.0.name) | first).id }}

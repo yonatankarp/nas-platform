@@ -216,6 +216,57 @@ if cardinality
   end
 end
 
+# Remote systems (beszel_remote_systems) run through the role's own read, guards,
+# absence report and include loop, the include swapped for a debug that carries
+# its loop and vars, against injected hub answers. The beszel lane only ever
+# meets the absent case, so this is the only proof of the present ones.
+remote_names = ["Read the remote managed systems", "Require the complete remote system result set",
+                "Refuse remote systems outside the managed user relation",
+                "Refuse duplicate remote managed systems",
+                "Report remote systems that have not registered yet"]
+remote_tasks = remote_names.map { |name| tasks.find { |task| task["name"] == name } }
+remote_include = tasks.find { |task| task["name"] == "Reconcile each remote managed alert" }
+if remote_tasks.all? && remote_include
+  pair_task = remote_include.slice("loop", "loop_control", "vars").merge(
+    "name" => "Print each remote alert pair",
+    "ansible.builtin.debug" => {
+      "msg" => "PAIR={{ beszel_alert_system_name }}:{{ beszel_alert_system_id }}:{{ beszel_alert.name }}"
+    }
+  )
+  golem = [{ "name" => "golem", "alerts" => [{ "name" => "Status", "value" => 0, "min" => 0 },
+                                             { "name" => "CPU", "value" => 90, "min" => 10 }] }]
+  owned = ->(id) { { "id" => id, "name" => "golem", "users" => ["user-safe"] } }
+  [
+    ["absent", golem, [], 1, true, [], true],
+    ["present", golem, [owned.call("sys-golem"), { "id" => "sys-other", "name" => "other", "users" => [] }],
+     1, true, ["PAIR=golem:sys-golem:Status", "PAIR=golem:sys-golem:CPU"], false],
+    ["duplicate", golem, [owned.call("sys-a"), owned.call("sys-b")], 1, false, ["golem:sys-a,golem:sys-b"], false],
+    ["wrong owner", golem, [{ "id" => "sys-foreign", "name" => "golem", "users" => ["someone"] }],
+     1, false, ["sys-foreign"], false],
+    ["incomplete", golem, [], 2, false, [], false],
+    ["none declared", [], nil, 0, true, [], false]
+  ].each do |label, declared, items, pages, expected_success, expected_lines, expect_absence|
+    vars = { "beszel_user_id" => "user-safe", "beszel_remote_systems" => declared }
+    # A skipped read registers no json; the none-declared row runs the real read
+    # to prove its when: skips it, and every other row injects the hub's answer.
+    play_tasks = items.nil? ? remote_tasks : remote_tasks.drop(1)
+    vars["beszel_remote_systems_read"] = { "json" => { "items" => items, "totalPages" => pages } } unless items.nil?
+    stdout, stderr, status = run_play(play_tasks + [pair_task], vars, vars_files: [ROLE_VARS])
+    output = stdout + stderr
+    failures << "remote systems #{label}: #{expected_success ? 'failed' : 'was accepted'}: " \
+                "#{output.lines.grep(/fatal:|ERROR!/).last(3).join}" unless status.success? == expected_success
+    expected_lines.each do |line|
+      failures << "remote systems #{label}: output lacks #{line}" unless output.include?(line)
+    end
+    failures << "remote systems #{label}: absence report #{expect_absence ? 'missing' : 'unexpected'}" unless
+      output.include?("golem has not") == expect_absence
+    failures << "remote systems #{label}: reconciled alerts it should not have" if
+      expected_lines.none? { |line| line.start_with?("PAIR") } && output.include?("PAIR=")
+  end
+else
+  failures << "Beszel remote-system tasks are absent"
+end
+
 created = (Time.now.utc - 30).strftime("%Y-%m-%d %H:%M:%S.%LZ")
 valid_system_stats = {
   "id" => "system-stats-safe", "system" => "system-safe", "type" => "1m", "created" => created,

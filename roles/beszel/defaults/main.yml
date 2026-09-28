@@ -79,6 +79,34 @@ beszel_alerts:
     value: 88
     min: 15
 
+# Other systems that report to this hub under the managed application user, each
+# with its own alerts. Their agents are deployed elsewhere, so configure.yml
+# reports one that has not registered yet rather than failing, and reconciles its
+# alerts on the first converge after it does. Adding one is a list entry.
+#
+# golem: Debian, 2 cores / 4 threads, 7.2 GiB RAM, 500 GB SSD; agent deployed by
+# golem-platform with SYSTEM_NAME=golem.
+#   - Memory 85, not the NAS's 90: Beszel's percentage excludes page cache, and
+#     90% of 7.2 GiB leaves about 0.7 GiB before the OOM killer.
+#   - Disk 80: on 500 GB that still leaves 100 GB to act in.
+#   - No Temperature alert: golem's sensors are unmeasured, and the NAS's 88
+#     is a coretemp threshold for a different CPU.
+beszel_remote_systems:
+  - name: golem
+    alerts:
+      - name: Status
+        value: 0
+        min: 0
+      - name: CPU
+        value: 90
+        min: 10
+      - name: Memory
+        value: 85
+        min: 10
+      - name: Disk
+        value: 80
+        min: 10
+
 # Shoutrrr URL. Beszel sends to the Dozzle alert relay's /beszel route, and the
 # relay publishes to Pushover's Alerts application. It used to send to Pushover
 # directly, at priority 1 for everything. Beszel 0.19.0 builds an alert and its

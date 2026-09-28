@@ -1,4 +1,7 @@
 ---
+# One alert on one system. The caller binds beszel_alert, beszel_alert_system_id
+# and beszel_alert_system_name as include vars; they are per-item, so they are
+# deliberately absent from meta/argument_specs.yml.
 - name: Query managed-identity alerts for {{ beszel_alert.name }}
   tags: [platform_verify_beszel]
   ansible.builtin.uri:
@@ -14,7 +17,7 @@
   vars:
     beszel_alert_filter: >-
       user = {{ beszel_user_id | to_json }} &&
-      system = {{ (beszel_matching_systems | first).id | to_json }} &&
+      system = {{ beszel_alert_system_id | to_json }} &&
       name = {{ beszel_alert.name | to_json }}
 
 - name: Require the complete alert result set for {{ beszel_alert.name }}
@@ -33,7 +36,8 @@
   ansible.builtin.assert:
     that: beszel_current_alerts | length <= 1
     fail_msg: >-
-      Duplicate managed {{ beszel_alert.name }} alert record IDs:
+      Duplicate managed {{ beszel_alert.name }} alert record IDs on system
+      {{ beszel_alert_system_name }}:
       {{ beszel_current_alerts | map(attribute='id') | join(',') }}
   no_log: false
 
@@ -46,7 +50,7 @@
     body_format: json
     body:
       user: "{{ beszel_user_id }}"
-      system: "{{ (beszel_matching_systems | first).id }}"
+      system: "{{ beszel_alert_system_id }}"
       name: "{{ beszel_alert.name }}"
       value: "{{ beszel_alert.value }}"
       min: "{{ beszel_alert.min }}"
@@ -99,7 +103,7 @@
   vars:
     beszel_alert_filter: >-
       user = {{ beszel_user_id | to_json }} &&
-      system = {{ (beszel_matching_systems | first).id | to_json }} &&
+      system = {{ beszel_alert_system_id | to_json }} &&
       name = {{ beszel_alert.name | to_json }}
 
 - name: Resolve reconciled managed-system alerts for {{ beszel_alert.name }}
@@ -116,6 +120,6 @@
       - (beszel_current_alerts | first).value == beszel_alert.value
       - (beszel_current_alerts | first).min == beszel_alert.min
     fail_msg: >-
-      Managed {{ beszel_alert.name }} alert is absent, duplicated, or differs
-      from threshold and duration configuration.
+      Managed {{ beszel_alert.name }} alert on system {{ beszel_alert_system_name }}
+      is absent, duplicated, or differs from threshold and duration configuration.
   when: not ansible_check_mode
