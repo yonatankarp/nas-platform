@@ -567,13 +567,15 @@
       vars:
         beszel_alert_system_id: "{{ (beszel_matching_systems | first).id }}"
         beszel_alert_system_name: "{{ beszel_system_name }}"
+        beszel_alert_absent_is_pending: false
 
     # Systems whose agent another repository deploys (beszel_remote_systems).
     # Their absence is reported, never refused: the poller converges every five
     # minutes and a system that registers hours later must not fail every tick
     # until it does. Once present, the NAS system's strictness applies -- no
     # wrong owner, no duplicate, exact alerts -- except the telemetry probe, which
-    # proves an agent this repository deploys and so is not asked of these.
+    # proves an agent this repository deploys and so is not asked of these, and
+    # an alert absent under verify.yml, which is pending the next converge (#911).
     - name: Read the remote managed systems
       tags: [platform_verify_beszel]
       ansible.builtin.uri:
@@ -642,3 +644,5 @@
         beszel_alert_system_id: >-
           {{ (beszel_remote_owned_systems
               | selectattr('name', 'equalto', beszel_remote_alert.0.name) | first).id }}
+        # Under verify.yml only (#911): alert.yml says why.
+        beszel_alert_absent_is_pending: "{{ 'platform_verify_beszel' in ansible_run_tags }}"
