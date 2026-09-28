@@ -1,11 +1,12 @@
 # Host clean-up after a removed service
 
 Removing a service is a repository change, and leaving its data is a host one;
-only the first happens on merge. `host_prep` creates directories and never
-deletes them, so a retired stack's data, and any secret-bearing file in it,
-stays on the NAS until an operator removes it by hand. The rule is in
-`CLAUDE.md`'s security boundary; these are the worked examples, moved out of it
-by #838 with their commands unchanged.
+only the first happens on merge unless a task is written to do the second.
+`host_prep` creates directories and deletes only what a task names, so a retired
+stack's data, and any secret-bearing file in it, stays on the NAS until an
+operator or such a task removes it. The rule is in `CLAUDE.md`'s security
+boundary; these are the worked examples, moved out of it by #838. AdGuard's is
+still a manual tidy-up; ntfy's is now done by the repository.
 
 ## AdGuard Home (#577)
 
@@ -31,21 +32,29 @@ on merge.
 turned the stack off in stage 4a and deleted it in stage 4c -- role, Compose,
 the eleven `vault_ntfy_*` credentials and `vault_managed_ntfy_users`, the lane
 tag, the poller's and the prune's publisher configs and the `nas_storage`
-entries -- and the same rule holds: nothing in this repository removes what it
-left on the host. `{{ nas_docker_root }}/ntfy/data` was `recovery: critical`: it
+entries -- and the same rule held: none of that removed what it left on the
+host. `{{ nas_docker_root }}/ntfy/data` was `recovery: critical`: it
 holds `auth.db`, every account's bcrypt hash and every access token.
 `{{ nas_docker_root }}/ntfy/cache` beside it was `recovery: cache`. The rendered
 `.env` under `nas-platform/runtime/services/ntfy` carries those hashes and the
 publisher tokens in clear, and the deploy account's
 `~/.config/nas-platform/ntfy.curl` and `ntfy-prune.curl` each carry the deploy
-publisher's bearer token at mode 0600. The operator has decided to delete all
-of it rather than archive it, since nothing any longer runs that those
-credentials open. Once `docker ps -a --filter
-label=com.docker.compose.project=ntfy` on the NAS prints nothing, the tidy-up is,
-as the deploy account:
+publisher's bearer token at mode 0600. The operator decided to delete all of it
+rather than archive it, since nothing any longer runs that those credentials
+open, and the NAS was found still running the container. **The repository now does the tidy-up**, so there is nothing to
+run by hand:
 
-```sh
-rm -rf /volume1/Docker/nas-platform/runtime/services/ntfy
-rm -rf /volume1/Docker/ntfy
-rm -f "$HOME/.config/nas-platform/ntfy.curl" "$HOME/.config/nas-platform/ntfy-prune.curl"
-```
+- `roles/host_prep/tasks/retire_ntfy.yml` removes every container and network
+  labelled with ntfy's Compose project (`ntfy` on the NAS), stopping each
+  within its own 30s grace period, then refuses to go further while any container
+  still mounts `{{ nas_docker_root }}/ntfy`, then removes that directory and
+  `{{ platform_runtime_dir }}/services/ntfy`. Under `--check` it reports each
+  removal and changes nothing; on a host without the residue it is a no-op.
+- `roles/production_auto_deploy` removes `ntfy.curl` and `roles/image_prune`
+  removes `ntfy-prune.curl` from the deploy account's
+  `~/.config/nas-platform`. Both run in the install play, the last one each
+  poller tick runs.
+
+If `host_prep` refuses because a container still mounts the directory, that
+container was not started by the ntfy Compose project; the message names it.
+Stop and remove it, and the next tick finishes the job.

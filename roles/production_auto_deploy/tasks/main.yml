@@ -239,6 +239,14 @@
     label: "{{ item.path }}"
   no_log: true
 
+# This role rendered it until #558 removed ntfy; it carries the deploy
+# publisher's bearer token for a server that no longer runs.
+- name: Remove the retired ntfy publisher configuration
+  ansible.builtin.file:
+    path: "{{ production_auto_deploy_config_root }}/ntfy.curl"
+    state: absent
+  no_log: true
+
 # Secret-bearing since #606: the two healthchecks.io ping URLs carry their
 # checks' tokens. Rendered after the poller copy above, and the poller reads a
 # configuration without them as "no ping", and one without the Pushover paths
