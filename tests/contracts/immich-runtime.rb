@@ -607,6 +607,54 @@ def assert_originals_open(token, records)
   end
 end
 
+# With the storage template enabled, every upload is moved twice after it is
+# accepted: metadata extraction queues a single-asset template migration, which
+# renames the original out of upload/ into its template path and updates the
+# row. A dump taken before that finishes holds rows naming the upload/ path, so a
+# restore of it names files that are no longer there (#907). This waits, read
+# only, until both queues are drained and every seeded row names its template
+# path. It is bounded on progress rather than on a clock: any change in either
+# queue's statistics or in a row's path restarts the count, and stale_polls
+# unchanged polls in a row fail with the last state.
+def wait_for_placed_originals(token, ids, stale_polls: 90, interval: 2)
+  queues = %w[metadataExtraction storageTemplateMigration]
+  pending = %w[active waiting delayed paused]
+  # The managed template, {{y}}/{{y}}-{{MM}}-{{dd}}/{{filename}}, under the
+  # owner's library folder.
+  placed = %r{/library/[^/]+/\d{4}/\d{4}-\d{2}-\d{2}/[^/]+\z}
+  previous = nil
+  unchanged = 0
+  loop do
+    statistics = queues.to_h do |name|
+      _response, queue = request("get", "/api/queues/#{name}", token: token)
+      counts = queue.is_a?(Hash) && queue["statistics"]
+      fail_contract("GET /api/queues/#{name} returned an unsupported schema") unless
+        [true, false].include?(queue.is_a?(Hash) && queue["isPaused"]) && counts.is_a?(Hash) &&
+        (pending + %w[completed failed]).all? { |key| counts[key].is_a?(Integer) && counts[key] >= 0 }
+      fail_contract("Immich #{name} queue is paused") if queue["isPaused"]
+      [name, counts]
+    end
+    paths = ids.map do |id|
+      _response, asset = request("get", "/api/assets/#{safe_id(id)}", token: token)
+      path = asset.is_a?(Hash) && asset["originalPath"]
+      fail_contract("GET /api/assets returned no originalPath") unless path.is_a?(String)
+      path
+    end
+    drained = statistics.values.all? { |counts| pending.sum { |key| counts.fetch(key) }.zero? }
+    return if drained && paths.all? { |path| path.match?(placed) }
+
+    current = [statistics, paths]
+    unchanged = current == previous ? unchanged + 1 : 0
+    previous = current
+    if unchanged >= stale_polls
+      fail_contract("seeded originals never reached their storage template paths: " \
+                    "#{paths.count { |path| path.match?(placed) }} of #{paths.length} placed, " \
+                    "queues #{JSON.generate(statistics)} unchanged for #{stale_polls} polls")
+    end
+    sleep interval
+  end
+end
+
 def clean_restore_records(token)
   FIXTURES.map do |fixture|
     id = upload_fixture(token, fixture)
@@ -762,6 +810,7 @@ if MODE == "clean-restore-seed"
     "clean-restore backup root already holds #{stale_backups.join(', ')}"
   ) unless stale_backups.empty?
   records = clean_restore_records(token)
+  wait_for_placed_originals(token, records.map { |record| record.fetch("id") })
   assert_originals_open(token, records)
   request(
     "post", "/api/jobs", token: token, expected: [204],
