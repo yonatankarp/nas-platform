@@ -248,6 +248,15 @@ GOLEM_BESZEL_SYSTEM = "golem"
 GOLEM_IN_UNPARSED_TITLE = re.compile(
     rf"(?:\A| on ){re.escape(GOLEM_BESZEL_SYSTEM)}(?=[: ]|\Z)"
 )
+# golem's container events reach /alerts from golem's Dozzle agent: Dozzle
+# v11.1.2's hub pushes its rules and this relay's dispatcher to every agent, and
+# the agent dispatches them itself with .Container.HostName set to its own
+# DOZZLE_HOSTNAME (internal/container/docker/client.go: NewLocalClient). golem
+# sets that to this name, which is also the `|golem` label dozzle_remote_agent
+# gives the agent in inventory/group_vars/all/service_dozzle.yml;
+# tests/dozzle_alert_relay_test.py holds this copy to that one. Compared whole,
+# so a NAS container host that merely contains the name stays the NAS's.
+GOLEM_DOZZLE_HOST = "golem"
 # The palette scripts/production_auto_deploy.py documents, spelled as it spells
 # it; tests/policy_test.rb holds the copies identical.
 COLOR_GREEN = "#2e7d32"
@@ -475,7 +484,8 @@ class Config:
         # keeps working. Without a usable link base a Beszel alert carries no
         # button. The Golem token is optional for the first reason, and its
         # absence costs less still: golem's alerts go out on the Alerts
-        # application instead, each saying so (process_beszel).
+        # application instead, and its container events on Containers, each
+        # saying so (process_beszel, process_event).
         alerts_token = optional_setting(values, "PUSHOVER_ALERTS_TOKEN")
         raw_beszel_link_base = values.get("BESZEL_LINK_BASE")
         if not isinstance(raw_beszel_link_base, str) or not raw_beszel_link_base:
@@ -791,7 +801,15 @@ def human_time(nanoseconds):
     return f"{moment.day} {moment:%b %H:%M} UTC"
 
 
-def render_notification(event, link_base):
+def golem_fallback_line(application):
+    """The amber Reason line on a golem message sent on `application` instead of Golem."""
+    return (
+        f'\u2753 <b>Reason</b> <font color="{COLOR_AMBER}">Golem app token not set</font>'
+        f"; sent on {application}"
+    )
+
+
+def render_notification(event, link_base, golem_fallback=False):
     """Render one event as Pushover form fields.
 
     Priorities, and why each. OOM is 2: it is the acknowledge semantic this
@@ -821,6 +839,9 @@ def render_notification(event, link_base):
     Pushover's cap. A timestamp before 1970 -- the envelope admits one, Docker
     never sends one -- is left off rather than sent negative for Pushover to
     refuse.
+
+    golem_fallback marks a golem event going out on the Containers application
+    because the Golem token is not set, the way render_beszel marks one on Alerts.
     """
     rule = event["rule"]
     container = html_escape(event["container"])
@@ -843,7 +864,8 @@ def render_notification(event, link_base):
         "title": title,
         "message": compose_message(
             f"<b>{container}</b> {state}",
-            notification_details(event, container, link_base),
+            notification_details(event, container, link_base)
+            + ([golem_fallback_line("Containers")] if golem_fallback else []),
             closing,
         ),
         "html": "1",
@@ -1017,10 +1039,7 @@ def render_beszel(alert, link_base, now, golem_fallback=False):
     if link is not None:
         fields["url"] = link
         fields["url_title"] = BESZEL_URL_TITLE
-    fallback_line = (
-        f'\u2753 <b>Reason</b> <font color="{COLOR_AMBER}">Golem app token not set</font>'
-        "; sent on Alerts"
-    )
+    fallback_line = golem_fallback_line("Alerts")
     if parsed["kind"] is None:
         text = parsed["body"].strip() or alert["title"]
         escaped = html_escape(text, MAX_MESSAGE_CHARACTERS, MAX_MESSAGE_CHARACTERS)
@@ -1998,6 +2017,8 @@ def process_event(config, event, floor):
     """
     identity = f"{event['host']}\0{event['containerId']}"
     now = utc_now()
+    golem = event["host"] == GOLEM_DOZZLE_HOST
+    golem_fallback = golem and config.pushover_golem_token is None
     with LockedState(config.alert_state_path) as state_file:
         entries, stored_budget, migration_required = state_file.read()
         # The store is read first and then corrected upwards, never trusted
@@ -2020,7 +2041,7 @@ def process_event(config, event, floor):
         if publication_required:
             decision = charge_budget(budget, identity, event["rule"], config)
             charged = decision[1]
-            notification = decision_notification(config, event, decision)
+            notification = decision_notification(config, event, decision, golem_fallback)
 
         proposed, charged, document = bounded_state(proposed, charged, now)
         replacement_required = (
@@ -2065,7 +2086,19 @@ def process_event(config, event, floor):
         # about the alert; what it must no longer mean is that the ceiling
         # forgot the alert happened.
         if notification is not None:
-            publish(config, notification, config.pushover_token)
+            # golem's events go out on the Golem application; a ceiling notice
+            # stays on Containers, as process_beszel keeps its own on Alerts.
+            token = config.pushover_token
+            if golem and decision[0] == "publish":
+                if golem_fallback:
+                    sys.stderr.write(
+                        "alert-relay: PUSHOVER_GOLEM_TOKEN is not set; "
+                        "a golem container event was sent on the Containers application\n"
+                    )
+                    sys.stderr.flush()
+                else:
+                    token = config.pushover_golem_token
+            publish(config, notification, token)
         floor.record(charged)
         if replacement_required:
             state_file.replace(proposed, charged, document)
@@ -2112,10 +2145,10 @@ def health_transition(event, identity, entries, proposed):
     return publication_required
 
 
-def decision_notification(config, event, decision):
+def decision_notification(config, event, decision, golem_fallback=False):
     """The Pushover fields a charge_budget decision authorises, or None if silent."""
     if decision[0] == "publish":
-        return render_notification(event, config.alert_relay_link_base)
+        return render_notification(event, config.alert_relay_link_base, golem_fallback)
     if decision[0] == "notice":
         return render_ceiling_notice(
             event, decision[2], decision[3], decision[1]["day"], decision[4]
@@ -2389,12 +2422,14 @@ def main():
     if config.beszel_link_problem is not None:
         sys.stderr.write(f"alert-relay: {config.beszel_link_problem}\n")
         sys.stderr.flush()
-    # All interfaces, but only inside this container's network namespace: the relay
-    # publishes no host port (services/dozzle/compose.yml gives it no ports mapping,
-    # which tests/contracts/dozzle.sh enforces), so the only addresses in reach are
-    # the Compose-network address Dozzle dials by service name and the loopback the
-    # healthcheck probes. Narrowing to loopback would break the first of those, and
-    # the container address is assigned at start time rather than known here.
+    # All interfaces, but only inside this container's network namespace. The
+    # host publication is 127.0.0.1 only (services/dozzle/compose.yml, which
+    # tests/contracts/dozzle-stack.rb pins), for the Tailscale Serve TCP forward
+    # golem's Dozzle agent arrives through (roles/dozzle/tasks/serve.yml). So the
+    # addresses in reach are the Compose-network address Dozzle and Beszel dial by
+    # service name, and the docker-proxy on the host's loopback. Narrowing this
+    # bind to loopback would break both, and the container address is assigned at
+    # start time rather than known here.
     server = create_server(("0.0.0.0", config.alert_relay_port), config)
     serve_until_stopped(server)
 

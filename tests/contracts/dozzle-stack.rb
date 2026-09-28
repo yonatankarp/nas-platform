@@ -65,8 +65,12 @@ abort "Dozzle contract failed: alert relay mounts differ" unless relay["volumes"
   "${PLATFORM_CURRENT_DIR:?}/services/dozzle/alert_relay.py:/app/alert_relay.py:ro",
   "${DOZZLE_STATE_ROOT:?}/alert-relay:/state"
 ]
-abort "Dozzle contract failed: alert relay must not publish a port" if
-  relay.key?("ports") || relay.key?("network_mode")
+# Loopback only and the listener port only: golem's agent reaches it through the
+# NAS's Tailscale Serve TCP forward (roles/dozzle/tasks/serve.yml), and the LAN
+# must not reach it at all. The Mac override resets it; nothing else may widen it.
+abort "Dozzle contract failed: alert relay must publish only its listener port, on loopback" unless
+  relay["ports"] == ["127.0.0.1:${ALERT_RELAY_PORT:?}:${ALERT_RELAY_PORT:?}"] &&
+  !relay.key?("network_mode")
 # The relay alone joins the external bridge host_prep creates for Beszel's hub,
 # and names default beside it, or Dozzle loses alert-relay:8081. The socket proxy
 # shares only the internal docker-api network, and only with Dozzle (#829).

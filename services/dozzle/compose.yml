@@ -40,6 +40,17 @@ services:
     networks:
       - default
       - alert-bridge
+    # LOOPBACK ONLY, for golem. Its Dozzle agent dispatches the rules the hub
+    # pushes to it from golem itself, to the same http://alert-relay:<port>/alerts
+    # URL; golem maps that name to this host's tailnet address, where a Tailscale
+    # Serve TCP forward (roles/dozzle/tasks/serve.yml) hands the connection to
+    # this loopback port. So the tailnet reaches the relay and the LAN does not,
+    # and the bearer token stays its authentication. Loopback rather than the
+    # tailnet address because that address may not exist yet when Docker starts
+    # the container at boot, and a bind to it would then fail. The same port on
+    # both sides and in Serve, because the URL golem is handed carries it.
+    ports:
+      - "127.0.0.1:${ALERT_RELAY_PORT:?}:${ALERT_RELAY_PORT:?}"
     volumes:
       - ${PLATFORM_CURRENT_DIR:?}/services/dozzle/alert_relay.py:/app/alert_relay.py:ro
       - ${DOZZLE_STATE_ROOT:?}/alert-relay:/state

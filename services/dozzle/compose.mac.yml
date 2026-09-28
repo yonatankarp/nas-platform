@@ -2,6 +2,10 @@
 services:
   alert-relay:
     container_name: ${PLATFORM_PROJECT_NAME:?}-dozzle-alert-relay
+    # The loopback port exists for the NAS's Tailscale Serve forward, which a
+    # Mac sandbox never places, and a fixed host port would collide between the
+    # side-by-side copies the Mac lane renders.
+    ports: !reset []
   dozzle:
     container_name: ${PLATFORM_PROJECT_NAME:?}-dozzle
     ports: !override

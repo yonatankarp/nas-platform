@@ -576,6 +576,16 @@ environment (#829). Beszel's is on `127.0.0.1` only because host-networked
 may share its network in `compose.yml`, and refuses an override of that stack
 declaring networks.
 
+**The Dozzle alert relay is the third `127.0.0.1` publication, for golem**:
+Dozzle's hub pushes the relay's URL and bearer header to golem's agent, which
+dispatches from golem. golem maps `alert-relay` to the NAS's tailnet address, and
+a Tailscale Serve TCP forward on `dozzle_alert_relay_port`
+(`roles/dozzle/tasks/serve.yml`) hands the connection to the loopback port, so the
+tailnet reaches the relay, the LAN does not, and the bearer token is still its
+authentication. Serve, not a bind to the tailnet address, because that address
+may not exist when Docker starts the container at boot. The relay sends events
+from host `golem` on the Golem Pushover application.
+
 **`beszel_agent` is effectively root on the host, by choice (#607)**: `:r` on its
 devices refuses a write-open and contains nothing else, and `:ro` on
 `docker.sock` restricts nothing at the Docker API. The containment is on the

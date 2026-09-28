@@ -1,0 +1,179 @@
+---
+# THE TAILNET TCP FORWARD golem's container alerts arrive through.
+#
+# Dozzle v11.1.2's hub pushes its rules and the relay's dispatcher -- URL and
+# bearer header -- to golem's agent, which dispatches from golem itself to
+# http://alert-relay:<dozzle_alert_relay_port>/alerts. golem maps alert-relay to
+# this host's tailnet address; this stage makes that address answer on that port
+# by forwarding it, as raw TCP, to the relay's 127.0.0.1 publication. The LAN
+# never reaches the relay, the tailnet does, and the bearer token stays its only
+# authentication, exactly as it is for Dozzle and Beszel on the Compose networks.
+#
+# Serve rather than a publication on the tailnet address because that address
+# may not exist yet when Docker starts the container at boot, and a bind to it
+# then fails; Serve binds nothing on the host and fails closed. Plain TCP rather
+# than Vaultwarden's HTTPS front, because the relay speaks plain HTTP and golem's
+# agent is handed an http:// URL.
+#
+# The shape is roles/vaultwarden/tasks/serve.yml's, which carries the argument
+# for each step: discover the client and treat its absence as a reporting skip,
+# read before writing because tailscaled holds this state, refuse an illegible
+# reading, place only on a difference, and name the operator grant a denial
+# needs. Measured against tailscale 1.102.2's source (cmd/tailscale/cli/
+# serve_v2.go applyTCPServe, ipn/serve.go ExpandProxyTargetValue): a bare-port
+# target expands to tcp://127.0.0.1:<port>, the CLI records it under
+# TCP["<port>"].TCPForward as 127.0.0.1:<port>, and it edits the configuration it
+# read, so Vaultwarden's Web entry and its TCP 443 survive the placement.
+#
+# NOTHING HERE PROBES THE FORWARD. A connection from this host to its own
+# tailnet address need not pass through Serve at all, so a probe would fail on
+# the one host that is correct. The manual end-to-end check is from golem:
+# `curl -fsS http://100.102.136.50:<port>/healthz`.
+
+- name: Locate the Tailscale client for the alert relay's tailnet forward
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ dozzle_tailscale_binary_candidates }}"
+  register: dozzle_tailscale_candidates
+  changed_when: false
+  check_mode: false
+  when: dozzle_tailscale_binary | length == 0
+
+- name: Resolve the Tailscale client for the alert relay's tailnet forward
+  ansible.builtin.set_fact:
+    dozzle_tailscale_path: >-
+      {{ dozzle_tailscale_binary
+         if dozzle_tailscale_binary | length > 0
+         else (((dozzle_tailscale_candidates.results | default([], true))
+                | selectattr('stat.exists')
+                | selectattr('stat.executable')
+                | map(attribute='stat.path') | list) + ['']) | first }}
+
+- name: Report the alert relay's tailnet forward this host cannot hold
+  ansible.builtin.debug:
+    msg: >-
+      No Tailscale client was found at
+      {{ dozzle_tailscale_binary_candidates | join(', ')
+         | default('any path, because this run was given no candidates at all',
+                   true) }}, so this host places no tailnet forward to the alert
+      relay and nothing here fails for it. Only the NAS runs Tailscale; every
+      CI lane, the Mac sandbox and a workstation converging over SSH take this
+      path, and on them golem's Dozzle agent has nothing to deliver to.
+  when: dozzle_tailscale_path | length == 0
+
+- name: Forward the alert relay's port over the tailnet with Tailscale Serve
+  when: dozzle_tailscale_path | length > 0
+  block:
+    - name: Read the Tailscale Serve configuration for the alert relay
+      ansible.builtin.command:
+        argv:
+          - "{{ dozzle_tailscale_path }}"
+          - serve
+          - status
+          - --json
+      register: dozzle_serve_status
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
+    - name: Resolve the alert relay's tailnet forward
+      ansible.builtin.set_fact:
+        dozzle_serve_unconfigured: >-
+          {{ 'no serve config' in
+             (((dozzle_serve_status.stdout | default('')) ~ ' ' ~
+               (dozzle_serve_status.stderr | default(''))) | lower) }}
+        dozzle_serve_document: >-
+          {{ (dozzle_serve_status.stdout | from_json)
+             if (dozzle_serve_status.stdout | default('') | trim) is match('^\{')
+             else {} }}
+
+    - name: Require a legible Tailscale Serve reading for the alert relay
+      ansible.builtin.assert:
+        that:
+          - dozzle_serve_status.rc == 0 or dozzle_serve_unconfigured
+        fail_msg: >-
+          `{{ dozzle_tailscale_path }} serve status --json` exited
+          {{ dozzle_serve_status.rc }} and did not report an absent serve
+          configuration, so this run cannot tell a host that is simply not
+          serving from a client whose command shape no longer matches these
+          arguments. It printed
+          {{ dozzle_serve_status.stdout | default('') | trim | default('nothing', true) }}
+          on stdout and
+          {{ dozzle_serve_status.stderr | default('') | trim | default('nothing', true) }}
+          on stderr.
+        success_msg: Tailscale Serve reported its configuration.
+
+    # Pattern rather than equality, for the reason Vaultwarden's comparison
+    # gives: the CLI records the target it resolved, and an operator placing the
+    # same forward by hand as tcp://localhost:<port> records that spelling.
+    - name: Resolve whether Tailscale Serve already forwards to the alert relay
+      ansible.builtin.set_fact:
+        dozzle_serve_forward: >-
+          {{ (((dozzle_serve_document.TCP | default({}, true))
+               [dozzle_alert_relay_port | string] | default({}, true)).TCPForward)
+             | default('', true) }}
+
+    - name: Resolve whether the alert relay's forward is the declared one
+      ansible.builtin.set_fact:
+        dozzle_serve_forwarded: >-
+          {{ dozzle_serve_forward
+             is match('^(127\.0\.0\.1|localhost):' ~ dozzle_alert_relay_port ~ '$') }}
+
+    # default(1) and the one tolerated failure are Vaultwarden's placement's,
+    # for the reasons recorded there: a refusal before anything ran sets no rc,
+    # and the operator denial alone has a remedy this platform can name.
+    - name: Place the Tailscale Serve forward for the alert relay
+      ansible.builtin.command:
+        argv:
+          - "{{ dozzle_tailscale_path }}"
+          - serve
+          - --bg
+          - --yes
+          - --tcp
+          - "{{ dozzle_alert_relay_port }}"
+          - "{{ dozzle_alert_relay_port }}"
+      register: dozzle_serve_placed
+      changed_when: dozzle_serve_placed.rc | default(1) == 0
+      failed_when:
+        - dozzle_serve_placed.rc | default(1) != 0
+        - >-
+          'serve config denied'
+          not in (dozzle_serve_placed.stderr | default('', true) | lower)
+          and 'access denied'
+          not in (dozzle_serve_placed.stderr | default('', true) | lower)
+      when:
+        - not dozzle_serve_forwarded
+        - not ansible_check_mode
+
+    - name: Require the Tailscale operator grant the alert relay's forward needs
+      ansible.builtin.assert:
+        that:
+          - dozzle_serve_placed is skipped
+            or dozzle_serve_placed.rc | default(1) == 0
+        fail_msg: >-
+          tailscaled refused `{{ dozzle_tailscale_path }} serve --bg --yes --tcp
+          {{ dozzle_alert_relay_port }} {{ dozzle_alert_relay_port }}`: the
+          account this play runs as may not write `tailscale serve`
+          configuration on this host. The remedy is one command, run once on
+          the NAS by a human who can sudo:
+          `sudo tailscale set --operator={{ ansible_facts['user_id'] | default('$USER', true) }}`.
+          roles/vaultwarden/defaults/main.yml records why this repository
+          does not perform it. The client said:
+          {{ dozzle_serve_placed.stderr | default('', true) | trim | default('nothing', true) }}
+        success_msg: >-
+          The account this play runs as may write `tailscale serve`
+          configuration on this host.
+
+    - name: Report the alert relay's tailnet forward check mode defers
+      ansible.builtin.debug:
+        msg: >-
+          A live run would
+          {{ 'leave the existing forward in place, because'
+             if dozzle_serve_forwarded
+             else 'run `' ~ dozzle_tailscale_path ~ ' serve --bg --yes --tcp '
+                  ~ dozzle_alert_relay_port ~ ' ' ~ dozzle_alert_relay_port ~ '`, because' }}
+          Tailscale Serve currently forwards tailnet port
+          {{ dozzle_alert_relay_port }} to
+          {{ dozzle_serve_forward | default('', true) | default('nothing', true) }}
+          and this release declares 127.0.0.1:{{ dozzle_alert_relay_port }}.
+      when: ansible_check_mode

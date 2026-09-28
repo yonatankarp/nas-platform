@@ -197,7 +197,10 @@ mac_validate_integration_callback() {
 # at a sandbox port that disappears when the lane cleans up, and then fail the run
 # when the sandbox's own `.invalid` origin did not answer through it. The sandbox
 # is disposable and the tailnet is not. An empty list takes the role's absent
-# path, which is a reporting skip it already takes on every CI lane.
+# path, which is a reporting skip it already takes on every CI lane. roles/dozzle
+# reads a list of its own for the alert relay's tailnet TCP forward, emptied here
+# for the same reason: it would otherwise forward a port on the operator's real
+# tailnet to a sandbox that is about to disappear.
 #
 # dozzle_pushover_api_url for the reason tests/integration_controller_lib.sh
 # records at length: the alert relay POSTs to it on every container event Dozzle
@@ -237,7 +240,7 @@ mac_ansible_playbook() {
     -e 'dozzle_pushover_api_url=http://{{ platform_callback_host }}:32587/1/messages.json' \
     -e 'deployment_pushover_api_url=http://127.0.0.1:1/1/messages.json' \
     -e '{"seerr_pushover_access_token": "", "seerr_pushover_user_key": ""}' \
-    -e '{"vaultwarden_tailscale_binary_candidates": []}'
+    -e '{"vaultwarden_tailscale_binary_candidates": [], "dozzle_tailscale_binary_candidates": []}'
   case ${PLATFORM_PROOF_PLATFORM:-mac} in
     mac)
       case ${PLATFORM_CALLBACK_HOST:-host.docker.internal} in
