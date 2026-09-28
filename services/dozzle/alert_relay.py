@@ -1631,6 +1631,14 @@ def process_event(config, event, floor, delivered):
         if delivered.seen(event, now):
             return
         entries, stored_budget, migration_required = state_file.read()
+        # Health state recorded under Golem's former name is this container's:
+        # moved, or its Recovery would not publish and the Unhealthy entry,
+        # which is never evicted, would stay for good.
+        former_identity = f"{GOLEM_FORMER_NAME}\0{event['containerId']}"
+        if golem and former_identity in entries and identity not in entries:
+            entries = dict(entries)
+            entries[identity] = dict(entries.pop(former_identity), identity=identity)
+            migration_required = True
         # Read, then corrected upwards, never downwards: a lost increment must not
         # grant the same allowance twice.
         budget = floor.raise_floor(rolled_budget(stored_budget, now))

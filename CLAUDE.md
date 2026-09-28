@@ -589,10 +589,11 @@ authentication. Serve, not a bind to the tailnet address, because that address
 may not exist when Docker starts the container at boot. The relay sends events
 from host `Golem` on the Golem Pushover application. `Golem` is the monitoring
 name in Beszel, Dozzle and the relay; the machine and its tailnet name stay
-`golem`. The relay still accepts the lowercase name as the same host, and
-`roles/beszel` renames a hub record still under it (`former_names`), because
-the hub keeps the name an agent first registered with; both go once the NAS and
-golem-platform have deployed the rename.
+`golem`. The relay accepts the lowercase name as the same host. The hub keeps
+the name an agent first registered with, so `roles/beszel` renames a record
+still under a `former_names` entry in place; it runs before `roles/dozzle`, so
+that rename lands only after the relay that accepts `Golem` is deployed. The
+former names go once both repositories have deployed the rename.
 
 **`beszel_agent` is effectively root on the host, by choice (#607)**: `:r` on its
 devices refuses a write-open and contains nothing else, and `:ro` on

@@ -2798,7 +2798,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
 
     def test_the_golem_system_name_is_one_beszel_manages(self):
         defaults = (ROOT / "roles/beszel/defaults/main.yml").read_text()
-        name = re.escape(self.relay_module.GOLEM_BESZEL_SYSTEM)
+        name = "(?:" + "|".join(map(re.escape, self.relay_module.GOLEM_BESZEL_SYSTEMS)) + ")"
         self.assertRegex(
             defaults, rf"(?m)^beszel_remote_systems:\n(?:[ #].*\n|\n)*?  - name: {name}$",
             "GOLEM_BESZEL_SYSTEM must name a system in beszel_remote_systems",
@@ -2885,6 +2885,18 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertIn("\U0001f5a5️ <b>Host</b> Golem", forms[0]["message"])
         self.assertEqual([entry["identity"].split("\0")[0] for entry in self.read_state()["entries"]],
                          ["Golem"])
+
+    def test_health_state_under_the_former_host_name_is_carried_over(self):
+        self.write_state({
+            "version": 3,
+            "entries": [self.state_entry(CONTAINER_ID, "unhealthy", "2026-08-15T01:22:13Z", host="golem")],
+            "budget": self.budget(),
+        })
+        self.assertEqual(self.post(self.envelope(
+            "Recovery", host="Golem", timestamp="2026-08-15T01:23:13Z"))[0], 204)
+        self.assertEqual([form["token"] for form in self.published_forms()], [GOLEM_TOKEN])
+        self.assertEqual(self.read_state()["entries"],
+                         [self.state_entry(CONTAINER_ID, "healthy", "2026-08-15T01:23:13Z", host="Golem")])
 
     def test_a_ceiling_a_golem_container_trips_is_announced_on_the_containers_application(self):
         event = self.envelope("Unexpected exit", host="Golem")

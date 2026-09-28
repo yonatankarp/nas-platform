@@ -39,12 +39,14 @@ beszel_alerts:
 
 # Other systems reporting to this hub under the managed application user; their
 # agents are deployed elsewhere, so an unregistered one is reported, not fatal.
-# Golem: Memory 85 (7.2 GiB, page cache excluded), no Temperature (unmeasured).
-# former_names: records under these are renamed to name in place (configure.yml);
-# drop the entry once the hub shows only Golem.
+# golem: Memory 85 (7.2 GiB, page cache excluded), no Temperature (unmeasured).
+# former_names: records under these are renamed to name in place (configure.yml).
+# Still golem: this role runs before roles/dozzle, so renaming the record in the
+# same converge that deploys a relay accepting Golem would route Golem's alerts
+# to Alerts in between. It becomes Golem, former_names [golem], once that relay
+# is deployed.
 beszel_remote_systems:
-  - name: Golem
-    former_names: [golem]
+  - name: golem
     alerts:
       - name: Status
         value: 0
