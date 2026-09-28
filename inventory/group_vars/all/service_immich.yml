@@ -47,6 +47,13 @@ immich_managed_user_preference_profiles:
       enabled: false
       sidebarWeb: false
 
+# The hourly originals check (#907) fails when more than this percentage of its
+# random sample names an original missing from disk. Not zero: some rows are
+# known to be unrecoverable (647 on 2026-09-28), and at zero a sample would hit
+# one most hours and page on every flip. A recurrence of #907's scale, about 40%
+# of rows, trips it every run. Lower it as those rows are resolved.
+immich_originals_missing_ceiling_percent: 10
+
 nas_storage_immich:
   # Immich. Ownership is deliberately unclaimed: the pinned images run as root
   # and rewrite ownership of everything they touch, so declaring 1000:100 here

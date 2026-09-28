@@ -183,10 +183,12 @@ end.uniq
 # A tag the hourly --verify run selects and a deployment's verify play must not.
 # A deployment whose verify fails is quarantined and never retried, and a
 # degraded RAID array still serves, so platform_verify_mdraid in the deploy list
-# would record every revision converged during a rebuild as failed (#609). Stated
+# would record every revision converged during a rebuild as failed (#609), and
+# Immich originals moved outside Immich would quarantine every revision until an
+# operator resolved them (#907). Stated
 # rather than derived, and held both ways below, so a service tag cannot quietly
 # become hourly-only either.
-HOURLY_ONLY_VERIFY_TAGS = %w[platform_verify_mdraid].freeze
+HOURLY_ONLY_VERIFY_TAGS = %w[platform_verify_mdraid platform_verify_immich_originals].freeze
 hourly_default = defaults.fetch("production_auto_deploy_hourly_only_verify_tags", "").to_s.strip
 hourly_tags = hourly_default.split(",")
 
@@ -338,10 +340,16 @@ beszel_main = File.join(ROOT, "roles/beszel/tasks/main.yml")
       { "name" => "Planted",
         "ansible.legacy.include_role" => { "name" => "host_prep", "tasks_from" => "verify_mdraid" } }
     ] }]
-}.each do |shape, (path, planted)|
+}.merge(
+  "immich's main.yml, include_tasks" =>
+    [File.join(ROOT, "roles/immich/tasks/main.yml"),
+     { "name" => "Planted", "ansible.builtin.include_tasks" => "verify_originals.yml" },
+     "platform_verify_immich_originals"]
+).each do |shape, (path, planted, tag)|
+  tag ||= "platform_verify_mdraid"
   tasks_with_plant, = site_reachable_tasks(path => YAML.safe_load_file(path, aliases: true) + [planted])
-  check(failures, hourly_only_tags_in(tasks_with_plant) == HOURLY_ONLY_VERIFY_TAGS,
-        "planted: #{shape} reaching verify_mdraid.yml must be refused")
+  check(failures, hourly_only_tags_in(tasks_with_plant) == [tag],
+        "planted: #{shape} reaching #{tag} must be refused")
 end
 
 def listed_hourly_only_tags(ansible, playbook)
@@ -405,7 +413,7 @@ Dir.mktmpdir("hourly-only-site-plant") do |sandbox|
     FileUtils.mkdir_p(directory)
     plant.call(directory)
     planted, planted_listing = listed_hourly_only_tags(ansible, File.join(directory, "site.yml"))
-    check(failures, planted == HOURLY_ONLY_VERIFY_TAGS,
+    check(failures, planted == %w[platform_verify_mdraid],
           "planted: #{route} reaching verify_mdraid.yml must be refused; listed #{planted.inspect}" \
           "#{planted.nil? ? ": #{planted_listing.lines.last(5).join}" : ''}")
   end

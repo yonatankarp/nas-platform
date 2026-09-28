@@ -75,6 +75,14 @@
         apply:
           tags: [platform_verify_mdraid]
       tags: [never, platform_verify_mdraid]
+
+    - name: Verify sampled Immich asset rows still name originals on disk
+      ansible.builtin.include_role:
+        name: immich
+        tasks_from: verify_originals
+        apply:
+          tags: [platform_verify_immich_originals]
+      tags: [never, platform_verify_immich_originals]
   roles:
     - role: beszel
       tags: [never]

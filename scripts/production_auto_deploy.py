@@ -96,7 +96,7 @@ COMMAND_TIMEOUT_SECONDS = 60 * 60
 VERIFY_TIMEOUT_SECONDS = 30 * 60
 # Each hourly-only tag runs after the services, in the same lock hold, under its
 # own budget, so a service run that timed out still leaves it one. The hold is at
-# most 30 + 10 per hourly-only tag: 40 minutes today, under the hourly cadence.
+# most 30 + 10 per hourly-only tag: 50 minutes with two, under the hourly cadence.
 HOURLY_ONLY_VERIFY_TIMEOUT_SECONDS = 10 * 60
 # How long --verify waits for a deployment to release the lock before skipping
 # the hour. A skipped verify pings nothing, and the hourly check tolerates
@@ -108,8 +108,11 @@ HOURLY_ONLY_VERIFY_TIMEOUT_SECONDS = 10 * 60
 # an UP one second apart, the recovering run's own ping arriving as the grace
 # expired. Waiting turns the common collision into a ping in the same hour. The
 # budget comes from the cadence and not from the deployment: 15 waiting plus the
-# 40-minute worst-case hold above is 55 minutes, so a verify that waits its whole
-# budget and then runs its longest still ends before the next hour's cron. A
+# 40-minute hold of the services and the array check was 55 minutes, inside the
+# hour. The Immich originals check (#907) makes the worst case 65, so a verify
+# that waits its whole budget and then times out every run overlaps the next
+# hour's cron by five minutes, and that cron waits for it like any holder rather
+# than skipping. Each run normally takes a small part of its budget. A
 # deployment with longer left than that is skipped exactly as before -- the skip
 # stays the signal for a verify that cannot run at all.
 VERIFY_LOCK_WAIT_SECONDS = 15 * 60
@@ -135,6 +138,10 @@ COLOR_GREY = "#9e9e9e"
 # other failure, a timeout included, is "unchecked": the check could not run. The
 # record keeps which, so a recovery says "healthy" only after a real mismatch.
 MDRAID_MISMATCH_MARKER = "MDRAID-BASELINE-MISMATCH"
+# The same for roles/immich/tasks/verify_originals.yml (#907): only its ceiling
+# assert says originals are missing; a database it could not read, or a path the
+# helper refused, is a check that could not run.
+IMMICH_ORIGINALS_MISSING_MARKER = "IMMICH-ORIGINALS-MISSING"
 HOURLY_ONLY_VERIFY_CHECKS = {
     "platform_verify_mdraid": {
         "marker": MDRAID_MISMATCH_MARKER,
@@ -156,6 +163,29 @@ HOURLY_ONLY_VERIFY_CHECKS = {
         "restored": (
             "\U0001f7e2 RAID check running again",
             f'<b>RAID check</b> <font color="{COLOR_GREEN}">runs</font> again',
+            "",
+        ),
+    },
+    "platform_verify_immich_originals": {
+        "marker": IMMICH_ORIGINALS_MISSING_MARKER,
+        "fail": (
+            "\U0001f7e0 Immich originals missing",
+            f'<b>Immich originals</b> are <font color="{COLOR_AMBER}">missing</font> for sampled assets',
+            "<i>Files moved or deleted outside Immich; the log gives the sampled count.</i>",
+        ),
+        "unchecked": (
+            "❔ Immich originals check could not run",
+            f'<b>Immich originals check</b> <font color="{COLOR_AMBER}">could not run</font>',
+            "<i>This says nothing about the files; the log names what stopped the check.</i>",
+        ),
+        "recovered": (
+            "\U0001f7e2 Immich originals present",
+            f'<b>Immich originals</b> are <font color="{COLOR_GREEN}">present</font> again',
+            "",
+        ),
+        "restored": (
+            "\U0001f7e2 Immich originals check running again",
+            f'<b>Immich originals check</b> <font color="{COLOR_GREEN}">runs</font> again',
             "",
         ),
     },

@@ -50,7 +50,9 @@ production_auto_deploy_verify_tags: >-
 # must never fail a deployment. platform_verify_mdraid is one (#609): a degraded
 # array still serves, and a deployment whose verify play fails is quarantined and
 # never retried, so a rebuild would record every converged revision as failed.
-production_auto_deploy_hourly_only_verify_tags: platform_verify_mdraid
+# platform_verify_immich_originals is another (#907): originals moved outside
+# Immich are a data problem an operator may take days to resolve.
+production_auto_deploy_hourly_only_verify_tags: platform_verify_mdraid,platform_verify_immich_originals
 
 # Every managed path derives from the effective account's real home, so the role
 # cannot be pointed at another account's tree by overriding one variable.
