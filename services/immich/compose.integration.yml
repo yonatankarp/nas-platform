@@ -2,15 +2,11 @@
 services:
   immich-server:
     container_name: ${PLATFORM_PROJECT_NAME:?}-immich-server
-    # The integration sandbox is a Linux container host without /dev/dri. It
-    # keeps the production port; only the render node is removed, exactly as on
-    # the Mac.
+    # No /dev/dri in the sandbox; only the render node is removed.
     devices: !override []
 
-  # Only container names move. Renaming the Compose services themselves would
-  # break machineLearning.urls, which Immich stores as
-  # http://immich-machine-learning:3003, and the database and cache hostnames
-  # the application resolves.
+  # Only container names move: Immich stores service hostnames such as
+  # http://immich-machine-learning:3003.
   immich-machine-learning:
     container_name: ${PLATFORM_PROJECT_NAME:?}-immich-machine-learning
 

@@ -1,26 +1,8 @@
 # frozen_string_literal: true
 
-# The HTTP fixture server and the throwaway playbook runner the behavior tests
-# share.
-#
-# A dozen tests each grew their own copy of the same thirty-five lines: a
-# loopback TCPServer on an ephemeral port, an accept loop in a thread, the
-# request-line and header parse, the content-length body read, and the teardown
-# that has to hand a crash in that thread back to the main thread. The copies
-# drifted — tests/paperless_mail_reconciliation_test.rb and
-# a since-removed verification test had both dropped the explicit
-# propagation, leaving the crash to Thread#join re-raising it — which stops
-# holding the moment that join is bounded or the thread is killed, as they are
-# here.
-#
-# What genuinely differs between the tests is the response, so that is all a
-# caller supplies: a responder block answering [status, payload]. The transport,
-# the shutdown and the error propagation are stated once, here.
-#
-# The shutdown uses a pipe rather than closing the listening socket alone.
-# Closing it relies on the interpreter waking a thread blocked in IO.select on
-# that descriptor, which not every platform delivers; the pipe makes the select
-# return by itself, so the server thread always unwinds.
+# The HTTP fixture server and the throwaway playbook runner the behavior tests share.
+# A pipe, not only closing the listener, ends the accept loop: not every platform
+# wakes a thread blocked in IO.select when its descriptor is closed.
 
 require "open3"
 require "socket"
@@ -28,86 +10,37 @@ require "tmpdir"
 require "yaml"
 
 module HttpFixtureSupport
-  # Resolved from this file rather than from the caller, so a test nested under
-  # tests/ci/ or tests/mac/ gets the same repository root as one directly in
-  # tests/.
+  # Resolved from this file, so tests under tests/ci/ or tests/mac/ get the same root.
   REPOSITORY_ROOT = File.expand_path("..", __dir__)
-  # The reason phrases the fixtures used to spell out one map at a time. A
-  # caller states its own with reason:, as a literal phrase, a status-to-phrase
-  # mapping falling back to UNKNOWN_REASON, or anything callable with a status.
-  # Several fixtures answer a phrase of their own — the phrase reaches the role
-  # through Ansible's HTTP diagnostics, so it is preserved rather than
-  # standardised.
+  # Default reason phrases; a caller may pass reason: as a phrase, a map, or a callable.
+  # Fixture-specific phrases reach the role via Ansible's HTTP diagnostics, so keep them.
   REASONS = {
     200 => "OK", 201 => "Created", 202 => "Accepted", 204 => "No Content",
     400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden",
     404 => "Not Found", 409 => "Conflict", 500 => "Internal Server Error"
   }.freeze
   UNKNOWN_REASON = "Error"
-  # How long the caller's block may leave the server thread running after it
-  # returns. A fixture thread that will not stop is a defect worth reporting
-  # rather than a hang worth waiting out.
+  # How long the server thread may outlive the caller's block before it is a defect.
   JOIN_SECONDS = 10
 
-  # Raised for a fault in the fixture itself, so it is never mistaken for the
-  # behavior under test.
   class FixtureError < StandardError; end
 
-  # What ansible-core prints in front of the diagnostic of the task that failed,
-  # and in front of no other text in a run. Pinned to the 2.21.3 wording, the
-  # version controller-requirements.txt installs: a core release that rephrases
-  # this fails the assertions reading it loudly, which is the intended direction.
-  # An assertion that silently stops matching is the failure this constant exists
-  # to prevent, so update it here rather than dropping the anchor.
+  # Pinned to the ansible-core wording controller-requirements.txt installs. If a core
+  # release rephrases it, update it here rather than dropping the anchor.
   TASK_REFUSAL_PREFIX = "Task failed: Action failed: "
 
   module_function
 
-  # True when +output+ shows the run refused with +diagnostic+ -- the fail_msg of
-  # the task that was meant to stop it.
-  #
-  # Read the diagnostic, never the task name. Ansible prints "TASK [<name>]"
-  # whenever a task merely *runs*, so a whole-output substring of a task name is
-  # satisfied by that task executing and passing while the run failed somewhere
-  # else entirely -- which is the defect such a check is written to catch. That is
-  # #419's class: its confirmed instance was an argument-spec refusal whose
-  # argument_spec_data dump echoed the option name the assertion searched for, so
-  # the check passed with the option declared optional. The TASK banner is the
-  # same echo from a different source. Anchor on text only the error path emits,
-  # adjacent to its subject, the way #417 anchored on
-  # "missing required arguments: <key>".
+  # True when +output+ shows the run refused with +diagnostic+ (the task's fail_msg).
+  # Never match the task name: "TASK [<name>]" prints whenever the task merely runs (#419).
   def refused_with?(output, diagnostic)
     output.include?("#{TASK_REFUSAL_PREFIX}#{diagnostic}")
   end
 
-  # A loopback port nothing is listening on, for the rows whose subject is what a
-  # caller does when a connection is REFUSED.
-  #
-  # Binding port 0 and closing the socket asks the kernel for a free port and
-  # then hands it straight back, so from the close onward that port belongs to
-  # whoever takes it next -- another case of the same check running in a worker
-  # pool, a fixture server two lines further down, anything on the machine. The
-  # tests that did this observed none of it: a connect that SUCCEEDS reaches
-  # whatever took the port and is answered, so the row meant to prove the
-  # refusal path proves that other server's reply instead, silently and with the
-  # verdict it was looking for still plausible.
-  #
-  # So the port is verified rather than assumed. A probe connect has to be
-  # refused before the port is handed back, and a port that answers is discarded
-  # and re-derived. That does not close the window -- nothing outside the kernel
-  # can, short of holding the port, which is the one thing these rows need not to
-  # do -- but it narrows it from the whole body of the test to the gap between
-  # this probe and the caller's own connect, and it turns the remaining failure
-  # into a loud one: every attempt answering is a raise, not a pass.
-  #
-  # Releasing the port is therefore correct HERE and must stay that way, which is
-  # worth saying because a port helper elsewhere that releases what its caller is
-  # about to bind is a bug and was one (#736). The difference is not in the code,
-  # which is nearly the same five lines, but in what the caller does next: a
-  # caller that BINDS the port needs it held until that bind, while these rows
-  # need nothing listening on it at all, so holding it would defeat the only
-  # property they are asking about. A future reader unifying the two would take
-  # one of them apart.
+  # A loopback port nothing listens on, for rows testing a REFUSED connection.
+  # The port is probed refused before it is returned, narrowing (not closing) the
+  # reuse race. Releasing it is right here only because callers need nothing bound
+  # there; a helper whose caller then binds the port must hold it instead (#736).
   def refusing_port(attempts: 32)
     attempts.times do
       port = begin
@@ -131,20 +64,9 @@ module HttpFixtureSupport
   end
 
   # Serves one loopback HTTP fixture for the duration of +client+.
-  #
-  #   with_http_fixture(->(port) { ... }) do |method, target, headers, body|
-  #     [200, JSON.generate("ok" => true)]
-  #   end
-  #
-  # The responder answers a bare status, or [status, payload], or
-  # [status, payload, content_type]. A three-element answer states the
-  # Content-Type outright, and a nil there omits the header — which is how a
-  # 204 stays a 204.
-  #
-  # Anything the responder raises is re-raised in the calling thread once the
-  # fixture is down. That is the whole point of the helper: a fixture that
-  # crashes must fail its test, not answer nothing and let the assertion blame
-  # the role.
+  # The responder answers status, [status, payload] or [status, payload, content_type]
+  # (nil omits Content-Type, so a 204 stays a 204). Anything it raises is re-raised in
+  # the caller once the fixture is down, so a crashing fixture fails its test.
   def with_http_fixture(client, content_type: "application/json", reason: nil, &responder)
     raise ArgumentError, "an HTTP fixture needs a responder block" unless responder
 
@@ -237,25 +159,16 @@ module HttpFixtureSupport
     end
   end
 
-  # Platform facts a role task file reads from inventory/group_vars/all/main.yml,
-  # which a one-play fixture playbook never loads. Read from that file rather
-  # than restated, so a probe asserts the production value; a probe that passes
-  # its own still wins, because these sit underneath it. Read when a playbook
-  # runs rather than when this file is required: several contract fixtures copy
-  # this helper into a tree that carries no inventory and never run a playbook.
-  # fetch, not slice, so a renamed key fails here rather than as an undefined
-  # variable inside whichever role reads it.
+  # Platform facts from inventory/group_vars/all/main.yml, which a one-play playbook
+  # never loads. Read at run time (contract fixtures copy this file without inventory);
+  # fetch so a renamed key fails here.
   def platform_fixture_variables
     vars = YAML.safe_load_file(File.join(REPOSITORY_ROOT, "inventory", "group_vars", "all", "main.yml"))
     { "platform_safe_api_identifier_pattern" => vars.fetch("platform_safe_api_identifier_pattern") }
   end
 
-  # Runs +tasks+ as a one-play playbook against the local connection, the way
-  # every behavior test reaches a role's task file without a real inventory.
-  #
-  # The playbook is written mode 0600 inside a temporary directory that is
-  # removed afterwards, because the variables these tests pass routinely include
-  # fixture credentials.
+  # Runs +tasks+ as a one-play local playbook. Written 0600 in a temp dir that is
+  # removed afterwards, because the variables often carry fixture credentials.
   def run_playbook(tasks, variables, *arguments, environment: {}, chdir: REPOSITORY_ROOT,
                    hosts: "localhost", gather_facts: false, prefix: "nas-platform-playbook-")
     Dir.mktmpdir(prefix) do |directory|

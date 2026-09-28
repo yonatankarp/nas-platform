@@ -1,22 +1,11 @@
 #!/usr/bin/env ruby
-# The rendered-document half of the Dozzle service contract: the friendly
-# container names and the Running Containers grouping, read off a merged
-# `docker compose config --format json` rather than off Compose source, so an
-# override that breaks either cannot slip in unrendered.
-#
-# Invoked once per stack per platform variant -- fifty-one times in a static
-# run -- with the stack, the variant, the expected group and the probe port as
-# argv, and the whole rendered document in DOZZLE_RENDERED_COMPOSE. The probe
-# port is a value the repository never contains, which is what makes the first
-# assertion behavioural: both container-internal consumers of the listener port
-# have to come back holding it.
+# Rendered-document half of the Dozzle contract: container names and grouping,
+# read off a merged `docker compose config` so an override cannot slip past.
+# argv: stack, variant, expected group, probe port; document in DOZZLE_RENDERED_COMPOSE.
 stack, variant, expected_group, relay_probe_port = ARGV
 services = JSON.parse(ENV.fetch("DOZZLE_RENDERED_COMPOSE")).fetch("services")
 if stack == "dozzle"
-  # Behavioural in the only sense available to a rendered document: both
-  # container-internal consumers of the listener port are read back from a render
-  # driven by a port the repository never mentions. Asserting the Python source
-  # text instead would pin whatever literal it happened to contain.
+  # Both consumers must come back holding a probe port the repository never contains.
   relay = services.fetch("alert-relay")
   probed = relay.fetch("environment", {})["ALERT_RELAY_PORT"]
   healthcheck = Array(relay.dig("healthcheck", "test")).join(" ")

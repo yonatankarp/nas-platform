@@ -1,23 +1,7 @@
 #!/usr/bin/env ruby
-# Emit one decimal port per roster service, in roster order, from a validated
-# integration ports input.
-#
+# Emit one decimal port per roster service, in roster order, from a validated input.
 # usage: read-integration-ports.rb PATH REPOSITORY SERVICE...
-#
-# The roster arrives as arguments rather than as a literal list so that the
-# emission order and the order tests/mac/run.sh unpacks are the same list. Every
-# refusal is the single word `unsafe`, deliberately: the caller turns any failure
-# into one diagnostic, and nothing about the rejected file is echoed back.
-#
-# The checks are a TOCTOU-safe read, not a parse. The file is opened once and the
-# stat held through the descriptor must agree with the lstat taken before it and
-# with the stat taken after the read, so a file swapped underneath the path is
-# refused rather than parsed. REPOSITORY is the tree the input must NOT live
-# inside; it is a tree under inspection, never the checkout this program is part
-# of, and the caller resolves this program from its own directory.
-#
-# It lived in a `<<'RUBY'` heredoc in tests/mac/run.sh until #315, opened as
-# `ruby -rjson -`; the require below is that preload, which the body never had.
+# TOCTOU-safe read (lstat/fstat/stat must agree); every refusal is just `unsafe`.
 require "json"
 
 path, repository, *services = ARGV

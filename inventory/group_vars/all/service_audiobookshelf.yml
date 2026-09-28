@@ -3,9 +3,7 @@
 # Cross-cutting facts live in main.yml; secrets in vault_audiobookshelf.yml.
 
 nas_storage_audiobookshelf:
-  # Audiobookshelf. The database, metadata, and automatic restore backups are
-  # critical application state; audiobook files remain NAS-owned user media
-  # mounted read-only.
+  # Database, metadata and restore backups are critical; audiobooks stay NAS-owned, read-only.
   - path: "{{ nas_docker_root }}/audiobookshelf/config"
     owner: "{{ nas_uid }}"
     group: "{{ nas_gid }}"

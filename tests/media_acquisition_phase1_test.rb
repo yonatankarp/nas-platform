@@ -65,23 +65,13 @@ end
 failures = []
 catalog = strict_yaml("config/media-acquisition.yml")
 manifest = strict_yaml("services/manifest.yml")
-# The composition rather than one file. These defaults are the host's answer for
-# the acquisition stack, and #650 moved
-# media_acquisition_adopt_existing_libraries to main.yml because roles/downloaders
-# reads it too -- so a subject built from service_arr.yml alone stopped containing
-# one of the six values below. Merged in the order Ansible loads group_vars/all,
-# which is by filename, so service_arr.yml wins any key main.yml also sets.
+# The group_vars composition, merged in Ansible's filename order, since #650
+# moved one of these values to main.yml.
 all_vars = strict_yaml("inventory/group_vars/all/main.yml")
            .merge(strict_yaml("inventory/group_vars/all/service_arr.yml"))
 
-# The two files must agree; which status they agree on is not restated here.
-# media_acquisition_foundation_test.rb pins the catalog exactly and holds it to
-# the manifest, so that is where a promotion is admitted. A third copy of the
-# statuses in this file recorded only what someone remembered to update, and no
-# test said it had to match either of the other two.
-# Read tolerantly: the manifest's required fields are policed by policy_test.rb,
-# which names the entry that lacks one. A KeyError raised out of this suite would
-# report that defect as a crash in a file it is not about.
+# The two files must agree; media_acquisition_foundation_test.rb pins which
+# status. Read tolerantly: policy_test.rb owns the manifest's required fields.
 manifest_status = Array(manifest["services"]).select { |entry| entry.is_a?(Hash) }
                                              .to_h { |entry| [entry["name"], entry["status"]] }
 catalog_projects = catalog["projects"].is_a?(Hash) ? catalog.fetch("projects") : {}
@@ -108,8 +98,6 @@ expected_safe_defaults.each do |name, value|
         "#{name} must default to #{value.inspect}")
 end
 
-# Usenet is enabled on the NAS, where Phase 1 was accepted. Every other
-# transport on every host stays inert until its own handoff.
 transport_flags =
   { "nas_hosts" => { "media_usenet_enabled" => true, "media_torrent_enabled" => false },
     "mac_hosts" => { "media_usenet_enabled" => false, "media_torrent_enabled" => false } }
@@ -121,12 +109,8 @@ transport_flags.each do |host_group, flags|
   end
 end
 
-# What a normal deployment starts is an inventory value, not a role default, so
-# README is only true while it names the host groups that enable a transport and
-# the flags they set. Read the effective values back out of the inventory and
-# require the prose to carry them: flipping a flag without touching README then
-# fails here, instead of leaving the front page telling an operator the opposite
-# of what the run will do.
+# README must carry the effective inventory flags, so flipping one without
+# updating the front page fails here.
 readme = File.read(File.join(ROOT, "README.md")).gsub("`", "").gsub(/\s+/, " ")
 enabled_transports = transport_flags.keys.flat_map do |host_group|
   vars = strict_yaml("inventory/group_vars/#{host_group}/main.yml")
@@ -150,9 +134,7 @@ arr_compose = compose_yaml("services/arr/compose.yml", failures)
 downloaders_compose = compose_yaml("services/downloaders/compose.yml", failures)
 check(failures, !File.exist?(File.join(ROOT, "services/arr/compose.jobs.yml")),
       "services/arr/compose.jobs.yml must be absent")
-# Read off the parsed services rather than the file's lines: a user declared in
-# a comment is not a user any container runs as, and the negative used to reject
-# a comment recording that the literal must never come back.
+# Parsed services, not file lines: a user named in a comment runs nothing.
 downloaders_users = Array(downloaders_compose["services"])
                     .to_h { |service, definition| [service, definition["user"]] }
 check(failures,
@@ -174,8 +156,7 @@ effective_downloaders = effective_compose("services/downloaders/compose.yml", {
   "SABNZBD_API_KEY" => "fixture",
   "RADARR_API_KEY" => "fixture",
   "SONARR_API_KEY" => "fixture",
-  # The ClamAV gate's Pushover credentials, which SABnzbd's environment carries
-  # since #811 and whose `:?` refuses to interpolate without a value.
+  # The ClamAV gate's Pushover credentials (#811); `:?` refuses an empty value.
   "PUSHOVER_API_URL" => "https://example.invalid/1/messages.json",
   "PUSHOVER_ALERTS_TOKEN" => "fixture",
   "PUSHOVER_USER_KEY" => "fixture"
@@ -219,13 +200,8 @@ check(failures,
 check(failures, downloader_services.dig("unpackerr", "user") == "${NAS_UID:?}:${NAS_GID:?}",
       "Unpackerr must run as the NAS_UID/NAS_GID identity")
 
-# A CPU ceiling has one home: tests/expected/<service>.yml. tests/policy_test.rb
-# pins every Compose `cpus` to it and measures it against the container CPU
-# budget, so a copy of the numbers here would be a further place to keep equal
-# rather than a second opinion -- changing one ceiling would mean editing this
-# file too, and getting it wrong would fail here without saying which of the two
-# copies was meant. Reading the pinned file keeps the assertion (this stack's
-# Compose matches the pinned policy) and drops only the duplicate literals.
+# CPU ceilings have one home, tests/expected/<service>.yml; read it rather
+# than restate the numbers.
 expected_cpus = %w[arr downloaders].each_with_object({}) do |service, ceilings|
   ceilings.merge!(
     YAML.safe_load_file(File.join(ROOT, "tests", "expected", "#{service}.yml"))
@@ -256,14 +232,9 @@ end
         "#{name} must have a meaningful healthcheck")
 end
 
-# Bazarr stores its general.hostname default, platform.node(), through dynaconf's
-# TOML parser. Without `hostname:` that is the random container ID, and one in
-# about 150 (measured: 663 of 100000) parses as an int or float, is saved as
-# `.inf` or a number, and fails is_type_of str on every later settings submit
-# (#708). So the hostname must be declared, and must be a name TOML cannot read
-# as anything else: a leading letter rules out numbers and dates, and the four
-# bare words are TOML's inf, nan and booleans -- `hostname: inf` was measured
-# storing `.inf` and answering 406 exactly like a numeric container ID.
+# Bazarr's default hostname is the container ID, which TOML sometimes parses as
+# a number and then fails every settings submit (#708). Declare a leading-letter
+# name that is not inf, nan or a boolean.
 bazarr_hostname = arr_services.dig("bazarr", "hostname")
 check(failures,
       bazarr_hostname.is_a?(String) &&
@@ -292,10 +263,7 @@ check(failures,
       Array(downloader_services.dig("sabnzbd", "volumes")).sort == [
         "${BOOKS_ACQUISITION_PATH:?}:/data/books/.acquisition",
         "${MEDIA_ACQUISITION_PATH:?}:/data/media/.acquisition",
-        # The post-processing gate, read-only out of the immutable release. It is
-        # a file rather than a tree on purpose: `script_dir` is a directory
-        # SABnzbd will run anything from, so mounting one would make every future
-        # file under it executable by a completed download.
+        # A file, not a directory: SABnzbd runs anything in `script_dir`.
         "${PLATFORM_CURRENT_DIR:?}/services/downloaders/clamav_gate.py:" \
           "/scripts/clamav_gate.py:ro",
         "${SABNZBD_CONFIG_PATH:?}:/config"
@@ -347,12 +315,8 @@ check(failures, !operator_guide.empty?, "Phase 1 operator guide must exist")
 {
   /media_usenet_enabled: true.*inventory\/group_vars\/nas_hosts/m =>
     "guide must name the inventory value that activates a target",
-  # The per-service split (#611, #612) retired inventory/group_vars/all/vault.yml,
-  # which this pattern named until #651 -- the three declarations belong in the
-  # vault file of the service that reads them, and every one of them is read by
-  # the Arr roles. The rule is unchanged: the guide must send them to an
-  # encrypted vault file rather than to the plaintext service_arr.yml that
-  # carries the empty defaults.
+  # These declarations belong in the encrypted vault_arr.yml, not the plaintext
+  # service_arr.yml carrying the empty defaults.
   /ansible-vault edit inventory\/group_vars\/all\/vault_arr\.yml/ =>
     "guide must put provider and preference choices in the Arr service vault file",
   /never enter the repository/i =>

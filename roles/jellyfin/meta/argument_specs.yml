@@ -46,10 +46,8 @@ argument_specs:
       jellyfin_library_options:
         type: dict
         required: false
-      # Keyed by Jellyfin's scheduled task Key, each value the exact trigger
-      # list posted to /ScheduledTasks/{id}/Triggers and compared back. A dict
-      # rather than a list because the key is the identity the role resolves
-      # against the server's own task list.
+      # Keyed by the task Key the role resolves against the server's task list;
+      # each value is the exact trigger list posted and compared back.
       jellyfin_scheduled_task_triggers:
         type: dict
         required: false
@@ -68,19 +66,14 @@ argument_specs:
         type: list
         elements: dict
         required: false
-      # Normalized by jellyfin_merged_repositories and compared against the
-      # normalized URL of every repository Jellyfin reports, so a trailing slash
-      # or an uppercase host here retires what it names (#648). A scalar is a
-      # substring test rather than list membership, which the filter refuses and
-      # this declaration stops one layer earlier.
+      # Normalized before comparison (#648). A scalar would be a substring test,
+      # so it is refused here.
       jellyfin_retired_plugin_repository_urls:
         type: list
         elements: str
         required: false
-      # Selected out of jellyfin_encoding_profiles by platform_kind and posted
-      # verbatim as Jellyfin's encoding configuration, so the suboptions are the
-      # keys of a profile. An unlisted key here would be written to Jellyfin and
-      # then compared back on every run.
+      # Posted verbatim as Jellyfin's encoding configuration; an unlisted key
+      # would be written and compared back on every run.
       jellyfin_encoding_policy:
         type: dict
         required: false
@@ -138,15 +131,9 @@ argument_specs:
       vault_jellyfin_opensubtitles_password:
         type: str
         required: true
-      # The managed-user parameters this role hands roles/managed_users. Only
-      # the ones that resolve at role entry are declared: Ansible templates
-      # every declared option before the role's first task, so declaring
-      # jellyfin_managed_users_create_body, _repair_body, _repair_condition,
-      # _reconcile_path, _authenticate_body, _authenticate_identity or
-      # _list_json -- each a template over the shared role's per-identity
-      # `item`, its bound match or user, or the listing it registers -- would
-      # fail this role at "Validating arguments against arg spec 'main'".
-      # roles/managed_users asserts their presence instead.
+      # Only managed-user parameters that resolve at role entry are declared:
+      # the others template over the shared role's loop `item` and would fail
+      # argument validation. roles/managed_users asserts their presence instead.
       jellyfin_managed_users_identity_attribute:
         type: str
         required: false

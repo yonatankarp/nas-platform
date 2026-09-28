@@ -2,20 +2,14 @@
 # arr: non-secret settings and the storage this service owns.
 # Cross-cutting facts live in main.yml; secrets in vault_arr.yml.
 
-# Bulk rename remains an operator gate. The adoption escape hatch that used to
-# sit above this moved to main.yml (#650): roles/downloaders reads it too, and a
-# value declared here outranks that role's own default, so this file was quietly
-# deciding a second service's behaviour.
+# Bulk rename remains an operator gate. The adoption escape hatch lives in
+# main.yml (#650) because roles/downloaders reads it too.
 media_arr_automatic_rename_enabled: false
-# A record, not a gate: setting it true states that the Bazarr subtitle handoff
-# was reviewed, which is the prerequisite for retiring Jellyfin's Open Subtitles
-# plugin in its own change. No role reads it, and it disables nothing by itself;
-# see docs/media-acquisition-phase1.md.
+# A record, not a gate: true states the Bazarr subtitle handoff was reviewed.
+# No role reads it; see docs/media-acquisition-phase1.md.
 media_bazarr_handoff_accepted: false
 
-# Providers, indexers, and subtitle preferences are operator-owned policy. An
-# empty declaration is valid and starts the applications without unattended
-# acquisition or a guessed content-source choice.
+# Providers, indexers and subtitle preferences are operator-owned; empty is valid.
 media_arr_indexers: []
 media_bazarr_languages: []
 media_bazarr_providers: []

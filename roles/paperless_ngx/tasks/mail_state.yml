@@ -1,10 +1,5 @@
 ---
-# Desired mail state, and the state Paperless is in. Builds the account payload
-# and the credential fingerprint, reads the installed fingerprint, then lists
-# the accounts and rules and validates every collection and item schema before
-# anything is mutated. Ends by deciding creation or repair for each, and by
-# snapshotting the managed pair for the probe in mail_probe.yml to be compared
-# against.
+# Desired and current mail state, schema-validated before anything is mutated.
 
 - name: Resolve the desired Paperless mail account payload
   tags: [platform_verify_paperless]
@@ -151,10 +146,8 @@
          | selectattr('name', 'equalto', paperless_mail_account_name) | list }}
   no_log: true
 
-# Unredacted, unlike its account counterpart: a mail rule carries names,
-# folders and filters, and the name it is selected by is operator policy in
-# inventory rather than a vault credential (#353). The account listing beside it
-# stays redacted because a mail account carries the Gmail address.
+# Unredacted, unlike the account listing: a rule carries no credential and its
+# name is inventory policy (#353).
 - name: Resolve managed Paperless mail rules
   tags: [platform_verify_paperless]
   ansible.builtin.set_fact:

@@ -1,11 +1,6 @@
 #!/usr/bin/env ruby
-# The runtime half of the Komga service contract: everything that needs a
-# served Komga, an encrypted vault and a container to inspect.
-#
-# usage: komga-runtime.rb MODE [ARGS...]
-#
-# Every input arrives in the environment tests/contracts/komga.sh exports.
-# Run it through that wrapper rather than directly.
+# Runtime half of the Komga contract. usage: komga-runtime.rb MODE [ARGS...],
+# through tests/contracts/komga.sh, which exports every input.
 require "json"
 require "fileutils"
 require "net/http"
@@ -28,9 +23,8 @@ REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
 LIBRARY_NAME = "Comics"
 COMICS_ROOT = "/data/Comics"
 EBOOKS_ROOT = "/data/Ebooks"
-# The exact two-library model. The pre-migration state this lane can install is
-# one Comics library at /data, which is the state the role refuses to repoint
-# without komga_library_root_migration_allowed.
+# The pre-migration state is one Comics library at /data, which the role refuses
+# to repoint without komga_library_root_migration_allowed.
 LIBRARY_MODEL = [
   { "name" => "Comics", "root" => COMICS_ROOT },
   { "name" => "Ebooks", "root" => EBOOKS_ROOT }
@@ -220,9 +214,8 @@ fail_contract("vault administrator identity or role differs") unless
 
 _libraries_response, libraries = request("get", "/api/v1/libraries", basic: credentials)
 
-# Collapse the converged model back to the single pre-migration library, so the
-# lane can prove that a plain converge refuses the root move and that the run
-# carrying komga_library_root_migration_allowed completes it.
+# Collapse back to the single pre-migration library to prove the refusal and the
+# allowed migration.
 if MODE == "migration-legacy"
   comics = resolve_library(libraries, LIBRARY_NAME, COMICS_ROOT)
   ebooks = resolve_library(libraries, "Ebooks", EBOOKS_ROOT)

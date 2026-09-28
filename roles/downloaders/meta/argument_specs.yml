@@ -57,13 +57,9 @@ argument_specs:
       vault_downloaders_sabnzbd_admin_password:
         type: str
         required: true
-      # The operator-owned half of the provider, typed rather than the six vault
-      # strings it replaced (#298). Ansible validates these suboptions before any
-      # task runs, and it coerces as well as checks, so `port: "563"` becomes the
-      # integer and `ssl: "true"` becomes the boolean rather than reaching
-      # SABnzbd as a string it would store as 0. The range and hostname rules
-      # that coercion cannot express live in
-      # filter_plugins/media_usenet_provider.py and are asserted in tasks/main.yml.
+      # Typed provider settings (#298). Ansible coerces as well as checks, so "563"
+      # reaches SABnzbd as an integer; range and hostname rules live in
+      # filter_plugins/media_usenet_provider.py.
       media_usenet_provider:
         type: dict
         required: true
@@ -95,13 +91,8 @@ argument_specs:
       downloaders_pushover_api_url:
         type: str
         required: false
-      # The post-processing gate reads these two out of the container
-      # environment this role renders, and pages on the Alerts application when
-      # it imports a job it could not scan (#811). They are `required: true`
-      # like every other vault credential a role reads: the Compose file refuses
-      # to start SABnzbd without them (`${PUSHOVER_ALERTS_TOKEN:?}`), so a
-      # missing one is better reported here, by name, than as a Compose
-      # variable error at the deployment task.
+      # Read by the post-processing gate to page on unscanned imports (#811); required
+      # so a missing one is named here rather than as a Compose variable error.
       vault_pushover_alerts_token:
         type: str
         required: true

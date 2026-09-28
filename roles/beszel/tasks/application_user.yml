@@ -1,13 +1,9 @@
 ---
-# The application user. Tokens, settings and alerts all relate to the users
-# collection rather than to _superusers, so the run needs an application user
-# alongside the superuser: read the collection completely, create the record
-# once, refuse duplicates, reconcile its role and verified flag, and resolve the
-# id every stage after this one is keyed on.
+# Tokens, settings and alerts relate to the users collection, not _superusers,
+# so the run needs an application user alongside the superuser.
 
-# Collections use URL-encoded PocketBase identity filters, then repeat the exact
-# identity selection in Jinja before resolving a record. Totals remain enabled so
-# each read can refuse a result spanning more than the complete 500-record page.
+# Filtered reads repeat the identity selection in Jinja; totals let each read
+# refuse a result spanning more than one 500-record page.
 - name: Read the complete PocketBase users collection for managed users
   ansible.builtin.uri:
     url: "{{ beszel_api }}/api/collections/users/records?perPage=500"
@@ -58,8 +54,6 @@
       {{ beszel_matching_users | map(attribute='id') | join(',') }}
   no_log: false
 
-# Alerts, tokens and settings all relate to the users collection, not to
-# _superusers, so an application user is required alongside the superuser.
 - name: Create the application user
   ansible.builtin.uri:
     url: "{{ beszel_api }}/api/collections/users/records"
@@ -72,8 +66,7 @@
       password: "{{ vault_beszel_app_user_password }}"
       passwordConfirm: "{{ vault_beszel_app_user_password }}"
       verified: true
-      # Defaults to user, so the admin equivalent is set explicitly. Verified not
-      # to be the cause of the list failure described below.
+      # Defaults to user, so the admin equivalent is set explicitly.
       role: admin
     status_code: [200]
   when: beszel_matching_users | length == 0
@@ -88,9 +81,8 @@
     - beszel_matching_users | length == 0
   changed_when: true
 
-# PocketBase writes through one SQLite connection and validates relations through
-# another. Refreshing the pool after this one-time insert prevents the validator
-# from seeing a stale snapshot when the token and settings records are created.
+# PocketBase validates relations on a second SQLite connection; refresh the pool
+# so it does not see a stale snapshot when dependent records are created.
 - name: Refresh Beszel database connections after creating the application user
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/beszel"
@@ -103,9 +95,8 @@
     wait_timeout: "{{ platform_compose_wait_timeout }}"
   when: beszel_matching_users | length == 0
 
-# Read the id back from the collection rather than trusting the create response.
-# The id returned by the POST was rejected as a missing relation when used
-# immediately, while an id read from the collection is accepted.
+# The id from the POST response was rejected as a missing relation when used
+# immediately; one read back from the collection is accepted.
 - name: List application users again to resolve the id
   tags: [platform_verify_beszel]
   ansible.builtin.uri:

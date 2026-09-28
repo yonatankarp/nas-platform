@@ -1,10 +1,4 @@
 ---
-# Deployment. Revalidates the release paths this role touches, refuses an
-# acceleration or plugin policy that is not the shipped one, pins the render
-# device on the NAS, renders the environment, brings the project up, reports it,
-# checks the applied CPU policy, and waits for the startup API rather than for
-# the container health check.
-
 - name: Revalidate deployment paths before Jellyfin runtime use
   ansible.builtin.include_role:
     name: deployment_bundle
@@ -13,24 +7,12 @@
     deployment_target_service: jellyfin
     deployment_target_require_current_release: true
     deployment_target_extra_paths:
-      # roles/managed_users reads the capability register off the deployed
-      # release, the way roles/komga, roles/audiobookshelf and roles/beszel name it.
+      # roles/managed_users reads the capability register off the deployed release.
       - "{{ platform_current_dir }}/config/managed-user-capabilities.yml"
 
-# Deliberately not redacted. On ansible-core 2.21.3 no_log on an assert hides only
-# the result dict; fail_msg prints from the error header either way. Hiding the dict
-# here costs the name of whichever condition failed, under a fail_msg that lists four
-# unrelated causes. The dict cannot carry credential material: the assert is unlooped,
-# so there is no item to echo, and the reported "assertion" field is the source text
-# of the condition rather than its rendered value, so the two
-# vault_jellyfin_opensubtitles_* presence checks disclose their variable names only.
-#
-# The forty-five field-type conditions this assert used to spell out three times over
-# live in filter_plugins/jellyfin_encoding_schema.py, which names the offending path
-# instead of failing anonymously. What stays here is what neither a filter nor
-# meta/argument_specs.yml can express: the value equalities that pin the shipped
-# defaults against an inline copy of themselves, so editing defaults/main.yml is
-# refused rather than deployed.
+# Not redacted: no_log hides only the result dict (fail_msg prints anyway), and
+# an unlooped assert reports condition source, not values. Field types live in
+# filter_plugins/jellyfin_encoding_schema.py; these equalities pin the defaults.
 - name: Require explicit Jellyfin acceleration and plugin policy
   ansible.builtin.assert:
     that:
@@ -135,12 +117,8 @@
   changed_when: false
   check_mode: false
 
-# The literal here is deliberate, not a missed substitution. NAS hosts are
-# pinned to renderD128 by design: the Compose definition passes that exact
-# device through by name, and the encoding policy above names it as QsvDevice.
-# This assert is what makes that pinning explicit rather than accidental, and it
-# is gated on platform_kind so it never constrains a Mac host, where the
-# variable is /dev/dri/card0 and no QSV device is expected at all.
+# The renderD128 literal is deliberate: Compose passes that device by name and
+# the encoding policy names it; gated on platform_kind so Macs are unaffected.
 - name: Require the exact NAS Jellyfin render device
   ansible.builtin.assert:
     that:
@@ -164,19 +142,9 @@
     dest: "{{ platform_runtime_dir }}/services/jellyfin/.env"
     mode: "0600"
 
-# Before Compose, because recreating the container from the older image is the
-# act being refused. Jellyfin migrates jellyfin.db when it starts and 12.0's
-# migration is one-way -- upstream's own note is that the release "includes
-# database changes that prevent rolling back without a full restore". Nothing
-# proves a Jellyfin bump before the merge the way the upgrade lane proves
-# Bindery's, so this guard on the host is the only thing standing between a
-# reverted pin and a server that will not open its own store. No backup task
-# beside it, unlike roles/bindery: Jellyfin's own MigrationBackupFast copies
-# jellyfin.db, checkpointing the WAL first, before it migrates, and the rest of
-# /config is metadata and images this role does not own and would be copying by
-# the gigabyte. The five paths this reads are the ones the containment
-# re-include at the top of this file already declared through
-# deployment_target_service, so it needs no extra_paths of its own.
+# Before Compose: Jellyfin's 12.0 migration of jellyfin.db is one-way, and no
+# lane proves a Jellyfin bump, so this guard is what stops a reverted pin. No
+# backup task: Jellyfin's own MigrationBackupFast copies jellyfin.db first.
 - name: Refuse a Jellyfin image older than the store on disk
   ansible.builtin.include_role:
     name: image_downgrade_guard
@@ -186,13 +154,8 @@
     image_downgrade_guard_project_name: "{{ jellyfin_compose_project_name }}"
     image_downgrade_guard_store_description: "{{ nas_docker_root }}/jellyfin/config"
 
-# The block exists for one thing the rescue does with the failure: it hands the
-# deployment's own message to roles/container_health, which either explains it in
-# terms of the container state Docker reports or re-raises it unchanged.
-# Compose's `--wait` fails a crash-looping container with "container ... is
-# unhealthy", which says nothing about why. roles/bindery/tasks/main.yml carries
-# the long form of this argument; #509 built the mechanism and #537 wired the
-# remaining eleven single-`up` roles into it.
+# The rescue hands the deployment's failure to roles/container_health, which
+# explains it from Docker's container state or re-raises it (#509, #537).
 - name: Deploy Jellyfin, catching a container that runs but never serves
   block:
     - name: Deploy Jellyfin
@@ -206,23 +169,15 @@
         wait_timeout: "{{ jellyfin_compose_wait_timeout }}"
       register: jellyfin_deploy
   rescue:
-    # First, and before anything else can rebind it: ansible_failed_result
-    # belongs to whichever rescue is running.
+    # First: ansible_failed_result belongs to whichever rescue is running.
     - name: Record the failed Jellyfin deployment
       ansible.builtin.set_fact:
         jellyfin_deploy_failure_message: >-
           {{ ansible_failed_result.msg
              | default('the Jellyfin deployment failed and reported no message') }}
 
-# Immediately after the deployment and before everything that trusts it. A
-# container in `Restarting` still appears in `docker container ls --quiet`, so
-# the CPU verification below would sail straight past one and the readiness probe
-# after it would fail on a timeout that names nothing (#510).
-#
-# This pass detects, prints the evidence and publishes
-# container_health_stuck_services WITHOUT refusing, because the recreate below
-# has to happen before the verdict. It still re-raises a deployment failure that
-# no stuck container explains.
+# A `Restarting` container still appears in `docker container ls`, so detect it
+# before the CPU check (#510). Publishes the stuck list without refusing yet.
 - name: Detect a Jellyfin container that runs but never serves
   ansible.builtin.include_role:
     name: container_health
@@ -233,16 +188,9 @@
       {{ jellyfin_deploy_failure_message | default('') }}
     container_health_refuse: false
 
-# EXACTLY ONE force-recreate, of only the services Docker says are stuck.
-# FORCED, because `up -d` against an unchanged specification keeps the same
-# container and recreates nothing; `dependencies: false` renders as --no-deps, so
-# a healthy sibling in the same project is not taken down to repair one container.
-# CONDITIONAL, and that condition is the whole idempotence argument: the list is
-# empty on a converged host and empty under --check, so this task is skipped on
-# every run that has nothing to repair. BOUNDED AT ONE PER RUN by being a single
-# task rather than a loop, with the verdict below re-checking, so a container
-# looping for a reason a recreate cannot fix never goes green and never becomes
-# an invisible retry loop.
+# Exactly one forced recreate (--no-deps) of only the stuck services; the list is
+# empty on a converged host and under --check, so this is idempotent. A single
+# task, not a loop, so an unfixable loop never becomes an invisible retry.
 - name: Recreate a Jellyfin container that runs but never serves
   block:
     - name: Force-recreate the stuck Jellyfin services
@@ -260,18 +208,15 @@
       when: container_health_stuck_services | default([]) | length > 0
       register: jellyfin_wedged_recreate
   rescue:
-    # Carried rather than re-raised here. `--wait` fails a container that came
-    # back unhealthy, which the re-check below diagnoses far better than Compose
-    # can; a recreate that failed for any OTHER reason left no stuck container
-    # behind, and the second pass re-raises this message unchanged for that case.
+    # Carried rather than re-raised: the re-check below diagnoses an unhealthy
+    # container better, and re-raises any other failure unchanged.
     - name: Record the Jellyfin recreate that did not recover the service
       ansible.builtin.set_fact:
         jellyfin_recreate_failure_message: >-
           The force-recreate reported: {{ ansible_failed_result.msg
           | default('no message') }}
 
-# Whether a recreate was actually spent, recorded before the second pass
-# overwrites the list it was decided from.
+# Recorded before the second pass overwrites the list it was decided from.
 - name: Record whether a Jellyfin recreate was spent
   ansible.builtin.set_fact:
     jellyfin_recreate_spent: >-
@@ -288,9 +233,6 @@
       health, so check mode cannot reach that path and recreates nothing.
   when: ansible_check_mode
 
-# The verdict. Nothing stuck here means the recreate worked, or that there was
-# never anything to repair; either way the run continues. Anything still stuck
-# fails, and says the retry has already been spent.
 - name: Refuse a Jellyfin container that stayed wedged after its recreate
   ansible.builtin.include_role:
     name: container_health
@@ -307,11 +249,7 @@
     tasks_from: report
   vars:
     deployment_report_service: Jellyfin
-    # Both Compose results, because a force-recreate that repaired a wedged
-    # container changed the deployment as surely as the deploy above did, and a
-    # report gated on the deploy alone would say nothing on the one converge an
-    # operator most wants to hear about. It is registered even when skipped, and
-    # `default({})` covers the paths that never reach it at all.
+    # Both Compose results: a repairing recreate also changed the deployment.
     deployment_report_changed: >-
       {{ (jellyfin_deploy is changed)
          or ((jellyfin_wedged_recreate | default({})) is changed) }}
@@ -323,30 +261,11 @@
     container_cpu_service_name: jellyfin
     container_cpu_project_name: "{{ jellyfin_compose_project_name }}"
 
-# The container health check passes as soon as /health answers, which happens
-# well before the application can serve its own startup API: that endpoint
-# returns 503 until the server has finished initializing. Waiting on the
-# endpoint this role actually calls is what makes the next tasks meaningful.
-#
-# 12 MADE THAT A STRONGER REASON RATHER THAN A WEAKER ONE, and the difference is
-# a trap for anyone simplifying this gate. 12.0 restyled the startup interface
-# into a server that really serves while the migration runs, and it answers
-# /health 200 AND /System/Info/Public 200 -- but with a camelCase body
-# (`startupWizardCompleted`) rather than the PascalCase one every task in this
-# role reads. Measured on a 10.11.11 store: at t+1.9s /health and
-# /System/Info/Public are both 200 off that startup server while
-# /Startup/Configuration is still 503; the listener is then torn down and the
-# real server answers /Startup/Configuration 401 at t+2.6s and
-# /System/Info/Public 200 PascalCase at t+4.2s. So this gate is what keeps
-# bootstrap.yml's `json.StartupWizardCompleted` from meeting a document that has
-# no such key -- /health and /System/Info/Public would both have let it through.
-#
-# What a long migration costs is this wait, not correctness: the startup server
-# holds /Startup/Configuration at 503 for as long as it runs, and 12.0 warns its
-# first library scan can take some time, so a converge can exhaust
-# jellyfin_startup_retries x platform_readiness_delay and fail here. That is a
-# readiness timeout with the store already safe, and the poller's next tick
-# retries into a migration that has since progressed.
+# The container health check passes as soon as /health answers
+# well before the startup API serves (503 until initialized). 12.x also runs a
+# startup server answering /health and /System/Info/Public with camelCase bodies
+# during migration, so only /Startup/Configuration proves the real server. A long
+# migration can exhaust this wait; the store is safe and the next tick retries.
 - name: Wait for the Jellyfin startup API
   ansible.builtin.uri:
     url: "{{ jellyfin_api }}/Startup/Configuration"

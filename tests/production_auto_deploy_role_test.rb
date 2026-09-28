@@ -1,10 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Verifies the installer role's observable outcome: private directories, an
-# exact configuration contract, protected credentials, and a poller that runs.
-# The cron task is checked structurally rather than executed, so running this
-# suite never writes a crontab on a developer machine.
+# Tests the installer role's outcome. The cron task is checked structurally, never
+# executed, so this suite never writes a developer's crontab.
 
 require "fileutils"
 require "json"
@@ -18,10 +16,8 @@ include TestScaffold
 
 ROLE_TASKS = File.join(ROOT, "roles/production_auto_deploy/tasks/main.yml")
 POLLER_SOURCE = File.join(ROOT, "scripts/production_auto_deploy.py")
-# One sentinel per Pushover credential, each distinct, and each carrying the two
-# characters a curl config quotes -- a double quote and a backslash -- so a
-# rendered config is proved to escape them and to hold only its own application's
-# token. The schema gives neither value a pattern, so neither is assumed absent.
+# Distinct sentinels carrying a quote and a backslash, so each rendered curl config
+# is proved to escape them and hold only its own application's token.
 PUSHOVER_ALERTS_TOKEN = 'sentinel-alerts-"token\\one'
 PUSHOVER_DEPLOYMENTS_TOKEN = 'sentinel-deployments-"token\\two'
 PUSHOVER_USER_KEY = 'sentinel-user-"key\\three'
@@ -36,9 +32,7 @@ CALLBACK_HOST = "10.88.0.1"
 # ansible-playbook accepts only this one.
 LOCALE_ACCEPTED = "C.UTF-8"
 TIMEOUT_SECONDS = 300
-# Sentinels again, on a domain that never resolves: rendering them proves the
-# configuration reads the vault variables, and the installed poller the suite
-# runs below could not reach a real check even if it pinged.
+# Sentinels on a domain that never resolves.
 POLLER_PING_URL = "https://hc-ping.invalid/role-sentinel-poller"
 VERIFY_PING_URL = "https://hc-ping.invalid/role-sentinel-verify"
 
@@ -70,22 +64,19 @@ tasks = YAML.safe_load_file(ROLE_TASKS)
 
 # --- structural contract -----------------------------------------------------
 
-# #558 removed ntfy, so the role renders no ntfy.curl any more. The file a
-# previous installation left in the config root is the operator's to delete.
+# #558 removed ntfy; the role renders no ntfy.curl any more.
 check(failures, tasks.none? { |task| task.dig("ansible.builtin.template", "src").to_s.include?("ntfy") } &&
                 !File.exist?(File.join(ROOT, "roles/production_auto_deploy/templates/ntfy.curl.j2")),
       "the role must render no ntfy.curl: #558 removed the service it published to")
 
-# One protected curl config per Pushover application, rendered by one looped
-# task under no_log, each naming only its own application's token.
 pushover_tasks = tasks.select do |task|
   task.dig("ansible.builtin.template", "src") == "pushover.curl.j2"
 end
 check(failures, pushover_tasks.length == 1 &&
         pushover_tasks.all? { |task| task["no_log"] == true && task.dig("ansible.builtin.template", "mode") == "0600" },
       "the role must render pushover.curl.j2 exactly once, at mode 0600, with no_log")
-# deployer.json carries the healthchecks.io ping URLs since #606, and a template
-# task without no_log prints its diff under --check --diff.
+# deployer.json carries the healthchecks.io ping URLs (#606); without no_log a
+# template task prints its diff under --check --diff.
 config_tasks = tasks.select do |task|
   task.dig("ansible.builtin.template", "src") == "config.json.j2"
 end
@@ -130,9 +121,8 @@ end
 check(failures, python_floor,
       "the role must gate on a Python floor with >=, never an exact version")
 
-# Counted off the module arguments rather than the file's bytes: scanning the
-# text counted a mode written in a comment or handed to an included role as a
-# variable, neither of which declares a permission on anything.
+# Counted off the module arguments: the text also holds modes in comments and
+# variables passed to included roles.
 declared_modes = tasks.flat_map do |task|
   task.values.filter_map { |arguments| arguments["mode"] if arguments.is_a?(Hash) }
 end
@@ -154,17 +144,12 @@ check(failures, cron_task&.dig("when").to_s.include?("production_auto_deploy_ext
 
 # --- drift screens: values duplicated across artifacts -----------------------
 
-# The poller passes a fixed tag list to verify.yml. If a service role gains a
-# verification tag and this list is not updated, automatic deployments silently
-# verify less than the documented manual command does.
+# If a service role gains a verification tag the poller's list lacks, automatic
+# deployments silently verify less than the manual command does.
 defaults = YAML.safe_load_file(File.join(ROOT, "roles/production_auto_deploy/defaults/main.yml"))
 declared_tags = defaults.fetch("production_auto_deploy_verify_tags").split(",").map(&:strip).reject(&:empty?)
-# Tags the roles actually declare, read off the parsed tasks. Scanning the text
-# of every YAML file under roles/ counted three things that are not tags: a tag
-# named in a komga comment, one named inside a paperless `when:` expression, and
-# every tag in this role's own defaults, which the glob also matched. That last
-# one made the comparison partly self-satisfying, because the declared list was
-# being checked against a set it belonged to.
+# Read off the parsed tasks: a text scan matched tags in comments, in `when:`
+# expressions and in this role's own defaults.
 def declared_verify_tags(node)
   case node
   when Hash
@@ -180,14 +165,9 @@ existing_tags = Dir.glob(File.join(ROOT, "roles/*/{tasks,handlers}/*.yml")).flat
   declared_verify_tags(YAML.safe_load_file(path, aliases: true))
 end.uniq
 
-# A tag the hourly --verify run selects and a deployment's verify play must not.
-# A deployment whose verify fails is quarantined and never retried, and a
-# degraded RAID array still serves, so platform_verify_mdraid in the deploy list
-# would record every revision converged during a rebuild as failed (#609), and
-# Immich originals moved outside Immich would quarantine every revision until an
-# operator resolved them (#907). Stated
-# rather than derived, and held both ways below, so a service tag cannot quietly
-# become hourly-only either.
+# Selected by the hourly --verify run, never by a deployment's verify play: a failed
+# deploy verify quarantines the revision, e.g. during a RAID rebuild (#609, #907).
+# Stated rather than derived, and held both ways.
 HOURLY_ONLY_VERIFY_TAGS = %w[platform_verify_mdraid platform_verify_immich_originals].freeze
 hourly_default = defaults.fetch("production_auto_deploy_hourly_only_verify_tags", "").to_s.strip
 hourly_tags = hourly_default.split(",")
@@ -211,11 +191,8 @@ def verify_tag_problems(deploy, hourly, existing)
   problems
 end
 verify_tag_problems(declared_tags, hourly_tags, existing_tags).each { |problem| check(failures, false, problem) }
-# The rule has to bite on the three failures it exists for, proved on planted
-# lists rather than trusted: the hourly-only tag moved into the deploy list, a
-# tag in neither list, and a service tag made hourly-only. Built from the deploy
-# list without the hourly-only tags, so a broken real list cannot also make a
-# plant misreport.
+# Planted lists: hourly-only tag in the deploy list, a tag in neither, a service
+# tag made hourly-only.
 deploy_without_hourly = declared_tags - HOURLY_ONLY_VERIFY_TAGS
 check(failures,
       verify_tag_problems(deploy_without_hourly + HOURLY_ONLY_VERIFY_TAGS, [], existing_tags)
@@ -237,23 +214,10 @@ check(failures, doc_tags.sort == all_verify_tags.sort,
       "the operator guide's verify tags must match the poller's deploy and hourly-only lists; " \
       "difference=#{((doc_tags | all_verify_tags) - (doc_tags & all_verify_tags)).inspect}")
 
-# No task site.yml can reach may carry an hourly-only tag. There a degraded
-# array would fail every converge and quarantine each revision (#609), and
-# nothing else refuses, say, host_prep's main.yml including verify_mdraid.yml.
-# Two checks, because neither sees every route:
-# - ansible-playbook --list-tasks --list-tags resolves everything Ansible expands
-#   when it loads site.yml: roles and their meta dependencies, import_playbook,
-#   import_tasks and import_role, templated paths included. It does not list what
-#   a dynamic include_tasks or include_role would add at run time.
-# - The walker below reads the files: site.yml's task sections and roles, then
-#   every include_tasks/import_tasks/include_role/import_role -- spelled bare,
-#   ansible.builtin. or ansible.legacy. -- whose target is a literal, through
-#   block/rescue/always. It covers the dynamic includes, and it cannot follow a
-#   templated path, a meta dependency or an import_playbook.
-# Neither covers: a dynamic include_tasks or include_role whose file, role name
-# or tasks_from is templated; a role's handlers files, which neither reads; and
-# the removed bare `include`. Without ansible-playbook this file aborts at its
-# top rather than passing.
+# No task site.yml can reach may carry an hourly-only tag (#609). Two checks:
+# --list-tasks resolves everything Ansible expands at load (meta deps, imports,
+# templated paths); the walker below follows literal dynamic includes. Neither
+# sees a templated dynamic include, handlers, or bare `include`.
 SITE_PLAYBOOK = File.join(ROOT, "site.yml")
 # Every spelling Ansible and ansible-lint --strict accept for the same action.
 include_spellings = ->(*actions) { actions.flat_map { |a| [a, "ansible.builtin.#{a}", "ansible.legacy.#{a}"] } }
@@ -323,8 +287,7 @@ leaked_into_site = hourly_only_tags_in(site_tasks)
 check(failures, leaked_into_site.empty?,
       "#{leaked_into_site.inspect} is reachable from site.yml: a failing hourly-only check there fails " \
       "every converge and quarantines the revision, so it belongs to verify.yml alone")
-# Planted in memory: the shapes a hand edit would take, including the
-# ansible.legacy spellings that --list-tasks also passes, since both are dynamic.
+# Planted in memory, including the ansible.legacy spellings --list-tasks passes.
 beszel_main = File.join(ROOT, "roles/beszel/tasks/main.yml")
 {
   "host_prep's main.yml, include_tasks" =>
@@ -368,9 +331,8 @@ listed, listing = listed_hourly_only_tags(ansible, SITE_PLAYBOOK)
 check(failures, listed == [] && listing.include?("host_prep :"),
       "ansible-playbook site.yml --list-tasks must list host_prep and no hourly-only tag; got " \
       "#{listed.inspect}#{listed.nil? ? ": #{listing.lines.last(5).join}" : ''}")
-# Planted on disk in a copy beside the real roles, since these routes live in
-# files the walker does not read: a meta dependency of host_prep, an
-# import_playbook appended to site.yml, and a templated import_tasks path.
+# Planted on disk, for routes the walker does not read: a meta dependency, an
+# import_playbook and a templated import_tasks path.
 Dir.mktmpdir("hourly-only-site-plant") do |sandbox|
   site_source = File.read(SITE_PLAYBOOK)
   mdraid_tasks = File.join(ROOT, "roles/host_prep/tasks/verify_mdraid.yml")
@@ -441,11 +403,8 @@ end
         "the poller invokes #{relative}, which must exist")
 end
 
-# The Pushover curl config's own grammar, read as the directives it declares
-# rather than as substrings: curl sends every form-string it is given, so a
-# config naming the token twice presents two tokens, and a token named only in
-# the comment block would satisfy a substring check while the directive read a
-# literal.
+# Read as directives, not substrings: curl sends every form-string, so a token
+# named twice presents two, and a token only in a comment would pass a substring check.
 pushover_template = File.read(File.join(ROOT, "roles/production_auto_deploy/templates/pushover.curl.j2"))
 pushover_directives = pushover_template.lines.filter_map do |line|
   key, separator, value = line.strip.partition(" = ")
@@ -466,12 +425,8 @@ check(failures,
         '"{{ production_auto_deploy_pushover_api_url }}"',
       "the pushover.curl url must read production_auto_deploy_pushover_api_url")
 
-# Which token each config carries is the defaults' list, and the poller routes
-# by position in it: Alerts first, Deployments second. Stated rather than
-# derived, and each named variable must be one the role declares required, so a
-# config cannot read a credential from a variable this play never validates --
-# the #345 shape, a coupling to a declaration the play cannot see, on the
-# Pushover subject that replaced the topics.
+# The poller routes by position in this list: Alerts first, Deployments second.
+# Each variable must be one the role declares required (#345).
 notifiers = defaults.fetch("production_auto_deploy_pushover_notifiers", [])
 check(failures,
       notifiers.map { |notifier| [File.basename(notifier["path"].to_s), notifier["token_variable"]] } ==
@@ -486,9 +441,7 @@ PUSHOVER_CREDENTIALS.each_key do |variable|
         "#{variable} must be declared required in the role's argument spec")
 end
 
-# Read off the rendered document's own keys rather than the file's bytes: the
-# template is one Jinja mapping literal. The Pushover keys must name the notifier
-# list rather than restate a path.
+# Read off the rendered document's keys; the Pushover keys must name the notifier list.
 POLLER_CONFIG_TEMPLATE = File.join(ROOT, "roles/production_auto_deploy/templates/config.json.j2")
 PRUNE_CONFIG_TEMPLATE = File.join(ROOT, "roles/image_prune/templates/config.json.j2")
 
@@ -501,8 +454,7 @@ def template_bindings(template_path)
   end.to_h
 end
 
-# The prune's second application is Containers: Deployments is the release
-# message's alone.
+# The prune's second application is Containers; Deployments is the poller's alone.
 [["the poller", POLLER_CONFIG_TEMPLATE, "production_auto_deploy", %w[alerts deployments]],
  ["the prune", PRUNE_CONFIG_TEMPLATE, "image_prune", %w[alerts containers]]].each do |label, template, prefix, apps|
   bindings = template_bindings(template)
@@ -534,23 +486,18 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     File.write(path, "#!/bin/sh\nexit 0\n")
     File.chmod(0o700, path)
   end
-  # Accept only the second locale candidate, so a locale probe that did not
-  # really run -- a check-mode skip reads rc=0 for every candidate -- records
-  # the first one and the --check review below predicts a change (#834).
+  # Accept only the second locale candidate, so a check-mode-skipped probe (rc=0
+  # for every candidate) records the first and the --check review fails (#834).
   File.write(File.join(tooling_bin, "ansible-playbook"),
              "#!/bin/sh\n[ \"$LANG\" = #{LOCALE_ACCEPTED} ] || exit 1\nexit 0\n")
-  # Only the password provider is planted. The role must converge without a
-  # vault copy outside the checkout, because the committed vault travels with
-  # the revision and a second copy would outrank it.
+  # Only the password provider is planted: a vault copy outside the checkout
+  # would outrank the committed one.
   path = File.join(config_root, "vault-password")
   File.write(path, "placeholder\n")
   File.chmod(0o600, path)
 
-  # The two addresses are declared exactly where every inventory declares them,
-  # and nowhere else: the role used to demand a second `-e` for the same public
-  # host, which is what made reinstalling the poller irreproducible from the
-  # repository. Passing them here as host variables is what proves it no longer
-  # does -- the command line below names neither.
+  # Both addresses come from inventory host variables only; the command line
+  # below names neither.
   inventory = File.join(root, "inventory.yml")
   File.write(inventory, <<~YAML)
     platform_hosts:
@@ -589,9 +536,8 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     # The cron tag is skipped so the suite never writes a developer's crontab;
     # declare external scheduling so the matching precondition is skipped too.
     "-e", "production_auto_deploy_external_scheduler=true",
-    # --status now reports what the next poll would do, which reaches the
-    # network. Point it at a closed port so the suite stays hermetic and is not
-    # exposed to GitHub rate limits; both values must still be https.
+    # --status reaches the network; a closed port keeps the suite hermetic.
+    # Both values must still be https.
     "-e", "production_auto_deploy_repository_url=https://127.0.0.1:1/nas-platform.git",
     "-e", "production_auto_deploy_github_api_base=https://127.0.0.1:1",
   ]
@@ -622,9 +568,8 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     check(failures, config["ansible_locale"].to_s.downcase.include?("utf"),
           "ansible_locale must be a UTF-8 locale, got #{config['ansible_locale'].inspect}")
 
-    # The rendered half of the coupling checked above: each Pushover config is
-    # 0600, is the one the configuration names, and carries its own application's
-    # token -- escaped -- and no other, beside the user key.
+    # Each Pushover config is 0600, is the one the configuration names, and
+    # carries only its own application's token, escaped, beside the user key.
     escape = ->(value) { value.gsub("\\") { "\\\\" }.gsub('"') { '\\"' } }
     { "alerts" => PUSHOVER_ALERTS_TOKEN, "deployments" => PUSHOVER_DEPLOYMENTS_TOKEN }.each do |app, token|
       path = File.join(config_root, "pushover-#{app}.curl")
@@ -649,9 +594,7 @@ Dir.mktmpdir("auto-deploy-role") do |root|
       check(failures, config[key].to_s.start_with?("/") && File.executable?(config[key].to_s),
             "#{key} must be an absolute path to an executable, got #{config[key].inspect}")
     end
-    # Discover independently of the role: asserting only git's directory would
-    # pass on a host where git happens to live in /usr/bin, which is exactly the
-    # assumption being removed.
+    # Discovered independently: git in /usr/bin would satisfy a check of git alone.
     entries = config["tool_path"].to_s.split(":")
     %w[git curl docker].each do |tool|
       located = `command -v #{tool} 2>/dev/null`.strip
@@ -667,9 +610,8 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "log_retention_days must be JSON integer, not a string")
     check(failures, !config["verify_tags"].include?("\n"),
           "verify_tags must be a single line")
-    # Rendered, not just declared, and under the new key only: an older poller
-    # reads periodic_verify_tags as its whole hourly list, so rendering that key
-    # with the hourly-only meaning would verify the services not at all (#609).
+    # Under the new key only: an older poller reads periodic_verify_tags as its
+    # whole hourly list (#609).
     check(failures,
           config["hourly_only_verify_tags"] == HOURLY_ONLY_VERIFY_TAGS.join(",") &&
             !config.key?("periodic_verify_tags"),
@@ -719,8 +661,6 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "the installed launcher must run --status: #{status_output}")
     check(failures, status_output.include?("last successful: none"),
           "a fresh installation must report no successful deployment")
-    # The point of the addition: an idle poller must explain itself rather than
-    # leaving silence to be interpreted.
     check(failures, status_output.include?("next poll:"),
           "--status must report what the next poll would do: #{status_output}")
     check(failures, status_output.include?("could not resolve"),
@@ -737,12 +677,8 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     check(failures, verify_result.success? && verify_output.include?("nothing has deployed"),
           "a fresh installation's --verify must skip and exit 0: #{verify_output}")
 
-    # Reviewing an installed host is what the operator guide requires before
-    # every production run, and it is where a read-only probe skipped under
-    # check mode shows up (#834). A skipped command reports rc=0 with empty
-    # output, so the tool probe's assertion fails, the locale probe records an
-    # untested candidate (a predicted change to deployer.json), and the crontab
-    # probe passes a crontab nobody read.
+    # The operator's pre-production review; a probe skipped under check mode
+    # reports rc=0 with empty output and shows up here (#834).
     review_output, review_status = Open3.capture2e(environment, *arguments, "--check", "--diff")
     check(failures, review_status.success?,
           "the role must survive --check --diff on an installed host: " \
@@ -754,9 +690,8 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "the locale probe must record the candidate that really worked, " \
           "got #{config['ansible_locale'].inspect}")
 
-    # The crontab probe is reached only without an external scheduler. A stub
-    # crontab that refuses, first on PATH, must refuse the review too; the cron
-    # entries stay skipped by tag, and check mode would not write them anyway.
+    # The crontab probe runs only without an external scheduler; a refusing stub
+    # crontab first on PATH must refuse the review too.
     stub_bin = File.join(root, "stub-bin")
     FileUtils.mkdir_p(stub_bin)
     File.write(File.join(stub_bin, "crontab"),
@@ -772,10 +707,8 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "account cannot manage: #{cron_output.lines.last(12).join}")
   end
 
-  # And the refusal, which is what a fallback removed: with no Pushover
-  # credential declared the role must stop and name each variable rather than
-  # install a poller that cannot publish. Check mode is enough because the
-  # argument spec is validated before the role's first task.
+  # With no Pushover credential the role must refuse and name each variable.
+  # Check mode suffices: the argument spec is validated before the first task.
   undeclared = []
   index = 0
   while index < arguments.length
@@ -787,15 +720,9 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     undeclared << arguments[index]
     index += 1
   end
-  # "missing required arguments" is ansible-core's own diagnostic (2.21.3, pinned
-  # in controller-requirements.txt). Matching its wording is what makes this sharp
-  # rather than satisfiable by any incidental check-mode failure; a core bump that
-  # rephrases it breaks this assertion, and that is the reason why.
-  #
-  # Read the names out of that clause rather than out of the whole output: the
-  # refusal also dumps argument_spec_data, which names every option the role
-  # declares, so a whole-output substring is satisfied by an option that is
-  # present and optional -- which is the defect (#402).
+  # "missing required arguments" is ansible-core's own wording; a rephrasing bump
+  # breaks this on purpose. Names are read from that clause only, because the
+  # argument_spec_data dump names every option (#402).
   refusal_output, refusal_status = Open3.capture2e(environment, *undeclared, "--check")
   missing_arguments =
     refusal_output[/missing required arguments: ([a-z_, ]+)/, 1].to_s.split(",").map(&:strip)
@@ -807,12 +734,8 @@ Dir.mktmpdir("auto-deploy-role") do |root|
         "#{refusal_output.lines.last(8).join}")
 end
 
-# The role must refuse to install when the virtualenv the poller needs is absent,
-# so the operator learns at install time instead of via a failed poll later. The
-# path appears in the poller's own command line and in a fail_msg as well, so a
-# whole-file substring said nothing about whether the role ever probed it: the
-# probe has to register a result and an assertion has to consume that result
-# before the cron entry goes in.
+# The role must refuse when the poller's virtualenv is absent: the probe must
+# register a result that an assertion consumes before the cron entry goes in.
 tooling_probe = tasks.find do |task|
   task.dig("ansible.builtin.stat", "path").to_s.end_with?("/.venv/bin/ansible-playbook")
 end

@@ -1,41 +1,12 @@
 #!/bin/sh
 # Policy validation entry point. Run from the repository root.
 #
-# The check list is data, not straight-line shell: this script reads its own
-# manifest and runs the checks concurrently. Run one after another they took
-# 15m28s, which made `static` the second-longest job in CI and made a full local
-# run impractical enough to skip.
-#
-# Each check stays one bare command per line. tests/gate_manifest_coverage_test.rb
-# declares this whole list and refuses any line it does not name, in either
-# direction; tests/policy_ci_test.rb requires about ninety of them individually,
-# with the reason each has to keep running; and tests/policy_manifest_test.rb
-# proves that deleting one of those named lines is caught. Wrapping these lines
-# in a helper, or prefixing them, silently disables those guards while leaving
-# this script working, so keep the shape.
-#
-# Adding a check means adding it in two places: one shard of this list, and the
-# matching shard of that declaration. That is the price of the first guard and it
-# is deliberate: for about forty of these lines nothing required them at all
-# until #469, so deleting any one left every check green and the gate faster than
-# before.
-#
-# POLICY_JOBS sets concurrency and defaults to the CPU count. POLICY_JOBS=1
-# restores the original one-at-a-time order, which is what to use when bisecting
-# a failure that only shows up under load.
-#
-# The gate reports its own wall time and its slowest checks on every run, pass or
-# fail. Its budget has been exceeded four times, and the first three times naming
-# the check responsible meant timing them by hand; the pool already knows, so it
-# says so. A check that has grown into the gate's floor is visible in that report
-# before it is visible as a cancelled job. Read the seconds for what they are:
-# each is a check's wall time while POLICY_JOBS-1 others were running, so a total
-# cannot tell a gate bound by its work apart from one waiting on a timeout.
-# Changing the width and re-reading the list is what separates them.
-#
-# Unlike the sequential version this does not stop at the first failure: every
-# check runs and every failure is reported, so one broken check no longer hides
-# the state of the other fifty-six.
+# Runs its own manifest concurrently. Keep one bare command per line: wrapping or
+# prefixing lines silently disables the guards in tests/gate_manifest_coverage_test.rb,
+# tests/policy_ci_test.rb and tests/policy_manifest_test.rb. Adding a check means
+# one shard here and the matching shard in gate_manifest_coverage_test.rb.
+# POLICY_JOBS sets concurrency (default: CPU count); POLICY_JOBS=1 runs serially.
+# Every check runs and every failure is reported; the slowest checks are printed.
 set -eu
 
 if [ "$#" -gt 1 ]; then
@@ -44,97 +15,13 @@ if [ "$#" -gt 1 ]; then
 fi
 policy_shard=${1:-}
 
-# The list is partitioned into three shards, one heredoc each, and CI runs each
-# shard on a runner of its own. No argument runs all three, which is the
-# unsharded gate a developer runs locally and what every caller but CI still
-# does; `tests/validate-policy.sh 2` runs shard 2 alone.
-#
-# tests/gate_manifest_coverage_test.rb holds the three lists a second time and
-# asserts their union is exactly this manifest, in both directions, with a floor
-# under each shard. That guard is the precondition for sharding at all: dropping
-# a line from a partition removes a check from the gate and makes the gate
-# *faster*, with nothing else in the repository to notice.
-#
-# The partition balances COST, which is why the three shards below hold uneven
-# numbers of checks rather than a third each. The counts themselves are
-# deliberately not written here. `ruby tests/gate_manifest_coverage_test.rb`
-# prints them on its summary line, and that is the only reading of them that
-# cannot be stale: the sentence that used to state them here said 51, 52 and 61
-# while the file held 53, 57 and 61, and merging #547's Vaultwarden checks in
-# beside #548's AdGuard ones moved it twice more -- while claiming in the same
-# breath to have been read off that summary line rather than remembered. #652
-# deleted it, along with the matching restatements in
-# tests/gate_manifest_coverage_test.rb and CLAUDE.md, because nothing compares a
-# number in a comment against the lists. #469 drew
-# it round robin -- count is all a partition without a cost table can balance
-# -- and by #517 the three shards
-# were 53/54/57 checks carrying a 2.2x spread of work, with the gate's two
-# slowest checks in the same shard. tests/gate_manifest_coverage_test.rb carries
-# the four-run measurement that redrew it and the reasoning for each line that
-# moved, beside the lists that reasoning justifies; it is not repeated here,
-# because a second copy of a table is a claim nothing bumps. The one rule to
-# know before moving a line is that no two of the gate's slowest checks may
-# share a shard: a shard cannot finish faster than its own slowest check, so
-# pairing them wastes a runner.
-#
-# SPREAD THE WAITS, and this rule outranks the one above it. A check that spends
-# its time waiting -- on a timeout, a poll, a port -- still occupies one of the
-# four worker slots, but it consumes none of the CPU the other three are
-# competing for. Two long waits in one shard therefore cut that shard's effective
-# pool from four workers to two, and every CPU-bound check in it stretches. This
-# is measured, not reasoned: #484 moved the two beszel contract checks, then 86s
-# and 85s of pure wait, into the same shard, and that shard's *other* checks
-# inflated by 298s on 412s of work added -- `komga_library_
-# reconciliation_test.rb` 134s to 236s, `dozzle_contract_test.rb --self-test`
-# 111s to 185s -- while the two shards that shed work got 15% and 24% cheaper in
-# the same run. The move was reverted.
-#
-# #485 made both beszel polling budgets environment inputs, so those two checks
-# are work-bound now and are no longer the rule's subjects. Its one subject today
-# is `sandbox_cleanup_acquisition_ownership_test.sh`, which starts a container on
-# `sleep 300` and measured 400.3s elapsed against 116.6s of CPU (#517). It sits
-# alone in shard 3; no other line here is known to be a wait, which is not the
-# same as there being none, because only a handful have ever been measured that
-# way. When the next one arrives, recognise it rather than rediscovering it: run
-# the check alone and read `time`'s user+sys against its elapsed. Sleep consumes
-# no CPU, so a low ratio is a wait -- and since contention only pushes the ratio
-# down, a HIGH ratio proves work whatever the load, while a low one on a loaded
-# machine is a lower bound rather than a verdict. It costs one run instead of a
-# width sweep. The two beszel checks were 14.5s of CPU in 99.6s elapsed and 19.1s
-# in 101.5s before the fix, and 13.9s in 19.6s and 18.5s in 31.8s after it -- the
-# same work, and the 150s of sleep those four numbers bracket is the local half
-# of the 171s of CI wait #485 removed.
-#
-# Rebalancing as checks change is a manual act, and the slowest-checks report
-# below is what informs it -- but read #484 before trusting an arithmetic
-# projection from it. A check's recorded seconds are its wall time at that
-# shard's load, so they are not work you can carry to another shard: #484's
-# rebalance predicted a largest shard of 1170s and measured 1453s. Nor does one
-# run confirm a rebalance: shard-level runner variance is 30% and the figure a
-# rebalance is chasing is around 110s, so read two or three runs and ask whether
-# the WORST leg fell.
-#
-# ORDER WITHIN A SHARD IS DISPATCH ORDER, and it matters as much as which shard a
-# line is in. The pool hands lines out top to bottom, so a heavy check pasted at
-# the bottom of a heredoc starts once most of the shard has finished and runs on
-# alone past it. Each heredoc therefore lists its heaviest checks first, longest
-# at the top, going by the slowest-checks report; the rest follow in no
-# particular order. A new check that lands in that report goes near the top, not
-# at the end. #843 found shard 3's three heaviest checks among its last lines --
-# docs/ci-performance-history.md has the measurement -- and reordering them was
-# worth more than any move between shards.
-#
-# One line of shard 1 is DELIBERATELY DUPLICATED in CI, and this is the half of
-# that note the manifest can carry -- a comment between the heredoc markers would
-# be dispatched as a check. `ruby tests/ci/workflow_test.rb` runs here and again
-# as a step of the `validate` job in .github/workflows/ci.yml, whose own comment
-# carries the reasoning. In short: what it pins is the shape of the workflow that
-# runs it, so from here alone `static` gated `if: false`, deleted, or given an
-# empty matrix takes its own objection out of the run and reports success (#480).
-# `validate` runs under `always()` and cannot be skipped, so the second route is
-# the one that survives. Neither copy is redundant, and the check asserts both:
-# that `validate` still invokes it, and that this manifest still registers it
-# exactly once.
+# Three shards, one heredoc each; no argument runs all three, `2` runs shard 2.
+# The partition balances cost, not counts (see gate_manifest_coverage_test.rb):
+# - no two of the slowest checks share a shard;
+# - spread the waits: a waiting check holds a worker slot, so two in one shard
+#   halve its pool;
+# - order within a shard is dispatch order, so list the heaviest checks first.
+# A comment between heredoc markers would be dispatched as a check.
 
 policy_shard_1() {
   cat <<'POLICY_CHECKS_1'
@@ -340,9 +227,7 @@ POLICY_CHECKS_3
 
 POLICY_SHARD_IDS='1 2 3'
 
-# An identifier no shard answers to is refused with a non-zero status rather
-# than run as nothing, so a typo in the CI matrix is a red leg instead of a job
-# reporting success having executed no check at all.
+# An unknown shard is refused rather than run as nothing.
 policy_checks() {
   wanted=${1:-}
   emitted=0
@@ -359,8 +244,7 @@ policy_checks() {
   fi
 }
 
-# Resolved before the checks run because two of them invoke this interpreter
-# directly, and exported because each check is executed in its own shell.
+# Resolved once and exported: two checks invoke this interpreter directly.
 ansible_playbook=$(command -v ansible-playbook) || {
   printf '%s\n' 'ansible-playbook is required for managed-user behavior tests' >&2
   exit 1
@@ -387,14 +271,10 @@ esac
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
-# One file per check rather than a delimited record, so a command containing any
-# character at all still round-trips to its runner intact.
+# One file per check, so any command round-trips intact.
 policy_checks "$policy_shard" >"$work/manifest"
 total=$(awk 'END { print NR }' "$work/manifest")
-# A shard whose list is empty would otherwise run no check, report "all 0
-# checks passed" and exit 0 -- the silent green this whole partition has to be
-# incapable of. The declaration's per-shard floor guards the lists; this
-# guards the run.
+# An empty shard must not report "all 0 checks passed".
 if [ "$total" -eq 0 ]; then
   printf 'policy validation found no checks to run\n' >&2
   exit 1
@@ -410,8 +290,7 @@ while [ "$index" -lt "$total" ]; do
   printf '%s\n' "$work/cmd.$index" >>"$work/queue"
 done
 
-# Always exits 0: the parent decides pass or fail from the recorded status, so a
-# failing check neither aborts the pool nor leaves the remaining checks unrun.
+# Always exits 0: the parent decides pass/fail from the recorded status.
 cat >"$work/run-check" <<'RUNNER'
 spec=$1
 dir=$(dirname "$spec")
@@ -458,9 +337,8 @@ printf '%s\n' "$status" >"$dir/status.$index"
 exit 0
 RUNNER
 
-# A child killed by a signal makes xargs abandon the pool, so its status is
-# recorded rather than allowed to abort the script: the accounting below is what
-# names the checks that never reported, and it has to run for that to be said.
+# A signal-killed child makes xargs abandon the pool, so record its status
+# instead of aborting; the accounting below names checks that never reported.
 dispatch=0
 gate_started=$(date +%s)
 tr '\n' '\0' <"$work/queue" |
@@ -490,13 +368,8 @@ while [ "$index" -lt "$total" ]; do
   printf '%s\t%s\n' "$(cat "$work/seconds.$index")" "$check" >>"$work/durations"
 done
 
-# The gate has outgrown its budget three times, and each time finding the check
-# responsible meant timing them by hand. The pool already knows, so it says so:
-# its wall time, the check time it had to place into that wall time, and the ten
-# checks it took longest to place. A pool cannot finish faster than its longest
-# single item, so the top of this list is what the gate's floor actually is.
-# Reported on success too -- a gate that only explains itself once it is already
-# too slow is a gate nobody reads until CI is red.
+# Report wall time and the ten slowest checks, on success too: the longest
+# single item is the gate's floor.
 if [ -f "$work/durations" ]; then
   busiest=$(sort -rn "$work/durations" | head -10)
   work_seconds=$(awk -F'\t' '{ total += $1 } END { print total + 0 }' "$work/durations")

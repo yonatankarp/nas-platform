@@ -1,14 +1,6 @@
 #!/bin/sh
-# Kapowarr's drift is its identity, and unlike Pinchflat's it does not live in a
-# file the platform renders: the application hashes both halves with a salt it
-# generated at first start and keeps in its own database. The only hand edit
-# that can be reproduced from outside is the one a person actually makes in the
-# web interface — clearing the login — and it is also the dangerous one, because
-# an unprotected Kapowarr hands its API key, and with it every route that
-# renames or deletes comics, to anyone who can reach the port.
-#
-# The lane then requires that verification alone refuses the drifted deployment,
-# and leaves it drifted for the reconcile phase to repair by converging.
+# Kapowarr hashes its login with its own salt, so the reproducible hand edit is
+# clearing the login, which also exposes its API key. Left drifted for reconcile.
 set -eu
 set +x
 umask 077
@@ -26,12 +18,7 @@ mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 expected_failure=$(mktemp "$PLATFORM_REPORT_ROOT/kapowarr-verify-drift.XXXXXX")
 trap 'unlink "$expected_failure" >/dev/null 2>&1 || true' EXIT HUP INT TERM
 
-# The mutation is 55-kapowarr.rb beside this file. It arrived here as a
-# `<<'RUBY'` heredoc until #315, where sh -n, ruby -c and a reader could reach
-# none of it. Resolve it from this hook's own checkout rather than from any tree
-# an argument or the environment supplies, and hold standard input at
-# end-of-file: a heredoc exhausted it by construction and a sibling program
-# would inherit the hook's.
+# stdin at EOF so the program does not inherit the hook's.
 PLATFORM_KAPOWARR_PORT=$PLATFORM_KAPOWARR_PORT \
 PLATFORM_MAC_VAULT_FILE=$PLATFORM_MAC_VAULT_FILE \
 PLATFORM_MAC_VAULT_PASSWORD_FILE=$PLATFORM_MAC_VAULT_PASSWORD_FILE \

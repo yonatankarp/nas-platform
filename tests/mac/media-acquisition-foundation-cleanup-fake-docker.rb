@@ -1,15 +1,6 @@
 #!/usr/bin/env ruby
-# A fake `docker` for tests/mac/media-acquisition-foundation-cleanup-test.sh.
-#
-# The test copies this file to $fixture/bin/docker and puts that directory
-# first on PATH, so tests/mac/cleanup.sh reconciles a JSON model of projects,
-# networks and volumes (FAKE_DOCKER_STATE) instead of a daemon, appending each
-# mutation to FAKE_DOCKER_LOG. The model is deliberately narrow: it answers
-# only the calls the media-acquisition cleanup path makes.
-#
-# It lived in a `cat > "$fixture/bin/docker" <<'RUBY'` heredoc inside that test
-# until #315 -- nothing syntax-checked it and no linter could reach it. The
-# body below is byte-identical to what that heredoc rendered.
+# A fake `docker` for media-acquisition-foundation-cleanup-test.sh: a JSON model
+# answering only the cleanup path's calls; mutations logged to FAKE_DOCKER_LOG.
 require "fileutils"
 require "json"
 

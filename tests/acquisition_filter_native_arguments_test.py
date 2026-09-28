@@ -1,18 +1,8 @@
 #!/usr/bin/env python3
 """Filters must receive plain containers, not the play's templated proxies.
 
-Ansible hands a filter its arguments as templated proxies whose every element
-access re-enters the templating engine. The relationship filters walk deep
-structures, so that cost multiplies: measured against one real converge, seven
-Configarr tasks cost 554s with the proxies and disappear from the profile
-without them, taking the play from 820s to 239s. The conversion is therefore
-load-bearing, and this check fails if it is removed or narrowed.
-
-The conversion itself lives in `module_utils/acquisition_schema.py`, and each of
-the three acquisition filter plugins wraps every filter it exposes with it. All
-three are checked here, so a plugin added later that forgets the wrapper is
-caught by the same run.
-
+The conversion (module_utils/acquisition_schema.py) is a large converge-time win;
+every filter of all three acquisition plugins must be wrapped with it.
 Run with --self-test to prove the check detects its own regression.
 """
 

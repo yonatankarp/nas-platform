@@ -8,11 +8,8 @@ require_relative "media_acquisition_reconciliation_support"
 
 failures = []
 
-# The core file's dedicated production probe establishes the fingerprint
-# algorithm for this gate run; if it regresses, that file fails. This file can
-# therefore seed equivalent private baselines instead of running another setup
-# playbook before every scenario, exactly as the single-file fixture did once
-# the probe had passed.
+# The core file's production probe proves the fingerprint algorithm, so this file
+# seeds equivalent baselines instead of running a setup playbook per scenario.
 FINGERPRINT_BASELINE_CACHE["enabled"] = true
 
 configarr_state = { "configarr" => deep_copy(CONFIGARR), "configarr_desired" => deep_copy(CONFIGARR) }
@@ -299,18 +296,8 @@ if COMPLETE_PROFILE_TREE_TARGETED_ONLY
   puts "complete Configarr profile-tree identity behavior holds"
   exit
 end
-# One field per class rather than all hundred and five. Each round trip costs
-# about twenty-two seconds and proves two things: that the field is visible in
-# the owned projection, and that a difference in it reaches Configarr as exactly
-# one write and is recorded. The first is a property of a pure function, proved
-# for every field in about a second by
-# tests/acquisition_configarr_field_coverage_test.rb. The second is a property
-# of the code path rather than of the field, so a class needs one witness, not
-# one per member. Running all of them cost this job eighteen minutes to prove
-# the same two things over and over.
-#
-# The targeted selector still reaches the whole table, because narrowing to one
-# scenario is what it is for.
+# One field per class: each round trip costs ~22s, and per-field visibility is proved
+# by tests/acquisition_configarr_field_coverage_test.rb. A targeted selector reaches all.
 configarr_exercised = if CONFIGARR_MUTATION_PATTERN
                         selector = Regexp.new(CONFIGARR_MUTATION_PATTERN)
                         configarr_mutations.select { |field, _| field.match?(selector) }
@@ -333,10 +320,8 @@ if CONFIGARR_MUTATION_PATTERN
   exit
 end
 
-# Configarr cannot restore server-owned qdef identity metadata, weight, title,
-# or values for definitions absent from the pinned TRaSH input. An independent
-# continuity hash must reject that drift before any mutation, even if a desired
-# input changed or the broader owned-state hash is absent.
+# Configarr cannot restore server-owned qdef metadata absent from the pinned TRaSH
+# input, so an independent continuity hash must reject that drift before any mutation.
 context_state = deep_copy(configarr_state)
 %w[radarr sonarr].each do |service|
   definition = context_state.dig("configarr", service, "qualitydefinition").find do |item|
@@ -420,9 +405,7 @@ end
         mutation_requests(api, configarr_write).length == 1
       failures << "Configarr #{label} did not converge" unless
         configarr_projection(api.state.fetch("configarr")) == configarr_projection(CONFIGARR)
-      # A snapshot stores nil for a file that does not exist, so fetch's default
-      # never applies and an absent fingerprint crashed the case instead of
-      # reporting it.
+      # A snapshot stores nil for an absent file, so fetch's default never applies.
       opaque_file = result.fetch("fingerprints")[CONFIGARR_OPAQUE_FINGERPRINT_FILE] || {}
       failures << "Configarr #{label} did not record opaque continuity" unless
         opaque_file["content"] == "#{configarr_opaque_fingerprint(CONFIGARR)}\n"
@@ -808,11 +791,8 @@ Dir.mktmpdir("media-acquisition-configarr-partial-") do |runtime|
   end
 end
 
-# The fingerprint-safety matrix below is deliberately cross-cutting: it proves
-# the same safety property for every relationship, not only Configarr's. The
-# states are literal fixtures built from the shared constants, so this file
-# rebuilds the ones it does not otherwise own rather than depending on another
-# file having run first.
+# Cross-cutting: the same safety property for every relationship, with states
+# rebuilt here rather than depending on another file having run first.
 application_state = {
   "applications" => [
     deep_copy(APPLICATION), deep_copy(SONARR_APPLICATION),

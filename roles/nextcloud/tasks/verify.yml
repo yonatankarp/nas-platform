@@ -1,32 +1,14 @@
 ---
-# Verification, and it has to prove the database link rather than that a port is
-# open. #445 established that rule the hard way and this stack is where it is
-# easiest to get wrong, because Nextcloud publishes an endpoint that looks like
-# a health check and is not one.
-#
-# Apache binds 80 long before there is anything behind it: the entrypoint rsyncs
-# the whole /usr/src/nextcloud tree into the volume and then installs, and
-# throughout that /status.php answers HTTP 200 with `"installed":false`. So a
-# check that reads only the status code passes against an instance that has
-# never had a database.
-#
-# What makes /status.php a real proof is what it has to do to produce its JSON.
-# status.php requires lib/base.php, whose OC::init boots the server, and the
-# boot builds the memcache factory by asking AppConfig for the installed app
-# versions -- which is a query against oc_appconfig. Measured against
-# nextcloud:34.0.3-apache with the database container stopped: an uncaught
-# Doctrine\DBAL\Exception, HTTP 500, zero bytes of body. The status code and the
-# three fields below therefore cannot be produced by the web tier alone.
+# /status.php answers 200 with "installed":false before install, so the status code
+# alone proves nothing. Producing its JSON boots the server, which queries
+# oc_appconfig, so the fields below prove the database link (#445).
 
 - name: Verify the Nextcloud status endpoint
   tags: [platform_verify_nextcloud]
   ansible.builtin.uri:
     url: "{{ nextcloud_url }}/status.php"
     method: GET
-    # Every status is accepted here so that the assertion below is what fails,
-    # with a message naming the causes. A uri task failing on its own status
-    # code reports an HTTP error and nothing about which half of the stack is
-    # broken.
+    # All statuses accepted so the assertion below names the cause.
     status_code: "{{ range(100, 600) | list }}"
     return_content: true
   register: nextcloud_verify_status
@@ -37,10 +19,7 @@
   changed_when: false
   check_mode: false
 
-# Deliberately not redacted: these conditions carry no credential -- they read a
-# status code and three booleans -- and assert prints the text of a condition
-# rather than what it evaluated to, so redacting this would hide the only
-# actionable sentence the verification produces while protecting nothing.
+# Not redacted: no credential here, and it holds the only actionable message.
 - name: Require an installed and serving Nextcloud during exact verification
   tags: [platform_verify_nextcloud]
   ansible.builtin.assert:
@@ -62,20 +41,13 @@
       maintenance true and needsDbUpgrade true both mean an image bump ran
       `occ upgrade` and did not finish it, which is a restore rather than a
       retry.
-  # The same two conditions the request above carries, and for the reason every
-  # gated service's equivalent assertion carries them. Without them this
-  # assertion runs against a register the gate skipped, reads its four
-  # `default`s -- status 0, installed false, maintenance true, needsDbUpgrade
-  # true -- and fails every lane where the stack is switched off or the run is
-  # a check, reporting an absent instance as a broken one. The two debug tasks
-  # below are what those cases get instead.
+  # Without the gate this would read the skipped register's defaults and fail every
+  # disabled or --check run.
   when:
     - nextcloud_deployment_enabled | bool
     - not ansible_check_mode
 
-# So that --tags platform_verify_nextcloud is never an empty selection. A tag run
-# that selects no task at all is indistinguishable from a tag that no longer
-# exists, and this pull request ships with the flag false everywhere.
+# So the verify tag never selects nothing.
 - name: Report the deferred Nextcloud verification
   tags: [platform_verify_nextcloud]
   ansible.builtin.debug:

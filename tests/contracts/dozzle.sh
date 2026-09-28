@@ -18,13 +18,8 @@ case $mode in
 esac
 [ "$#" -eq 0 ] || shift
 
-# Two roots, and they are not the same thing. $contract_repo_dir is the checkout
-# this script belongs to, which is where its six Ruby programs live -- a heredoc
-# had that property by construction, because the program travelled inside the
-# file. $repo_dir is the tree those programs *inspect*, which
-# PLATFORM_CONTRACT_REPO_DIR lets a caller point at a fixture. Resolving a
-# program from $repo_dir would make this contract read its own assertions out of
-# the tree it is judging.
+# $contract_repo_dir holds this contract's programs; $repo_dir is the tree they
+# inspect. Never resolve a program from $repo_dir, or it judges itself.
 contract_repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$contract_repo_dir}
 group_render_program=$contract_repo_dir/tests/contracts/dozzle-group-render.rb
@@ -41,14 +36,10 @@ service_vars=$repo_dir/inventory/group_vars/all/service_dozzle.yml
 env_template=$repo_dir/roles/dozzle/templates/env.j2
 deployment_inputs=$repo_dir/roles/deployment_bundle/tasks/inputs.yml
 deployment_bundle=$repo_dir/roles/deployment_bundle/tasks/main.yml
-# The five scenario markers this contract insists the integration lane prints
-# are spelled in the controller program, not in the launcher that starts it.
+# The scenario markers are spelled in the controller, not the launcher.
 integration=$repo_dir/tests/integration_controller.sh
 mac_drift=$repo_dir/tests/mac/hooks/drift/20-dozzle.sh
 mac_verify=$repo_dir/tests/mac/hooks/verify/20-dozzle.sh
-# The verification hook's label assertions are a program beside it since #315.
-# Both are read out of the tree under inspection: the hook for the inspection it
-# performs, the program for the labels it names.
 mac_verify_labels=$repo_dir/tests/mac/hooks/verify/20-dozzle-labels.rb
 
 fail_contract() {
@@ -56,10 +47,7 @@ fail_contract() {
   exit 1
 }
 
-# Deliberately not the deployed 8081: rendering with a value the repo never
-# contains is what proves the relay's listener port really is read from one
-# variable. A copy left behind anywhere in the alert-relay service renders as
-# 8081 and disagrees with this probe.
+# Deliberately not the deployed 8081, so a hard-coded copy disagrees with the probe.
 relay_probe_port=53081
 
 [ -f "$compose" ] || fail_contract 'services/dozzle/compose.yml is absent'
@@ -178,19 +166,9 @@ render_group_contract() {
     "$stack" "$variant" "$expected_group" "$relay_probe_port" </dev/null
 }
 
-# Every stack now carries an integration override, so the disposable lane is
-# rendered here rather than named service by service: a new override that
-# breaks the Dozzle grouping cannot slip in unrendered.
-#
-# `docker compose config` renders the default profile only, so a service behind
-# `profiles:` is not part of the document this judges -- configarr, the one such
-# service in the tree, is deliberately outside it. That mirrors the exemption
-# tests/policy_test.rb already makes for a `profiles: [jobs]` service, which
-# owes no Dozzle event identity because it is not a container the Running
-# Containers panel watches; the subject of this rule is exactly the set a
-# converge leaves running. The mirroring is enforced rather than assumed: if
-# Compose ever stopped filtering, configarr would arrive carrying no
-# dev.dozzle.name and the render below would refuse it by name.
+# Every stack's integration override is rendered. `docker compose config` renders
+# the default profile only, so configarr (profiles: [jobs]) is outside it, as in
+# tests/policy_test.rb.
 render_group_variants() {
   stack=$1
   expected_group=$2
@@ -203,12 +181,8 @@ render_group_variants() {
 }
 
 if [ "$mode" = static ]; then
-  # The `-r` preload names the INSPECTED tree, not this checkout, and that is
-  # deliberate rather than an oversight of the two-roots rule above: it is the
-  # inspected tree's own flatten helpers that must agree with the inspected
-  # tree's Compose files. Binding it to $contract_repo_dir would look like
-  # following the convention and would quietly stop a fixture from being able to
-  # break it.
+  # The preload names the INSPECTED tree deliberately: its own helpers must agree
+  # with its own Compose files.
   ruby -r"$repo_dir/tests/policy_support.rb" "$labels_program" \
     "$repo_dir/services/arr/compose.yml" \
     "$repo_dir/services/audiobookshelf/compose.yml" \
@@ -227,14 +201,8 @@ if [ "$mode" = static ]; then
     "$repo_dir/services/seerr/compose.yml" \
     "$repo_dir/services/trailarr/compose.yml" \
     "$repo_dir/services/vaultwarden/compose.yml" </dev/null
-  # Every stack in services/manifest.yml, and nothing short of it. The list was
-  # nine of seventeen until #656, which is how the grouping rule came to hold
-  # for immich and paperless while arr and downloaders -- the other two
-  # multi-container stacks -- carried names and no group at all, their seven
-  # containers loose in the Running Containers panel. A subset renders as a rule
-  # that happens to be true where somebody looked. tests/dozzle_contract_test.rb
-  # holds these against the manifest in both directions, so a stack added there
-  # and not here fails rather than going unrendered.
+  # Every stack in services/manifest.yml (#656); tests/dozzle_contract_test.rb
+  # holds this list against the manifest both ways.
   render_group_variants arr arr
   render_group_variants beszel beszel
   render_group_variants downloaders downloaders
@@ -272,21 +240,12 @@ esac
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:?}"
 : "${PLATFORM_REPORT_ROOT:?}"
 : "${PLATFORM_DOZZLE_PORT:=8080}"
-# The port the notify mode's Pushover recorder listens on, and the one every
-# lane redirects dozzle_pushover_api_url at. The number has to agree with the
-# lane that converged the relay, because the endpoint is rendered into the
-# relay's environment file long before this program runs: it is written here,
-# in tests/integration_controller_lib.sh and in tests/mac/lib.sh, and
-# tests/dozzle_contract_test.rb refuses the three disagreeing.
+# Must agree with tests/integration_controller_lib.sh and tests/mac/lib.sh;
+# tests/dozzle_contract_test.rb refuses a disagreement.
 : "${PLATFORM_DOZZLE_PUSHOVER_PORT:=32587}"
-# The Beszel hub the beszel-notify mode asks to send a test notification. The
-# default is beszel_port, which tests/contracts/beszel.sh defaults the same way.
 : "${PLATFORM_BESZEL_PORT:=8090}"
 PLATFORM_CONTRACT_DOZZLE_SERVICE_VARS=$service_vars
-# The notify mode's throwaway containers are started from the alert relay's
-# image for one reason only: a lane that converged Dozzle has already pulled it.
-# That is true of the deployed pin and of nothing else, so the pin is read out
-# of the deployment rather than restated here.
+# Throwaway containers reuse the relay's deployed image, already pulled by the lane.
 PLATFORM_CONTRACT_DOZZLE_COMPOSE=$compose
 export PLATFORM_DOZZLE_PORT PLATFORM_CONTRACT_DOZZLE_SERVICE_VARS
 export PLATFORM_DOZZLE_PUSHOVER_PORT PLATFORM_BESZEL_PORT

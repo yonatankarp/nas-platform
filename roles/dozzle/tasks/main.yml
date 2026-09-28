@@ -181,11 +181,8 @@
   vars:
     dozzle_users_path: "{{ dozzle_state_root }}/users.yml"
 
-# Dozzle runs as NAS_UID:NAS_GID, so a 0600 file owned by whoever ran the play
-# is unreadable to it and the container exits before serving. Docker Desktop
-# remaps bind-mount ownership and hides this; a Linux host does not. The Mac
-# lane omits the owner because it converges as an unprivileged user and relies
-# on that remapping.
+# Dozzle runs as NAS_UID:NAS_GID and cannot read a 0600 file owned by anyone
+# else; the Mac lane omits the owner and relies on Docker Desktop's remapping.
 - name: Render the Dozzle administrator
   ansible.builtin.template:
     src: users.yml.j2
@@ -197,9 +194,7 @@
   register: dozzle_users_file
   no_log: true
 
-# The pair golem's agent authenticates the hub with, and the hub presents when
-# it dials. Owned like the administrator file for the same reason; no_log
-# because a diff would echo the key.
+# The mTLS pair shared with golem's agent; owned like the administrator file.
 - name: Render the Dozzle agent TLS pair
   ansible.builtin.copy:
     content: "{{ item.content }}"
@@ -248,13 +243,8 @@
     dozzle_alert_relay_legacy_state.stat.exists and
     not dozzle_alert_relay_isolated_state.stat.exists
 
-# The block exists for one thing the rescue does with the failure: it hands the
-# deployment's own message to roles/container_health, which either explains it in
-# terms of the container state Docker reports or re-raises it unchanged.
-# Compose's `--wait` fails a crash-looping container with "container ... is
-# unhealthy", which says nothing about why. roles/bindery/tasks/main.yml carries
-# the long form of this argument; #509 built the mechanism and #537 wired the
-# remaining eleven single-`up` roles into it.
+# The rescue hands the deployment's message to roles/container_health, which
+# explains it from Docker's container state or re-raises it (#509).
 - name: Deploy Dozzle, catching a container that runs but never serves
   block:
     - name: Deploy Dozzle
@@ -276,16 +266,8 @@
           {{ ansible_failed_result.msg
              | default('the Dozzle deployment failed and reported no message') }}
 
-# Immediately after the deployment and before everything that trusts it. A
-# container in `Restarting` still appears in `docker container ls --quiet`, so
-# the CPU verification below would sail straight past one and the readiness probe
-# after it would fail on a timeout that names nothing (#510).
-#
-# Detect without refusing, one bounded force-recreate of only what Docker says is
-# stuck, then the verdict. roles/container_health/tasks/recover.yml is the one
-# copy of that sequence and carries the argument for each of its three properties;
-# the deployment above stays here because it is what declares the release this
-# repairs (#646).
+# Before anything that trusts the deployment: a `Restarting` container still
+# lists as running, so later checks would miss it (#510, #646).
 - name: Recover Dozzle from a container that runs but never serves
   ansible.builtin.include_role:
     name: container_health
@@ -305,19 +287,13 @@
     tasks_from: report
   vars:
     deployment_report_service: Dozzle
-    # Both Compose results, because a force-recreate that repaired a wedged
-    # container changed the deployment as surely as the deploy above did, and a
-    # report gated on the deploy alone would say nothing on the one converge an
-    # operator most wants to hear about. It is registered even when skipped, and
-    # `default({})` covers the paths that never reach it at all.
+    # A repairing force-recreate is a change too.
     deployment_report_changed: >-
       {{ (dozzle_deploy is changed)
          or ((container_health_wedged_recreate | default({})) is changed) }}
 
-# Not a handler: handlers run at the end of the play, but the health check and
-# API reconciliation immediately below require the restarted container. Deferring
-# the restart would run them against the old process. Dozzle reads the agent
-# TLS pair only at start, so a rotated pair needs the same restart.
+# Not a handler: the checks below need the restarted container. Dozzle reads
+# the agent TLS pair only at start.
 - name: Restart Dozzle after changing its administrator file or agent TLS pair # noqa: no-handler
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/dozzle"
@@ -774,15 +750,8 @@
     fail_msg: Dozzle ntfy dispatcher is absent or drifted.
   when: not ansible_check_mode
 
-# Deliberately not redacted, and the only looped assert in the platform that is. A
-# looped assert echoes the whole item into its result dict, and loop_control.label
-# narrows the task header only, so a loop over anything credential-bearing has to stay
-# hidden. Two things make this one safe. The loop is over dozzle_alerts, a static
-# literal in the role defaults with no interpolation and no inventory override, so the
-# echoed item is an alert rule. And task-level vars do not reach the result dict, so
-# dozzle_verified_rule below discloses nothing of the rule listing the server returned.
-# The assert carries no fail_msg at all, so redaction reduces a failure to "censored"
-# with no indication of which of the eight rule fields drifted.
+# Deliberately not redacted: the loop echoes each item, but dozzle_alerts is a
+# static credential-free literal, and task vars do not reach the result.
 - name: Require exactly the four managed enabled Dozzle event alerts
   tags: [platform_verify_dozzle]
   ansible.builtin.assert:

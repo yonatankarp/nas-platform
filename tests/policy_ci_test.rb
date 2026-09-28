@@ -1,12 +1,6 @@
 #!/usr/bin/env ruby
-# CI and policy-runner policy.
-#
-# One table decides which roles a suite converges -- tests/ci/suites.conf, which
-# the integration runner and the CI classifier both read -- so what is policed
-# here is that table's content rather than the agreement of two copies of it. The
-# runner itself is pinned here: every policy script must be registered in
-# validate-policy.sh, which is what stops a check from being written and then
-# never run. Collections pin like images do.
+# CI and policy-runner policy: tests/ci/suites.conf content, gate registration of
+# every policy script, and collection pins.
 
 require "open3"
 require "rbconfig"
@@ -20,21 +14,10 @@ include TestScaffold
 
 failures = []
 
-# tests/ci/suites.conf is the one table that says which roles each suite
-# converges: tests/integration.sh reads it for the tags a suite gets when the
-# caller passes none, and tests/ci/classify_changes.rb derives its lanes, its CI
-# matrix and its tag plans from the same rows. There is no second copy to
-# reconcile, so what is checked here is the table itself. Every lane but the
-# planned acquisition foundations must name host_prep and deployment_bundle, the
-# shared prerequisites every service role needs. The requirement used to name the
-# alerting sink every role reported to; #558 moved the reports into
-# roles/deployment_bundle and removed the sink.
+# tests/ci/suites.conf is the single table integration.sh and the CI classifier read.
 integration_path = File.join(ROOT, "tests", "integration.sh")
 suite_table_path = File.join(ROOT, "tests", "ci", "suites.conf")
 integration_body = File.file?(integration_path) ? File.read(integration_path) : ""
-# What the controller does is asserted against the controller. It is a program
-# in a file of its own now rather than escaped text inside an sh -c argument,
-# so these read it unescaped, at the place the code they police actually lives.
 controller_path = File.join(ROOT, "tests", "integration_controller.sh")
 controller_body = File.file?(controller_path) ? File.read(controller_path) : ""
 
@@ -61,13 +44,7 @@ end
 # name -- the classifier's underscored lane key is its own concern.
 suite_tags = suite_rows.to_h { |suite, _kind, tags| [suite, tags] }
 
-# Which acquisition lanes are inert and which converge a real role is a
-# consequence of services/manifest.yml, not a separate fact. It used to be
-# written out here twice -- once to exempt the inert lanes from the shared
-# prerequisite requirement and once to require they ship no image -- so promoting a project
-# meant editing two literals in this file that nothing held to the manifest or to
-# each other. The catalog supplies which projects are acquisition projects; the
-# manifest supplies whether each one is built yet.
+# Inert vs real acquisition lanes derive from the catalog plus manifest status.
 acquisition_catalog = begin
   YAML.safe_load_file(File.join(ROOT, "config", "media-acquisition.yml"))
 rescue Errno::ENOENT, Psych::Exception
@@ -80,39 +57,9 @@ check(failures, !acquisition_projects.empty?,
 planned_acquisition_lanes = acquisition_projects & PolicySupport.planned_services(ROOT)
 implemented_acquisition_lanes = acquisition_projects & PolicySupport.implemented_services(ROOT)
 
-# Both lists are keyed on services/manifest.yml's status column, and every
-# acquisition project is implemented, so planned_acquisition_lanes is [] and the
-# three guards below that consult it hold nothing. That is dormancy rather than a
-# hole, and #639 went looking for the hole before saying so. A floor under the
-# implemented side and a both-directions check against the suite table were
-# written, measured against planted defects on a checkout of main, and then
-# deleted, because every failure mode they were meant to catch is already caught.
-# Two of the four are caught in this file and two are not, which is worth knowing
-# separately -- a reader here sees only the first pair:
-#
-#   caught HERE
-#     the manifest stops naming acquisition services -> "service_image_sources
-#       must cover every implemented service exactly once"
-#     an acquisition lane vanishes from suites.conf  -> "implemented acquisition
-#       suite <name> must converge at least one service role"
-#
-#   caught ELSEWHERE, and nothing in this file sees them
-#     a lane appears that no manifest entry implements -> tests/ci/
-#       classify_changes_test.rb and tests/ci/workflow_test.rb
-#     a status value is renamed, emptying both lists  -> EXPECTED_PROJECTS in
-#       tests/media_acquisition_foundation_test.rb, plus
-#       tests/deployment_gate_coverage_test.rb and tests/policy_test.rb
-#
-# A fifth check saying what four already say is still a fifth check, and this
-# file's subject is guards that report a verdict they did not establish. So what
-# is recorded here is the reasoning, and the list above is what a future reader
-# should re-measure before adding the floor back.
-#
-# Re-measure it against a real checkout of main. The first pass of this table was
-# written against a stale worktree and named a "service lane <name> must converge
-# ntfy" check that #676 had already deleted; on current main that row is caught
-# by the CI classifier's own tests instead, and it took re-running the plants on
-# b2f1841 to find that out.
+# planned_acquisition_lanes is [] today, so the guards using it are dormant, not holes:
+# #639 found every failure mode caught here or in the classifier/foundation tests.
+# Re-measure on current main before adding a floor back.
 
 unless suite_rows.empty?
   suite_rows.each do |suite, kind, tags|
@@ -123,13 +70,7 @@ unless suite_rows.empty?
           "service lane #{suite} must converge host_prep and deployment_bundle, the shared prerequisites every service role needs")
   end
 
-  # Dormant, not vacuous -- the note above says what tells those apart. A project
-  # added to the catalog as `planned` converges only the shared inert foundation
-  # tags until it is promoted, and this is the row that says so. Its other half
-  # required tests/contracts/<lane>-foundation.sh; #639 deleted those seven
-  # byte-identical wrappers, of which one was reachable and its only contribution
-  # over the gate's own run was verifying that the seven were identical, so there
-  # is no per-lane contract left to require.
+  # Dormant (see above): a planned project converges only the inert foundation tags.
   planned_acquisition_lanes.each do |lane|
     row = suite_rows.find { |suite, _kind, _tags| suite == lane }
     check(failures,
@@ -149,22 +90,14 @@ config = File.read(File.join(ROOT, "ansible.cfg"))
 check(failures, config.match?(/^inject_facts_as_vars\s*=\s*False/i),
       "ansible.cfg must disable fact injection, removed in ansible-core 2.24")
 
-# Every documented invocation passes -i, so a default inventory only ever
-# decided what a forgotten one does, and the value this key used to hold was the
-# live NAS. The absence is asserted together with a marker that the file was
-# really read: an absent key is also what an empty, renamed or unreadable
-# ansible.cfg looks like, and a guard that cannot tell those apart passes for
-# the wrong reason.
+# Assert the [defaults] marker too: an empty or unreadable ansible.cfg also lacks the key.
 check(failures, config.match?(/^\[defaults\]$/),
       "ansible.cfg must carry a [defaults] section for its keys to be read")
 check(failures, !config.match?(/^\s*inventory\s*=/),
       "ansible.cfg must name no default inventory, so a forgotten -i cannot " \
       "silently target a host")
 
-# `ansible-galaxy collection install -r requirements.yml` run from the
-# repository root fills .ansible/ with untracked files, one `git add -A` away
-# from being committed. It reads as clean only because git skips empty
-# directories.
+# ansible-galaxy fills .ansible/ in the repo root; git hides it only while empty.
 gitignore = File.read(File.join(ROOT, ".gitignore"))
 check(failures, gitignore.match?(/^\.ansible\/$/),
       "gitignore must exclude the local ANSIBLE_HOME that ansible-galaxy " \
@@ -174,10 +107,8 @@ ci = YAML.safe_load_file(File.join(ROOT, ".github", "workflows", "ci.yml"))
 ci_commands = ci.fetch("jobs", {}).values.flat_map do |job|
   Array(job["steps"]).filter_map { |step| step["run"] if step.is_a?(Hash) }
 end.flat_map { |run| run.to_s.lines.map(&:strip) }
-# Matched at the start of the line rather than as the whole of it, because the
-# gate takes its shard as an argument since #469. The diagnostic is unchanged and
-# must stay so: tests/policy_manifest_test.rb plants this defect by rewriting the
-# first mention of the gate in ci.yml and requires this exact sentence back.
+# Diagnostic text is load-bearing: tests/policy_manifest_test.rb plants this defect
+# and requires this exact sentence back.
 gate_invocations = ci_commands.select { |command| command.start_with?("tests/validate-policy.sh") }
 check(failures, !gate_invocations.empty?,
       "CI must run tests/validate-policy.sh")
@@ -193,13 +124,8 @@ check(
   "CI must syntax-check install-production-auto-deploy.yml"
 )
 
-# Every service image is digest-pinned in services/*/compose.yml, so the suites job
-# is the only thing in CI that reads a registry. Anonymous ghcr.io pulls are metered
-# per runner IP against a bucket shared with unrelated jobs, which is how a converge
-# that changed nothing gets "toomanyrequests" mid-play. The login is asserted here as
-# well as in tests/ci/workflow_test.rb because this is the suite that runs on a
-# mutated copy of the tree: removing the step has to fail as a policy violation, not
-# merely as a workflow contract edit.
+# Anonymous ghcr.io pulls share a per-IP bucket (toomanyrequests). Asserted here too
+# because this suite runs on the mutated tree.
 suites_job = ci.fetch("jobs", {}).fetch("suites", {})
 suites_steps = Array(suites_job["steps"]).select { |step| step.is_a?(Hash) }
 registry_login = suites_steps.find { |step| step["uses"].to_s.start_with?("docker/login-action@") }
@@ -212,14 +138,8 @@ check(failures, registry_login&.dig("with", "password") == "${{ secrets.GITHUB_T
 check(failures, suites_job.fetch("permissions", {}) == { "contents" => "read", "packages" => "read" },
       "the CI suites job must scope its token to contents and packages reads only")
 
-# Authentication lowers the odds of a refusal; it does not make a registry
-# reliable, and it does nothing at all for Docker Hub or lscr.io, which the repo
-# has no credentials for. So the harness pulls the images itself, ahead of the
-# converge and under a bounded retry, keyed by the site.yml tag that converges
-# each service. That map is a third table alongside the two reconciled above, so
-# it is held to the manifest here: a service the map forgets would be pulled
-# without a retry inside community.docker.docker_compose_v2, which is exactly the
-# failure mode the retry exists for.
+# Pre-pull with retry, keyed by site.yml tag: a service missing from the map pulls
+# inside docker_compose_v2 with no retry.
 image_source_block = integration_body[/^service_image_sources='\n(.*?)'$/m].to_s
 service_image_sources = image_source_block.scan(/^([a-z0-9_-]+) ([a-z0-9-]+)$/)
 check(failures, !service_image_sources.empty?,
@@ -230,21 +150,13 @@ check(failures, integration_body.include?('pull_image "$runner_image"'),
 check(failures, integration_body.include?("prepull_images\n"),
       "tests/integration.sh must pre-pull the suite's images before the converge")
 
-# The controller toolchain is a published ghcr.io image the harness pulls instead
-# of installing apk, pip and ansible-galaxy inside every leg. The saving is not
-# the install time -- it is that the base python image stops being a Docker Hub
-# pull on every lane, measured at 66 Hub pulls per full matrix before and 52
-# after, with the remaining 52 belonging to services. Three lines are what that
-# rests on, and each of them is silently reversible, so each is pinned here as
-# well as in tests/ci/workflow_test.rb: this is the suite that runs on a mutated
-# copy of the tree.
+# The published controller image keeps Docker Hub pulls off every lane; each line
+# below is silently reversible, so it is pinned here as well as in workflow_test.rb.
 toolchain_dockerfile_path = File.join(ROOT, "tests", "integration.Dockerfile")
 toolchain_dockerfile = File.file?(toolchain_dockerfile_path) ? File.read(toolchain_dockerfile_path) : ""
 check(failures, integration_body.include?("toolchain_dockerfile=tests/integration.Dockerfile"),
       "tests/integration.sh must name the Dockerfile its controller image is built from")
-# Named as a path in the harness rather than only in CI, which is what puts it in
-# the classifier's harness closure and therefore keeps it selecting every lane it
-# defines. tests/ci/classify_changes_test.rb enforces the other half.
+# Naming it in the harness puts it in the classifier's harness closure.
 check(failures, ClassifyChanges::INTEGRATION_HARNESS_PATHS.include?("tests/integration.Dockerfile"),
       "the controller Dockerfile must route as a harness input, not as a policy-gate test")
 resolve_index = integration_body.index("resolve_controller_image || return 1")
@@ -255,12 +167,8 @@ check(failures, !resolve_index.nil? && !service_skip_index.nil? && resolve_index
 check(failures, integration_body.include?("cleanup_sandbox_image=$controller_image"),
       "the sandbox teardown must reuse the resolved controller image: every lane " \
       "runs it, so leaving it on the base image restores a Docker Hub pull per lane")
-# Correctness rather than cost. tests/media_control_network_collision_test.sh
-# starts its endpoints with --pull=never and refuses a reference that is not
-# digest-pinned, so it needs an image that is both local and named by digest.
-# Handing it the base image would fail the arr lane on a path that never pulls
-# one; handing it a locally built toolchain tag would fail the same lane on the
-# digest guard. Both properties are resolved rather than assumed.
+# The collision test uses --pull=never and refuses undigested refs, so it needs an
+# image that is both local and digest-pinned.
 check(failures, integration_body.include?('MEDIA_CONTROL_COLLISION_IMAGE="$collision_image"'),
       "the collision contract must be handed the resolved fixture image")
 check(failures,
@@ -279,22 +187,15 @@ check(failures,
   check(failures, toolchain_dockerfile.include?(package),
         "the controller image must install #{package}, as the in-run fallback does")
 end
-# The collection install is pinned with its --no-cache rather than as a bare
-# `ansible-galaxy collection install`, which every flag passes. ansible-galaxy
-# writes its Galaxy API cache entry in two steps -- a blank entry carrying a
-# 24-hour expiry, then `results` when the response arrives -- so an install that
-# dies between them leaves an entry every later read refuses by name, and here it
-# would be baked into the image layer. Nothing on this path reads the cache back:
-# the image installs collections once, at build time.
+# --no-cache: an install dying mid-write leaves a Galaxy cache entry every later read
+# refuses, which would be baked into the layer.
 check(failures,
       toolchain_dockerfile.include?("ansible-core==${ANSIBLE_CORE_VERSION}") &&
         toolchain_dockerfile.include?("requests==${REQUESTS_VERSION}") &&
         toolchain_dockerfile.include?("ansible-galaxy collection install --no-cache"),
       "the controller image must install the pinned Ansible toolchain and " \
       "collections, declining the Galaxy API cache")
-# Every version the image is built from arrives as an argument, so Renovate keeps
-# tracking exactly one copy of each in tests/integration.sh and the two paths
-# cannot drift. A default here is how that silently stops being true.
+# ARG with no default keeps tests/integration.sh the one Renovate-tracked copy.
 %w[CONTROLLER_BASE_IMAGE ANSIBLE_CORE_VERSION REQUESTS_VERSION RUBY_PACKAGE CURL_PACKAGE].each do |argument|
   check(failures, toolchain_dockerfile.match?(/^ARG #{argument}$/),
         "the controller image must take #{argument} as an argument with no default")
@@ -315,19 +216,13 @@ check(failures,
 check(failures,
       toolchain_job.fetch("permissions", {}) == { "contents" => "read", "packages" => "write" },
       "the toolchain job must hold exactly the scopes it publishes with")
-# The runner must read the suite table rather than restate it. This is what the
-# equality check between two hand-maintained tables used to buy, bought instead
-# by there being only one table: a case arm reintroducing per-suite tags in the
-# harness is the regression that would silently split them again.
+# A per-suite case arm in the harness would silently split the table again.
 check(failures, integration_body.include?("suite_table=$repo_dir/tests/ci/suites.conf"),
       "tests/integration.sh must read its suite tags from tests/ci/suites.conf")
 check(failures, !integration_body.match?(/^\s*[a-z][a-z0-9-]*\)\s+fixed_tags=/),
       "tests/integration.sh must not restate per-suite tags: tests/ci/suites.conf owns them")
 
-# Every acquisition lane that converges a real role owes a second enabled
-# convergence, and the roles it converges are the suite's own fixed tags minus the
-# shared infrastructure ones. Both used to be transcribed per suite, so a promoted
-# project silently skipped the phase until someone remembered to add it.
+# Implemented acquisition lanes owe a second enabled converge over their own tags.
 ACQUISITION_INFRASTRUCTURE_TAGS = %w[host_prep deployment_bundle media_acquisition_foundation].freeze
 enabled_idempotence_service_tags = implemented_acquisition_lanes.to_h do |suite|
   [suite, suite_tags.fetch(suite, []) - ACQUISITION_INFRASTRUCTURE_TAGS]
@@ -343,14 +238,7 @@ enabled_idempotence_contracts = enabled_idempotence_service_tags
   [suite,
    ["run_enabled_idempotence #{selection}", "run_play --tags #{selection} --check --diff"]]
 end
-# Every block the suite opens, not the first. This read the first one until #640
-# quoted the controller's tests: the lane block and the vault-generator block at
-# the top of the file both open `if [ "$INTEGRATION_SUITE" = downloaders ]`, and
-# before that change only the lane block was unquoted, so the pattern happened to
-# select it. The disambiguation was an inconsistency in the subject rather than
-# anything this check asked for, and quoting both made it match the shorter,
-# earlier block and report the lane as missing its convergence. Scanning every
-# block and requiring one of them to carry the calls is what was always meant.
+# Scan every block: the lane and vault-generator blocks both open with this `if` (#640).
 enabled_idempotence_contracts.each do |suite, (idempotence_call, check_call)|
   suite_bodies = controller_body.scan(
     /if \[ "\$INTEGRATION_SUITE" = #{Regexp.escape(suite)} \]; then(.*?)^    fi$/m
@@ -370,10 +258,7 @@ check(failures,
       "tests/integration_controller_lib.sh must define one enabled idempotence " \
       "recap parser")
 
-# The manifest's own shape is policed elsewhere, which reports a malformed
-# document or a non-string service name by name. PolicySupport reads it tolerantly
-# so the cross-check is skipped rather than raising a second time on the same
-# input: a stack trace out of this suite would bury that diagnosis.
+# Tolerant read: the manifest's shape is policed elsewhere; don't stack-trace twice.
 implemented_services = PolicySupport.implemented_services(ROOT)
 unless implemented_services.empty?
   mapped_directories = service_image_sources.map(&:last)
@@ -404,15 +289,10 @@ service_image_sources.each do |service_tag, service_directory|
         "which has no compose.yml")
 end
 
-# The third guard keyed on planned_acquisition_lanes, and the one whose vacuity
-# is least visible: an intersection with an empty list is empty whatever the left
-# side holds, so this reads as a check and is an identity today. It is kept
-# because it is the correct rule for a planned lane -- a lane converging only the
-# inert foundation has no image to pull -- and because its dormancy is covered by
-# the checks listed beside planned_acquisition_lanes above.
+# An identity today (planned_acquisition_lanes is empty), kept as the correct rule
+# for a planned lane.
 check(failures, (service_image_sources.map(&:first) & planned_acquisition_lanes).empty?,
       "planned acquisition foundation suites must have zero service image sources")
-
 
 validation_script_path = File.join(ROOT, "tests", "validate-policy.sh")
 validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "tests"))
@@ -420,15 +300,8 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
                       else
                         []
                       end
-# The same file read as the partition it now is: one heredoc per CI shard (#469).
-# The list above is every line of the file, stripped, which is what the
-# requirements below have always asserted against and what the negative ones
-# still need -- a command must be absent from the file entirely, comments
-# included. The partition is a second, narrower reading, and REQUIRED_CHECKS
-# below is required to land in exactly one shard of it. That is not the same
-# property: a line can be present in the file and in no shard at all, inside a
-# comment or stranded between two heredocs, and then the gate does not run it
-# while every `include?` here still passes.
+# Shard partition (#469): a line can be in the file yet in no shard (a comment, or
+# stranded between heredocs), so REQUIRED_CHECKS must land in exactly one shard.
 validation_shards = if owned_file?(validation_script_path, File.join(ROOT, "tests"))
                       PolicySupport.gate_shards(validation_script_path)
                     else
@@ -522,20 +395,9 @@ REQUIRED_CHECKS.each do |command|
   check(failures, validation_commands.include?(command),
         "validate-policy.sh must run #{command}")
 end
-# Which shard claims each of them, because "the gate runs it" stopped being one
-# statement when the gate became three runners. A check in no shard runs on none
-# of them, and the run is green and quicker for it.
-#
-# Scoped to exactly the list above rather than to the whole manifest, and that is
-# a constraint rather than a convenience: tests/policy_manifest_test.rb declares
-# per call site which policy scripts detect each planted defect, and one site
-# declares `%i[mac]` for seven manifest-line deletions this script deliberately
-# says nothing about. Iterating the manifest here would make those seven
-# detectable by `ci`, their declared sets wrong, and
-# `ruby tests/policy_manifest_test.rb --audit` red on the drift.
-#
-# tests/gate_manifest_coverage_test.rb is what covers the rest of the manifest,
-# in both directions and with a floor per shard. This is the narrower guard that
+# Scoped to REQUIRED_CHECKS, not the whole manifest: policy_manifest_test.rb declares
+# some manifest-line deletions as detected by `mac` only, and --audit would drift.
+# gate_manifest_coverage_test.rb covers the rest.
 # lives inside the policy set, where the mutation harness can reach it.
 REQUIRED_CHECKS.each do |command|
   claiming = validation_shards.select { |_, commands| commands.include?(command) }.keys
@@ -543,16 +405,8 @@ REQUIRED_CHECKS.each do |command|
         "validate-policy.sh must run #{command} in exactly one shard, not " \
         "#{claiming.empty? ? 'none' : claiming.inspect}")
 end
-# The matrix against the partition, asserted here as well as in
-# tests/ci/workflow_test.rb and tests/gate_manifest_coverage_test.rb. Three
-# copies, because that guard cannot be trusted to a single shard: the file
-# asserting the matrix is complete is itself one line of one shard, so dropping
-# *that* shard from the matrix removes the check that would have said so, and the
-# run reports success a third quicker. These three files sit in three different
-# shards, so whichever single shard is dropped, two of them still run.
-#
-# KEEP THEM IN DIFFERENT SHARDS. A rebalance that collects all three into one
-# shard silently restores the hole.
+# Also asserted in workflow_test.rb and gate_manifest_coverage_test.rb, three shards,
+# so dropping any one shard leaves two guards. KEEP THEM IN DIFFERENT SHARDS.
 workflow_static_shards = ci.dig("jobs", "static", "strategy", "matrix", "shard")
 check(failures, workflow_static_shards == validation_shards.keys,
       "CI dispatches static shards #{workflow_static_shards.inspect} while " \
@@ -575,10 +429,8 @@ end
 check(failures,
       validation_commands.count("ruby tests/immich_configured_password_test.rb") == 1,
       "validate-policy.sh must run ruby tests/immich_configured_password_test.rb exactly once")
-# The relationship filters are only fast because Ansible's templated proxies are
-# converted to plain containers on the way in. That conversion is invisible in a
-# unit test and worth 580s of one converge, so the check that pins it, and the
-# self-test proving that check bites, both belong to the gate.
+# Proxy-to-native conversion keeps the relationship filters fast (580s per converge)
+# and is invisible in a unit test.
 acquisition_conversion_check =
   'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py'
 check(failures,
@@ -587,10 +439,7 @@ check(failures,
 check(failures,
       validation_commands.count("#{acquisition_conversion_check} --self-test") == 1,
       "validate-policy.sh must run #{acquisition_conversion_check} --self-test exactly once")
-# The fixture now exercises one Configarr field per behavioural class rather
-# than all hundred and five, which is only honest while something else proves
-# every field still reaches the projection. These two are that something else,
-# so the gate has to keep running them.
+# The fixture samples one Configarr field per class; these prove every field projects.
 check(failures,
       validation_commands.count("ruby tests/acquisition_configarr_field_coverage_test.rb") == 1,
       "validate-policy.sh must run ruby tests/acquisition_configarr_field_coverage_test.rb exactly once")
@@ -605,19 +454,13 @@ acquisition_owned_field_check =
 check(failures,
       validation_commands.count(acquisition_owned_field_check) == 1,
       "validate-policy.sh must run #{acquisition_owned_field_check} exactly once")
-# The structured declarations the relationship filters consume are validated at
-# role entry and nowhere else, and an argument spec is only a guard while
-# something proves it still refuses a malformed element. Too strict fails a
-# deployment, too loose fails nothing, and neither shows up in a syntax check.
+# Argument specs are the filters' only input guard; this proves they still refuse.
 filter_input_spec_check =
   'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/filter_input_argument_spec_test.py'
 check(failures,
       validation_commands.count(filter_input_spec_check) == 1,
       "validate-policy.sh must run #{filter_input_spec_check} exactly once")
-# media_bazarr_providers is validated against no list of known providers, so a
-# misspelled setting key converges and fetches nothing. The documented blocks
-# are the operator's protection against that, and they only protect while
-# something proves they still validate and still match the deployed version.
+# Bazarr provider keys are validated against no list; this keeps the documented blocks honest.
 check(failures,
       validation_commands.count("ruby tests/bazarr_provider_schema_test.rb") == 1,
       "validate-policy.sh must run ruby tests/bazarr_provider_schema_test.rb exactly once")
@@ -630,10 +473,7 @@ check(failures,
 check(failures,
       validation_commands.count("ruby tests/audiobookshelf_initial_scan_behavior_test.rb") == 1,
       "validate-policy.sh must run ruby tests/audiobookshelf_initial_scan_behavior_test.rb exactly once")
-# The reconciliation contract runs in its own workflow job, not in the policy
-# gate: inside the gate it competed with every other check for the same four
-# cores and made that job the longest in the workflow. tests/ci/workflow_test.rb
-# owns the requirement that the job runs all three files.
+# Runs in its own job (it starved the gate); workflow_test.rb requires all three files.
 check(failures,
       %w[core bazarr configarr].none? do |part|
         validation_commands.any? do |command|
@@ -642,18 +482,8 @@ check(failures,
       end,
       "the media acquisition reconciliation checks belong to their own CI job, " \
       "not to validate-policy.sh")
-# The traffic in the other direction (#653). These three were steps of the
-# `static` job, which is a three-shard matrix, so each ran three times per pull
-# request for a verdict that cannot vary by shard. They are manifest lines now,
-# which makes them run once and puts them under the declaration guard in
-# tests/gate_manifest_coverage_test.rb -- as workflow steps the only thing
-# holding them was a literal in tests/ci/workflow_test.rb.
-#
-# Required from here as well, and in both directions, because this is the script
-# that runs on a mutated copy of the tree: a check the gate stopped registering
-# and the workflow no longer carries is a guard that silently stopped running,
-# and a check registered in both places is the triplication coming back one line
-# at a time.
+# Moved from `static` steps into the gate (#653) so they run once, not per shard;
+# required both ways so neither the drop nor the triplication returns.
 {
   "tests/integration_cleanup_test.sh" => "the integration sandbox cleanup test",
   'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_probe_status_test.py' =>
@@ -666,44 +496,27 @@ check(failures,
   check(failures, ci_commands.none? { |line| line == command },
         "#{description} belongs to validate-policy.sh alone, not to a workflow step beside it")
 end
-# The policy mutation harness left the gate for the same reason: it builds a
-# sandbox and runs the whole policy set once per mutation, which made it the
-# gate's floor rather than one more check in its pool. CI must still run it --
-# a check that is in neither place is a guard that silently stopped running.
+# The mutation harness left the gate (it was the floor); CI must still run it.
 check(failures,
       validation_commands.reject { |command| command.start_with?("#") }
                          .none? { |command| command.include?("policy_manifest_test.rb") },
       "the policy mutation harness belongs to its own CI job, not to validate-policy.sh")
 check(failures, ci_commands.include?("ruby tests/policy_manifest_test.rb"),
       "CI must run ruby tests/policy_manifest_test.rb")
-# And the audit, which the nightly runs in place of the narrow form (#727). Until
-# then it ran in no job, and two rows' `detected_by` drifted behind a green gate
-# (#715). Dropping it leaves the nightly running the narrow form, which still
-# passes; tests/ci/workflow_test.rb proves which event reaches which form.
+# The nightly runs --audit in place of the narrow form (#727).
 check(failures, ci_commands.include?("ruby tests/policy_manifest_test.rb --audit"),
       "CI must run ruby tests/policy_manifest_test.rb --audit on the nightly")
-# Pull requests and pushes still run the harness without `--audit`, and the
-# nightly's audit is a day late, so the two guards on the audit's own coverage
-# report -- the floor under what it re-derived, and the tripwire on what it did
-# not -- are reachable on a change only through the check that drives them with
-# synthetic rows. It belongs to the gate rather than to the mutation job because
-# it runs no policy script and costs under a second.
+# The audit-coverage guards are otherwise reached only by the nightly; this sub-second
+# check drives them with synthetic rows on every change.
 check(failures,
       validation_commands.count("ruby tests/policy_audit_coverage_test.rb") == 1,
       "validate-policy.sh must run ruby tests/policy_audit_coverage_test.rb exactly once")
-# The one check that cannot require itself. tests/gate_manifest_coverage_test.rb
-# declares the whole manifest and refuses any line the declaration does not
-# name, which is what stops a check from being pruned out of the gate unnoticed
-# -- but a prune that takes that file's own line first disables the refusal along
-# with it, silently, because the guard is no longer run to complain. So its line
-# is required from here, where removing it fails a check the gate still runs.
+# gate_manifest_coverage_test.rb cannot require itself: a prune removing its line
+# would silently disable the refusal.
 check(failures,
       validation_commands.count("ruby tests/gate_manifest_coverage_test.rb") == 1,
       "validate-policy.sh must run ruby tests/gate_manifest_coverage_test.rb exactly once")
-# The controller's dispatch is proved by running it against stubs, not by
-# reading its source text. The gate must run that file: a property asserted
-# against argv is only a guard while something executes the program, and unlike
-# a grep it leaves no trace in the file it guards to say it stopped.
+# Executing the controller against stubs is only a guard while the gate runs it.
 check(failures,
       validation_commands.count("tests/integration_controller_execution_test.sh") == 1,
       "validate-policy.sh must run tests/integration_controller_execution_test.sh " \
@@ -714,12 +527,8 @@ check(failures,
 check(failures,
       validation_commands.count("tests/dozzle_alert_state_symlink_test.sh") == 1,
       "validate-policy.sh must run the Dozzle alert state symlink test exactly once")
-# Issue #326: the deployment lock is the only thing standing between a hand-run
-# converge and the poller's five-minute tick, and both halves of it are invisible
-# to a syntax check. The probe test proves the reader never reports a held lock as
-# free, and the refusal proof runs the real role against a really held lock to
-# show the run stops at the first task naming a concurrent deployment rather than
-# at the containment guard 1463 tasks later.
+# The deployment lock (#326) is invisible to a syntax check; these prove the probe and
+# the real role's refusal against a held lock.
 check(failures,
       validation_commands.count("python3 tests/deployment_lock_probe_test.py") == 1,
       "validate-policy.sh must run the deployment lock probe test exactly once")
@@ -754,6 +563,5 @@ check(failures,
       owned_file?(File.join(ROOT, "tests", "immich_selective_helper_integrity_test.rb"),
                   File.join(ROOT, "tests")),
       "Immich selective helper integrity test must be a regular non-symlink file")
-
 
 report(failures, "ci policy: all properties hold", "ci policy violation(s)")

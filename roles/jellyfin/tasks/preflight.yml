@@ -1,10 +1,5 @@
 ---
-# Preflight. Every read of owned state, before any of it is written: the user
-# list and the primary administrator it resolves to, the server configuration,
-# the library inventory, and the approved administrator image against the
-# published one. Nothing here changes Jellyfin. The one thing it does write is
-# a local probe file to compare image bytes in, which check mode declines to do
-# and says so.
+# Preflight: every read of owned state, before any of it is written.
 
 - name: List Jellyfin users for primary administrator preflight
   ansible.builtin.uri:
@@ -101,13 +96,8 @@
   check_mode: false
   no_log: true
 
-# Deliberately not redacted. Unlooped, so the result dict adds only the source text of
-# the failing condition, and the three conditions read the server-configuration document
-# Jellyfin returned, reaching one field, ServerName. The registered response above stays
-# redacted because it was fetched with the reconcile token. "Incomplete" covered three
-# faults that need different responses: Jellyfin answered with something that is not a
-# document at all, answered without a ServerName, or answered with a ServerName that is
-# not a string.
+# Not redacted: unlooped, reads only ServerName. The three conditions separate a
+# non-document, a missing ServerName and a non-string one.
 - name: Require complete Jellyfin server configuration
   ansible.builtin.assert:
     that:
@@ -196,14 +186,9 @@
     - jellyfin_admin_avatar_before.status | default(404) | int == 200
   changed_when: false
 
-# Comparing the published bytes means downloading them into the probe file, and
-# a check-mode review must write nothing. What check mode can still decide is
-# the case it reads for free: a primary administrator carrying no image tag at
-# all has no image, so that repair is reported. A byte difference hiding behind
-# an existing tag stays unknown and is treated as "no upload required" —
-# assuming an upload instead would make every review of a converged NAS report a
-# change it never proved, which is noise that hides real drift rather than
-# revealing it. The debug below discloses that the comparison was deferred.
+# Comparing image bytes needs a download, which check mode must not write. Only a
+# missing image tag is decided under --check; a byte difference stays unknown and
+# is reported as deferred, so a converged NAS review shows no phantom change.
 - name: Resolve Jellyfin primary administrator image repair requirement
   ansible.builtin.set_fact:
     jellyfin_admin_avatar_upload_required: >-

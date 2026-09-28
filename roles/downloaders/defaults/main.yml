@@ -6,9 +6,7 @@ downloaders_compose_project_name: >-
 downloaders_sabnzbd_port: 8085
 downloaders_sabnzbd_api: "http://127.0.0.1:{{ downloaders_sabnzbd_port }}/api"
 downloaders_sabnzbd_config_host_path: "{{ nas_docker_root }}/sabnzbd/config"
-# Where the post-processing gate sends an unscanned-import alert. Each publisher
-# on this platform carries its own copy of this endpoint, so this is the
-# downloaders' -- see roles/dozzle and roles/image_prune for the others.
+# Each publisher carries its own copy of this endpoint.
 downloaders_pushover_api_url: https://api.pushover.net/1/messages.json
 downloaders_movies_host_path: "{{ nas_media_root }}/Media/Movies"
 downloaders_series_host_path: "{{ nas_media_root }}/Media/Series"
@@ -16,24 +14,9 @@ downloaders_series_host_path: "{{ nas_media_root }}/Media/Series"
 media_usenet_enabled: false
 media_acquisition_adopt_existing_libraries: false
 
-# Whether an operator has declared a Usenet provider at all. An undeclared one is
-# a valid state: `inventory/group_vars/all/service_downloaders.yml` carries an empty
-# host and an
-# empty credential pair, and the vault wins over the pair, so the host is what
-# says which of the two states this target is in.
-#
-# The host is operator policy rather than a credential now (#298), so this fact
-# is answerable without the vault password -- which is the useful half of that
-# move, because "is a provider declared?" is state, not secret.
-#
-# It also means the credential contract can no longer be what makes this one
-# fact sufficient. It used to hold all six values in a single all-or-nothing
-# group, so a non-empty host proved the credentials existed too. It now sees only
-# the two credentials and cannot see the host at all, so the agreement between
-# the halves is asserted in tasks/main.yml before this variable is read. Three
-# consumers depend on that agreement -- the provider credential guard, the
-# `section=servers` reconciliation and the two owned-server verification
-# branches -- and all three still read this rather than repeating a check.
+# Undeclared is valid: the host (operator policy since #298, not a credential)
+# says which state this target is in. tasks/main.yml asserts host and
+# credentials agree before this is read.
 downloaders_usenet_provider_declared: >-
   {{ media_usenet_provider.host | length > 0 }}
 
@@ -44,91 +27,36 @@ downloaders_sabnzbd_categories:
   audiobooks: /data/media/.acquisition/usenet/audiobooks
   comics: /data/books/.acquisition/usenet/comics
 
-# SABnzbd's per-category post-processing level, and the reason the platform sets
-# it at all. 3 is Repair/Unpack/Delete; the platform shipped 0 -- Download only
-# -- on the theory that Unpackerr owns extraction. Unpackerr cannot own it for
-# Usenet: it does no par2, so the repair blocks every release pays to download
-# were never read by anything, and it holds no archive password, so an encrypted
-# release fails with a decoder error naming neither cause. SABnzbd is the only
-# component that has both. Unpackerr stays for the torrent side, where the
-# download client genuinely does not unpack.
-#
-# The value is an integer because SABnzbd stores `pp` as one and
-# `reconcile_sabnzbd.yml` compares what it reads back; the comparison is
-# stringified on both sides so a JSON "3" and a YAML 3 do not read as a drift
-# that reconciles forever.
+# 3 is Repair/Unpack/Delete: Unpackerr does no par2 and holds no archive
+# password, so SABnzbd must unpack Usenet downloads. An integer, compared
+# stringified on both sides.
 downloaders_sabnzbd_category_post_processing: 3
 
-# The name SABnzbd stores per category, and the file the compose mount puts in
-# `script_dir`. SABnzbd's own spelling for "no script" is the literal string
-# None, which is what every category carried before: the scan was not optional
-# then because there was nothing to run.
+# The file the compose mount puts in `script_dir`; SABnzbd's "no script" is "None".
 downloaders_sabnzbd_category_script: clamav_gate.py
 
-# SABnzbd reports a boolean it has STORED differently from one it has never
-# stored, so both sides of every comparison against `misc` are normalised
-# through this shape. OptionBool seeds its default with `int(default_val)` but
-# `set()` stores `bool_conv(value)`, a Python bool -- and `Option.set` only
-# stores at all when `value != self.get()`, which `True == 1` makes false. So a
-# flag whose declared value already matches SABnzbd's default is never stored
-# and reads back as 0/1, while one that differs is stored and reads back as JSON
-# true/false. `direct_write: 1` is the first (default True) and `script_can_fail:
-# 1` is the second (default False), which is why a plain string comparison
-# verified five settings and then failed forever on the sixth, pushing it on
-# every converge without ever converging.
-#
-# Declaring YAML `true` is not the fix and fails silently in the worse
-# direction: `bool_conv` is `bool(int_conv(value))`, and `int_conv('True')` is 0,
-# so SABnzbd would store the flag as FALSE while this file read as enabling it.
-# That is the same trap `downloaders_sabnzbd_owned_server` records for `enable`.
-# Integers in, normalised comparison out.
+# Both sides of every `misc` comparison are normalised: SABnzbd reads back a
+# never-stored default as 0/1 and a stored flag as JSON true/false. Declare
+# integers: `int_conv('True')` is 0, so YAML `true` would store FALSE.
 downloaders_sabnzbd_owned_misc:
   cache_limit: 256M
   direct_unpack: 0
   direct_unpack_threads: 1
   direct_write: 1
   max_art_tries: 3
-  # The directory the compose file mounts the gate into. SABnzbd will not offer
-  # a script to a category unless it is listed here, so this and the per-category
-  # `script` below are one setting written in two places by SABnzbd's own design.
+  # SABnzbd offers a script to a category only from this directory.
   script_dir: /scripts
-  # What makes the gate a gate. SABnzbd's default for this is 0, under which a
-  # non-zero exit is recorded in history as `Exit(n)` and the job is imported
-  # anyway -- the scan would run, report an infection and change nothing. With 1,
-  # a failed script fails the job, the arr sees a failed download rather than an
-  # importable one, and the release is blocklisted and re-searched.
-  #
-  # That last clause used to be the cost of a gate that failed closed on
-  # everything, a missing clamd included, and it is no longer (#811). The gate
-  # now exits 0 on every outcome but an infection and pages the operator on the
-  # Pushover Alerts application instead, so this setting reaches exactly one
-  # verdict: INFECTED. It is still what makes that verdict mean anything --
-  # without it an infection is an `Exit(1)` in history beside an imported job --
-  # which is why it stays.
-  #
-  # What bought the change is measured and is in the module docstring of
-  # services/downloaders/clamav_gate.py: a scanner SABnzbd could not launch at
-  # all burned 44 releases in 17 minutes, and the gate's readiness wait, which
-  # was #793's whole argument for failing closed, is not reached by a script
-  # that never starts.
+  # What makes the gate a gate: with 1 a failed script fails the job instead of
+  # importing it. The gate now exits non-zero only on INFECTED (#811); see
+  # services/downloaders/clamav_gate.py.
   script_can_fail: 1
 
-# SABnzbd keys a Usenet server by its INI section name, and `set_config`
-# upserts on that name, so this is the identity the reconciliation merges into.
-# It names the platform's role for the server, not the provider: which provider
-# it points at is vault-authored and never written down here.
+# `set_config` upserts on this INI section name; the provider itself is vault-authored.
 downloaders_sabnzbd_server_name: usenet
 
-# The non-credential half of the owned server block. SABnzbd reads every one of
-# these back unmasked, so every one of them is compared and reverted. `enable`
-# is 0/1 rather than a boolean because `set_config` parses a server flag with
-# `bool_conv(int_conv())` -- `true` is stored as 0, which for the TLS flag beside
-# it would silently disable TLS.
-#
-# `ssl_verify` is not a flag. `ConfigServer` documents its four values as
-# 0=No, 1=Minimal, 2=Medium, 3=Strict, and 3 is both SABnzbd's own default and
-# the only one that verifies the provider's certificate chain and hostname; a
-# TLS connection that authenticates nothing is what the other three buy.
+# Every field reads back unmasked, so all are compared and reverted. `enable` is
+# 0/1 because `bool_conv(int_conv())` stores `true` as 0. ssl_verify 3 (Strict)
+# is the only value that verifies chain and hostname.
 downloaders_sabnzbd_owned_server:
   enable: 1
   priority: 0

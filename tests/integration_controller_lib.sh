@@ -1,21 +1,7 @@
-# Play, contract and verification launchers for the integration controller.
-#
-# The controller is one double-quoted argument to `sh -eu -c` in
-# tests/integration.sh, so everything written there is escaped shell inside a
-# shell string: `sh -n` never reaches it, shellcheck cannot read it, and the
-# tests that guard it have to pin its escaped source text. This file is the
-# part of that program that says how a play, a contract and a verification are
-# launched, moved out to where all three of those work normally.
-#
-# It is sourced, not executed: the launchers read the vault the controller
-# generated and the positional playbook it was handed, and they run in the
-# controller's own shell so `exit 1` still ends the suite.
-#
-# Inputs. The first two arrive as container environment; the rest the
-# controller assigns before it sources this file. Restating them here is what
-# lets shellcheck read the file as a whole program, and it turns a missing
-# input into a refusal at source time rather than a play with a blank path in
-# its arguments.
+# Play, contract and verification launchers for the integration controller,
+# moved out of tests/integration.sh's `sh -eu -c` string so sh -n and shellcheck
+# can read them. Sourced, not executed, so `exit 1` still ends the suite.
+# Inputs are restated below so a missing one is refused at source time.
 sandbox=${PLATFORM_INTEGRATION_SANDBOX:?integration controller sandbox is unset}
 integration_project_namespace=${PLATFORM_INTEGRATION_PROJECT_NAMESPACE:?integration controller namespace is unset}
 playbook=${playbook?}
@@ -26,86 +12,23 @@ integration_media_usenet_enabled=${integration_media_usenet_enabled?}
 integration_media_usenet_provider=${integration_media_usenet_provider?}
 integration_media_adopt_existing=${integration_media_adopt_existing?}
 
-# THE ONE COORDINATE THIS SANDBOX CANNOT SUPPLY, requested by every lane rather
-# than by the one that converges the service.
-#
-# roles/vaultwarden derives DOMAIN from platform_public_host and REFUSES a bare
-# IPv4 literal, because WebAuthn's relying-party identifier has to be a domain: a
-# security key enrols against an address and then never authenticates, which
-# reads as a client fault and is configuration. tests/integration.sh sets
-# PLATFORM_PUBLIC_HOST to the address containers reach the daemon's host at, and
-# on a Linux runner that is the default bridge gateway -- 172.17.0.1, an IPv4
-# literal. Measured against the role's own assertion: 172.17.0.1 fails, the NAS's
-# MagicDNS name passes. So without this line the role fails at the FIRST task of
-# its enabled path on every lane that converges it.
-#
-# EVERY LANE, not just the vaultwarden one, and that is the half worth reading.
-# The vaultwarden tag is already in the idempotence-5 shard, and `full` and
-# `idempotence-check` converge the whole site; a
-# `case $INTEGRATION_SUITE` here would leave all of those failing. #295's rule
-# says a lane must request the state it claims to converge, and every lane that
-# reaches this role claims it.
-#
-# `.invalid` is reserved by RFC 2606 and can never resolve, which is the same
-# reason news.usenet.invalid is the Usenet host above. Nothing in the sandbox
-# connects to this name: it is the origin the server declares to clients, and the
-# lane reaches the service on 127.0.0.1 like every other.
+# roles/vaultwarden refuses an IPv4 literal for DOMAIN (WebAuthn needs a
+# domain), and the sandbox's PLATFORM_PUBLIC_HOST is one. Every lane, since full
+# and idempotence-check converge it too. `.invalid` never resolves (RFC 2606).
 integration_vaultwarden_domain=https://vaultwarden.integration.invalid
 
-# THE SECOND COORDINATE THIS SANDBOX CANNOT SUPPLY, and the one whose default is
-# actively harmful here rather than merely wrong.
-#
-# roles/dozzle deploys an alert relay that POSTs to dozzle_pushover_api_url
-# whenever Dozzle reports a container event, and both Dozzle health rules carry
-# cooldown: 0 against every container. Left at the role default this lane would
-# send the household's real Pushover account one push per container transition
-# of its own disposable sandbox, against a 10,000-a-month quota, on every lane
-# that converges this stack.
-#
-# #598's conclusion does not carry over, which is worth saying out loud: it
-# recorded that "the integration lanes need no equivalent" for Beszel's Pushover
-# credential check, and that holds only because the check is a `never`-tagged
-# verification task and a lane converges rather than verifies. This endpoint is
-# read by a deployed process, so no tag gates it.
-#
-# EVERY LANE, for the same reason integration_vaultwarden_domain is: `full` and
-# `idempotence-check` both converge the whole site, so a
-# `case $INTEGRATION_SUITE` here would leave all of those pointed at the real
-# API.
-#
-# The port is tests/contracts/dozzle.sh's PLATFORM_DOZZLE_PUSHOVER_PORT, where
-# the notify mode's recorder listens; tests/dozzle_contract_test.rb refuses the
-# two disagreeing. The host is left as a template rather than written out,
-# because only the inventory knows which address a container reaches this host
-# at. Nothing listens there outside the notify mode, and a refused connection is
-# exactly what the relay is built to do with an upstream it cannot reach.
+# Every lane must redirect the Dozzle alert relay, or it would push each sandbox
+# container event to the household's real Pushover account. The port is
+# tests/contracts/dozzle.sh's recorder; tests/dozzle_contract_test.rb pins them equal.
 integration_dozzle_pushover_api_url='http://{{ platform_callback_host }}:32587/1/messages.json'
 
-# The same account, reached a second way: roles/deployment_bundle delivers every
-# recreated service's deployment report to Pushover from the
-# controller. Pointed at a port nothing listens on rather than at the recorder
-# above, because no lane asserts what those notifications say, and a refused
-# connection is a non-verdict the tasks report and pass on.
+# Deployment reports go to a port nothing listens on; no lane asserts them.
 # tests/deployment_summary_test.rb refuses a site.yml caller without it.
 integration_deployment_pushover_api_url='http://127.0.0.1:1/1/messages.json'
 
-# nas_compose_minimum is the one -e below that is not about this sandbox's
-# identity, and it is here for the same reason the rest are: the value inventory
-# would supply is wrong for this lane and right for the NAS.
-#
-# services/jellyfin/compose.integration.yml and
-# services/immich/compose.integration.yml replace lists with Compose's own
-# `!override` tag, which landed in Compose 2.24.4. The declared floor is 2.18.0
-# -- what community.docker.docker_compose_v2 documents, and correct for the NAS,
-# whose canonical compose.yml files carry no tag at all. A controller at 2.18.0
-# would pass roles/preflight and then die on the first override it cannot parse,
-# blaming whichever service happened to converge first. This sandbox binds to
-# inventory/local.yml, so it is a nas_hosts run like the NAS itself and there is
-# no group in which "2.18.0 there, 2.24.4 here" can be written; the lane requests
-# it instead, exactly as it requests every other state it claims to converge.
-# It sits below rather than first because tests/integration_controller_execution_test.sh
-# pins the leading argv of this invocation as one literal string, and a flag in
-# front of `-i` is a flag in front of that pin.
+# nas_compose_minimum: the integration overrides use `!override` (Compose
+# 2.24.4), above the NAS floor. It sits after `-i` because
+# tests/integration_controller_execution_test.sh pins the leading argv literally.
 run_play() {
   ansible-playbook \
     -i inventory/local.yml \
@@ -188,23 +111,9 @@ run_enabled_idempotence() {
   fi
 }
 
-# What a failed Nextcloud converge leaves behind, emitted only when it fails,
-# and it was written BEFORE this lane's first CI run rather than after it. The
-# lesson is inherited: Seafile's first run printed `container <ns>-seafile is
-# unhealthy` and then nothing, and its dump was written afterwards. Nextcloud
-# was in exactly that position and worse informed -- services/nextcloud/compose.yml gives the
-# application a 300s start_period over a first boot that has never been measured
-# on CI hardware, so "slow or wedged?" is the only question that will matter and
-# there is no measurement to answer it with.
-#
-# Every constraint the Seafile dump records applies here unchanged: every docker
-# call guarded, because this runs after a failure against containers that may
-# never have been created and one non-zero exit under `sh -eu` would reproduce
-# the silence it exists to end; `--format '{{json .State.Health}}'` and nothing
-# wider, because a bare inspect prints .Config.Env, which for this stack is the
-# PostgreSQL password, the Nextcloud administrator password and the Valkey
-# password in full; and the Compose logs written to a file, scanned against the
-# ephemeral vault, and printed only if that comes back clean.
+# Emitted only on a failed Nextcloud converge. Every docker call is guarded (sh -eu),
+# inspect is limited to .State.Health (a bare inspect prints the passwords in
+# Env), and logs print only after a scan against the ephemeral vault.
 dump_nextcloud_diagnostics() {
   nextcloud_diagnostics_project=$integration_project_namespace-nextcloud
   nextcloud_diagnostics_logs=/tmp/nextcloud-converge-failure-logs.txt
@@ -248,11 +157,7 @@ dump_nextcloud_diagnostics() {
   printf '=== END NEXTCLOUD CONVERGE FAILURE DIAGNOSTICS ===\n' >&2
 }
 
-# One launcher for every contract. The environment ABI every contract reads
-# is written once here and a service's extras arrive as a case arm, so the
-# twelve wrappers below carry only the name they run under. Each layer is
-# prepended onto the positional parameters rather than pasted into an
-# unquoted string, so every path stays one word however it is spelled.
+# One launcher for every contract; a service's extras arrive as a case arm.
 run_contract() {
   contract_service=$1
   shift
@@ -276,25 +181,16 @@ run_contract() {
         "$@"
       ;;
     trailarr)
-      # The lane converges arr with the transport enabled, so Radarr and Sonarr
-      # are resolvable by name and both of Trailarr's connections are expected
-      # to exist.
       set -- PLATFORM_PROJECT_NAME="$integration_project_namespace" \
         PLATFORM_TRAILARR_ARRS=true \
         "$@"
       ;;
     seerr)
-      # The lane converges arr with the transport enabled and Jellyfin beside
-      # it, so Radarr, Sonarr and Jellyfin are all resolvable by name and every
-      # row Seerr declares is expected to exist.
       set -- PLATFORM_PROJECT_NAME="$integration_project_namespace" \
         PLATFORM_SEERR_ARRS=true \
         "$@"
       ;;
     bindery)
-      # The lane converges arr and downloaders with the transport enabled, so
-      # Prowlarr and SABnzbd are resolvable by name and both of Bindery's
-      # integration rows are expected to exist.
       set -- PLATFORM_PROJECT_NAME="$integration_project_namespace" \
         PLATFORM_BINDERY_USENET=true \
         "$@"
@@ -316,8 +212,6 @@ run_contract() {
         "$@"
       ;;
     nextcloud)
-      # The four container names the contract probes are all derived from the
-      # project namespace, so this is the only extra the lane owes it.
       set -- PLATFORM_PROJECT_NAME="$integration_project_namespace" \
         "$@"
       ;;
@@ -433,9 +327,7 @@ run_immich_clean_restore() {
   run_immich_contract clean-restore-assert
   test ! -e "$sandbox/volume1/Docker/immich/.restore-failed"
 
-  # Piping into tee would hand the pipeline tee's status, and this shell has
-  # no pipefail: a play that died would arrive at the recap grep below as if
-  # it had merely printed nothing.
+  # No pipefail here, so tee would mask the play's status.
   immich_clean_restore_status=0
   run_play --tags immich >/tmp/immich-clean-restore-second.txt 2>&1 ||
     immich_clean_restore_status=$?
@@ -445,18 +337,8 @@ run_immich_clean_restore() {
       "$immich_clean_restore_status" >&2
     exit 1
   fi
-  # The same parser run_enabled_idempotence uses. The grep this replaces was
-  # stricter than the pair #638 converted -- both fields had to appear on one
-  # line rather than anywhere in the file -- but it still required no `PLAY
-  # RECAP` marker, so a task that merely PRINTS `changed=0 ... failed=0`
-  # satisfied it, and it still never read `unreachable`: a replay that reached
-  # nothing reports `changed=0 unreachable=N failed=0` and passed. It also let
-  # the line name any host and let a second recap follow.
-  #
-  # It was the whole verdict too -- no `if`, so it leaned on `set -e` and failed
-  # as a bare non-zero exit, alone among this file's assertions in printing
-  # nothing about what it wanted. IMMICH_CLEAN_RESTORE_IDEMPOTENT is printed on
-  # the next line, so a false pass here reads as a proof that ran.
+  # The shared recap parser: a bare grep also accepted a printed line and never
+  # read `unreachable`.
   if ! enabled_idempotence_recap_is_clean "/tmp/immich-clean-restore-second.txt"; then
     cat "/tmp/immich-clean-restore-second.txt" >&2
     printf '%s\n' 'immich clean restore replay was not idempotent' >&2
@@ -470,10 +352,8 @@ run_immich_restore_negative_matrix() {
   immich_server_before=$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' "$integration_project_namespace-immich-server")
   immich_database_before=$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' "$integration_project_namespace-immich-postgres")
 
-  # One root, and one bundle render for all seven scenarios. Each scenario
-  # already asserts its own storage sha is unchanged across its play, which is
-  # the proof that no scenario mutates the tree, so a pristine root each time
-  # only bought seven more renders of the same bundle at 66s apiece.
+  # One root and one bundle render for all scenarios; each asserts its storage
+  # sha is unchanged, so a fresh root per scenario buys nothing.
   scenario_root="$sandbox/reports/immich-negative"
   test ! -e "$scenario_root"
   mkdir -m 0755 "$scenario_root"
@@ -491,10 +371,7 @@ run_immich_restore_negative_matrix() {
   marker="$scenario_root/docker/immich/.restore-failed"
 
   for scenario in no-backup corrupt-newest ambiguous-newest unsafe-permissions prior-marker postgres-major-mismatch stale-backup; do
-    # The fixtures are the only state that would carry between scenarios, and
-    # each expected failure is derived from exactly them: a backup left behind
-    # would make unsafe-permissions report ambiguous-newest-backup, and would
-    # stop no-backup from ever seeing an empty directory.
+    # Leftover fixtures would change which failure the next scenario reports.
     rm -rf "$backup_root" "$marker" "$postgres_root/PG_VERSION"
     mkdir -p "$postgres_root" "$originals_root" "$backup_root"
     printf 'negative-matrix-original\n' > "$originals_root/asset.jpg"
@@ -531,15 +408,12 @@ run_immich_restore_negative_matrix() {
         expected_failure=previous-failed-restore
         ;;
       postgres-major-mismatch)
-        # A cluster initialized by another major than the pin: refused before
-        # any Compose operation, so the running containers keep their StartedAt.
+        # Another major than the pin: refused before any Compose operation.
         printf '13\n' > "$postgres_root/PG_VERSION"
         expected_failure=postgres-major-mismatch
         ;;
       stale-backup)
-        # A sound dump written before the originals last changed: refused
-        # before any Compose operation, where a restore would have loaded rows
-        # naming paths no longer on disk (#900).
+        # A dump older than the originals: refused before any Compose operation (#900).
         printf 'SELECT 1;\n' | gzip -c > \
           "$backup_root/immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz"
         touch -t 200001010000 \
@@ -550,11 +424,8 @@ run_immich_restore_negative_matrix() {
 
     storage_before=$(tar -C "$scenario_root" -cf - docker/immich media | sha256sum)
     output=/tmp/immich-negative-$scenario.txt
-    # The expected versions are pinned here beside the fixture filenames rather
-    # than derived from the pinned image, because compatibility is checked before
-    # the gzip and ownership validation these scenarios exercise: a version the
-    # fixtures did not choose would refuse them as incompatible-newest-backup and
-    # every expected_failure below would be the wrong one.
+    # Versions are pinned beside the fixtures: compatibility is checked first, so
+    # a derived version would change which failure each scenario reports.
     if run_play \
         -e nas_docker_root="$scenario_root/docker" \
         -e nas_media_root="$scenario_root/media" \
@@ -623,24 +494,13 @@ run_paperless_snapshot() {
     /repo/tests/mac/snapshot-paperless.sh "$@"
 }
 
-# Every per-service verification runs the same play against the same
-# disposable sandbox; only the tag differs, and the one stack that needs an
-# extra fact declares it in the case below. Written once so a wrapper cannot
-# quietly drop the namespace or the quoting around the vault paths.
+# Written once so a wrapper cannot drop the namespace or vault-path quoting.
 run_verification() {
   verification_tag=$1
   set -- /repo/verify.yml --tags "platform_verify_$verification_tag"
-  # The provider policy travels with the transport flag below. This is a separate
-  # ansible-playbook invocation from run_play with an argv of its own, so a value
-  # passed only there reaches the converge and not the verification -- and
-  # verify.yml branches on exactly that value. The bindery lane found it the hard
-  # way: it converged a declared provider and then asserted the undeclared branch
-  # against the server it had just created.
-  #
-  # The comment sits above the `case` rather than inside the arm on purpose:
-  # tests/integration_suite_test.sh reads the line immediately preceding the
-  # forced fact and requires it to be the arm itself, so that the lane cannot
-  # quietly widen which tags get a fact the inventory should be supplying.
+  # verify.yml branches on the provider flag, and this is a separate argv from
+  # run_play, so it must be passed here too. The comment stays above the `case`:
+  # tests/integration_suite_test.sh requires the line before the fact to be the arm.
   case "$verification_tag" in
     arr|downloaders)
       set -- -e media_usenet_enabled=true \
@@ -707,12 +567,8 @@ run_nextcloud_verify_only() {
   run_verification nextcloud
 }
 
-# The one service lane whose verification is the ROLE'S OWN rather than a
-# contract's. roles/vaultwarden carries no tests/contracts entry: it holds no
-# vault credential to sign in with -- master passwords are user-owned and the
-# server never learns them -- so what there is to prove is the door, and
-# tasks/verify.yml proves it by knocking. This wrapper is therefore the whole
-# of the lane's runtime assertion rather than a supplement to one.
+# The one lane whose verification is the role's own (tasks/verify.yml): no
+# vault credential exists to sign in with, so it proves the door.
 run_vaultwarden_verify_only() {
   run_verification vaultwarden
 }
@@ -721,16 +577,8 @@ run_karakeep_verify_only() {
   run_verification karakeep
 }
 
-# Audiobookshelf is the one reader the seerr lane's own suite tags leave
-# unconverged, so it is the only tag this play needs. It used to name
-# host_prep, deployment_bundle, jellyfin and a since-removed fourth role as well,
-# and measuring the
-# lane showed what that cost: of the play's 259s, 212s went to those four and
-# they changed nothing -- every one of the play's ten changed tasks was
-# Audiobookshelf's. They are converged by the initial converge above and their
-# state persists, so re-running them proved nothing this lane did not already
-# know. deployment_bundle's Compose selection is tagged always for exactly this
-# case, so the role still resolves the files it deploys.
+# Only Audiobookshelf: the other prerequisites are converged above and persist;
+# deployment_bundle's Compose selection is tagged always for this case.
 converge_media_acquisition_reader_prerequisites() {
   run_play --tags audiobookshelf
 }

@@ -1,25 +1,9 @@
 #!/bin/sh
-# The integration controller: the program the harness runs inside the pinned
-# controller container.
-#
-# Until this file existed the whole program was one double-quoted argument to
-# `sh -eu -c` in tests/integration.sh, so `sh -n` never reached it, shellcheck
-# could not read it, and the tests guarding it had to pin its escaped source
-# text. Moving it here changes nothing it does; it only makes it a program a
-# syntax check and a linter can see. tests/integration_controller_lib.sh, the
-# play/contract/verification launchers, is sourced from the body below.
-#
-# The body keeps the indentation it had inside that argument so the move reads
-# as the move it is.
-#
-# TWO ROOTS MEET HERE, AND NEITHER MAY BE INFERRED FROM WHERE THIS FILE SITS.
-# /repo is the checkout under test -- the launcher mounts $sandbox/repo there,
-# a copy, not the caller's working tree -- while $sandbox is the disposable
-# tree the plays deploy into. This file lives at /repo/tests, so resolving
-# either root from $0, dirname "$0" or a sibling path would silently read the
-# tree this program is judging rather than the tree it is meant to act on.
-# Both roots therefore arrive as environment, and tests/policy_test.rb refuses
-# any $0 / dirname / BASH_SOURCE path resolution in this file.
+# The integration controller, run inside the pinned controller container
+# (sources tests/integration_controller_lib.sh).
+# Two roots, neither inferred from where this file sits: /repo is the checkout
+# copy under test, $sandbox the disposable deploy target. Both arrive as
+# environment; tests/policy_test.rb refuses path resolution from this file's location.
 set -eu
 
 : "${CONTROLLER_REPO_DIR:?}"
@@ -29,11 +13,8 @@ set -eu
   exit 1
 }
 
-# Everything the launcher used to interpolate into the argument crosses as
-# environment instead. Bound to the names the body already used, once, here --
-# a value recomputed inside the container would be recomputed against /repo,
-# which is the copy, and expected_release_id and manifest_fixture_sha are
-# exactly the two that would go silently wrong that way.
+# Bound once here: recomputed in the container they would be computed against
+# the /repo copy (expected_release_id and manifest_fixture_sha especially).
 sandbox=${CONTROLLER_SANDBOX:?}
 integration_project_namespace=${CONTROLLER_PROJECT_NAMESPACE:?}
 ruby_package=${CONTROLLER_RUBY_PACKAGE:?}
@@ -53,10 +34,7 @@ controller_test_dir=${CONTROLLER_TEST_DIR:?}
 controller_test_playbook=${CONTROLLER_TEST_PLAYBOOK:?}
 controller_test_target=${CONTROLLER_TEST_TARGET:?}
 controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
-    # The same three installs the controller image bakes, run here only when
-    # there is no such image to run from. Kept literally identical to
-    # tests/integration.Dockerfile: this is the path a developer's first run and
-    # a fork's CI take, and it must produce the same controller.
+    # Kept literally identical to tests/integration.Dockerfile, for runs without the image.
     if [ "$INTEGRATION_TOOLCHAIN_PREINSTALLED" != true ]; then
       apk add --no-cache --quiet docker-cli docker-cli-compose git tar openssl \
         apache2-utils openssh-client "$ruby_package" "$curl_package" >/dev/null
@@ -65,22 +43,15 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
       ansible-galaxy collection install --no-cache -r /repo/requirements.yml >/dev/null
     fi
 
-    # This container runs as root while the sandbox belongs to whoever started
-    # the harness, so git refuses to read the controller checkout as a dubious
-    # ownership. Docker Desktop hides this by remapping ownership; a Linux CI
-    # runner does not. The exception is scoped to this throwaway container and
-    # never reaches the caller's git configuration.
+    # Root container, caller-owned sandbox: git would refuse it as dubious ownership.
+    # Scoped to this throwaway container.
     git config --global --add safe.directory '*'
 
     suite_is() {
       [ "$INTEGRATION_SUITE" = full ] || [ "$INTEGRATION_SUITE" = "$1" ]
     }
 
-    # Which lanes owe the second and third phases. This was `suite_is
-    # idempotence-check` until the untagged lane was decomposed into shards: a
-    # shard converges its own slice of the site and then owes exactly the same
-    # re-converge and check-mode pass against it, so the gate is the family and
-    # not the one name. `full` is here because `suite_is` carried it.
+    # The idempotence-* shards owe the same second and third phases as the whole.
     idempotence_phases() {
       case $INTEGRATION_SUITE in
         full|idempotence-*) return 0 ;;
@@ -96,38 +67,15 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
     vault_password_file="$vault_directory/password"
     mkdir "$vault_directory"
     chmod 0700 "$vault_directory"
-    # The downloaders lane is the one lane that converges without a Usenet
-    # provider, which is the state every real target starts in and the state
-    # #274 broke: it declared the six provider credentials `required: true`,
-    # merged with this lane green because the generator had already stood them
-    # in, and then failed the NAS's next converge in `vault_contract` before any
-    # service could deploy. A fixture that supplies a credential cannot catch a
-    # bug about that credential's absence, so this lane stops supplying it.
-    #
-    # The declared provider is not left unconverged: the bindery lane converges
-    # the same arr and downloaders stacks from a fully declared vault, runs the
-    # role's declared verification branch inline and asserts its idempotence and
-    # its check mode, and tests/ci/classify_changes.rb routes a change inside
-    # roles/downloaders/ to both lanes so neither branch is left with no runtime
-    # lane of its own. The two states cannot share a sandbox: the
-    # `section=servers` reconciliation only ever upserts, so a provider declared
-    # once stands after it is emptied, and `verify.yml`'s undeclared branch
-    # rightly refuses that. Whichever state a lane wants, it has to converge it
-    # from the start.
-    #
-    # One invocation, with only the optional group varying. Spelling the call
-    # twice would name the output and password arguments twice, and
-    # tests/policy_manifest_test.rb plants its "ephemeral helper bypassed"
-    # mutation on the output argument as a single occurrence, so a second copy
-    # stops that mutation from being placeable at all.
+    # The downloaders lane converges with no Usenet provider, the state #274 broke;
+    # the bindery lane converges the declared state (the two cannot share a sandbox:
+    # the servers reconciliation only upserts). One invocation: policy_manifest_test.rb
+    # plants on the output argument as a single occurrence.
     undeclared_provider_argument=
     if [ "$INTEGRATION_SUITE" = downloaders ]; then
       undeclared_provider_argument='--undeclared usenet'
     fi
-    # Unquoted on purpose: the flag and its group are the two words they look
-    # like, and every other lane expands them to no word at all. The exclusion
-    # that used to cover this was file-wide and hid sixty-five other sites with
-    # it (#640), so the licence is now attached to the one line that wants it.
+    # Unquoted on purpose: the flag and its group are two words or none (#640).
     # shellcheck disable=SC2086
     TMPDIR="$sandbox" /repo/tests/generate-ephemeral-vault.sh \
       $undeclared_provider_argument \
@@ -157,15 +105,10 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
         "$vault_directory"
     }
 
-    # Nothing is committed at vault.yml any more, but an operator's untracked
-    # single-file vault installed there as the secrets guide describes reaches
-    # /repo through the working-tree copy, and the install below overwrites it
-    # inside this disposable clone. What must never be there is a symlink, which
-    # the install would follow out of the clone -- a dangling one included.
+    # An operator's untracked vault.yml is overwritten in this clone; a symlink
+    # (even dangling) must never be there, since the install would follow it.
     test ! -L /repo/inventory/group_vars/all/vault.yml
-    # The committed per-service vaults are encrypted under the operator's
-    # password, and group_vars decrypts every file with the one password the
-    # harness exports. The ephemeral vault.yml carries every key, so they go.
+    # The committed per-service vaults are encrypted under the operator's password.
     rm -f /repo/inventory/group_vars/all/vault_*.yml
     install -m 0600 "$vault_file" /repo/inventory/group_vars/all/vault.yml
     export ANSIBLE_VAULT_PASSWORD_FILE="$vault_password_file"
@@ -274,40 +217,12 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
         ;;
     esac
 
-    # NEXTCLOUD'S GATE IS NOT NARROWED HERE, AND THE ABSENCE IS THE FEATURE.
-    # #500 landed the stack dark, so this block set the gate per suite and turned
-    # it on for `nextcloud` and `full` alone -- correct while
-    # inventory/group_vars/all/main.yml said false, and it carried the obligation
-    # to be flipped or deleted the day that changed. `3a7f75af` changed it on
-    # 2026-09-09 and nothing came back here, so for three days smoke and
-    # idempotence-check -- the two lanes that converge the platform as a whole --
-    # converged a platform WITHOUT Nextcloud while the NAS ran it. #564.
-    #
-    # There is nothing to replace it with. The sandbox runs
-    # -i inventory/local.yml, which binds to nas_hosts -- the same group as the
-    # real NAS -- so inventory's `true` is already in force on every lane, and an
-    # `-e` here would be the highest-precedence override there is: the day the
-    # switch is turned back off, CI would go on converging a stack production had
-    # stopped running, which is #564 again with the sign reversed. Inventory is
-    # the single source and every lane inherits it.
-    #
-    # What the narrowing quietly bought was the DISABLED path: every lane that
-    # was handed false converged the tear-down branch for free. That proof is now
-    # requested by name in the nextcloud lane below, the way vaultwarden's is,
-    # and tests/deployment_gate_coverage_test.rb requires it of every gate-on
-    # service and refuses a narrowing of a gate inventory turns on.
+    # Nextcloud's gate is deliberately not narrowed here (#564): inventory is the
+    # single source every lane inherits, and an `-e` would outrank it. The disabled
+    # path is requested by name in the nextcloud lane.
 
-    # The operator-owned half of the provider, which stopped being vault
-    # material in #298 and so can no longer arrive through the ephemeral vault.
-    # It is passed explicitly rather than left to inventory, for the same reason
-    # the credential half is: a lane has to *request* the state it claims to
-    # converge, or a lane handed the other state passes identically and proves
-    # nothing (#295).
-    #
-    # The two halves have to agree -- roles/downloaders refuses a host with no
-    # account and an account with no host -- so this host is empty on exactly
-    # the lane whose credentials the generator is asked to leave undeclared
-    # above, and set on every other lane.
+    # The operator-owned half of the provider (#298), requested explicitly (#295).
+    # Empty exactly on the lane whose credentials are left undeclared above.
     integration_media_usenet_host=news.usenet.invalid
     case $INTEGRATION_SUITE in
       downloaders) integration_media_usenet_host= ;;
@@ -316,13 +231,8 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
 {\"host\":\"$integration_media_usenet_host\",\"port\":563,\
 \"connections\":8,\"ssl\":true}}"
 
-    # Every play, contract and verification the controller launches is
-    # defined in a file of its own. Inside this argument the definitions were
-    # escaped shell inside a shell string, which no syntax check, no linter
-    # and no test could read as a program -- so the tests that guarded them
-    # pinned their escaped source text instead. Sourced rather than executed:
-    # the launchers read the vault this controller generated and run in its
-    # shell, so a refusal still ends the suite.
+    # Sourced rather than executed: the launchers read this controller's vault and
+    # run in its shell, so a refusal still ends the suite.
     # shellcheck source=tests/integration_controller_lib.sh
     . /repo/tests/integration_controller_lib.sh
 
@@ -522,9 +432,7 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
     printf 'EXISTING_PREFLIGHT_PROBE_PRESERVED\n'
     rm -rf "$existing_probe"
 
-    # An interrupted run leaves the probe directory behind empty. That is the
-    # role's own debris, not pre-existing data, so preflight must reclaim it
-    # instead of locking every later converge out of the deployment root.
+    # An interrupted run's empty probe directory is the role's own debris to reclaim.
     mkdir -p "$existing_probe"
     if ! run_play --tags preflight >/tmp/interrupted-probe.txt 2>&1; then
       cat /tmp/interrupted-probe.txt >&2
@@ -583,30 +491,14 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
       nas fixture "$manifest_fixture_sha" require-image-merge
     printf 'ISOLATED_IMAGE_MERGE_EXACT\n'
 
-    # The preceding scenarios must not create or seed the real-service target.
     test ! -e "$sandbox/volume1/Docker/nas-platform"
 
     fi
 
-    # Both expansions are quoted, and that is the whole of the fix here.
-    # Unquoted, `[ -n $INTEGRATION_TAGS ]` on an empty value is `[ -n ]` -- a
-    # one-argument test on the non-empty string `-n`, true either way (SC2070) --
-    # so the untagged lanes took the tagged branch and ran `--tags ""`, which
-    # selects only the `always` pre_tasks. Phases 2 and 3 of the nightly
-    # idempotence-check ran 88 of 1495 tasks and reported the harness's two other
-    # promises kept: measured on run 34454075921, `ok=1495` in phase 1 against
-    # `ok=88` in each of the two that are supposed to re-prove it. The same lane
-    # under narrow routing was correct (498/472/319), which is why nothing caught
-    # it -- the defect reaches only the untagged case, so the nightly sweep and
-    # every `--full` push to `main`.
-    #
-    # `perform_initial_converge` was accidentally right and is now redundant: its
-    # `[ -z $INTEGRATION_TAGS ]` was true on an empty value for exactly the same
-    # reason, which happened to route it to the untagged `run_play` below. It is
-    # kept rather than collapsed into its caller because it is the seam the
-    # execution test plants 'initial converge dropped' into, and because
-    # tests/policy_integration_test.rb reads that bare `run_play` line -- indented
-    # as it is -- to locate the first converge.
+    # Both expansions quoted: unquoted, `[ -n ]` is true on an empty value (SC2070)
+    # and phases 2 and 3 ran `--tags ""`. perform_initial_converge stays as a seam:
+    # the execution test plants on it and policy_integration_test.rb reads its
+    # bare `run_play` line by exact indentation.
     run_selected_play() {
       if [ -n "$INTEGRATION_TAGS" ]; then
         run_play --tags "$INTEGRATION_TAGS" "$@"
@@ -625,44 +517,22 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
       fi
     }
 
-    # THE UPGRADE LANE'S PIN SURGERY, and why it is two commits rather than two
-    # file writes.
-    #
-    # deployment_bundle assembles an immutable release keyed on
-    # platform_release_id, which is `git rev-parse HEAD` against /repo, and
-    # refuses to mutate a release `current` already points at: "Active release
-    # ... differs from the controller bundle". So rewriting compose.yml between
-    # two converges without moving HEAD is not a repin, it is that refusal. Each
-    # pin change is therefore committed, which is also what a real deployment of
-    # this pair looks like -- the base revision and the head revision of the
-    # same tree, converged in order.
-    #
-    # expected_release_id moves with the second commit for the same reason: the
-    # manifest verification below compares the deployed release against it, and
-    # what is deployed at that point is the head revision.
+    # THE UPGRADE LANE'S PIN SURGERY is two commits, not two file writes:
+    # deployment_bundle keys releases on `git rev-parse HEAD` and refuses to mutate
+    # the active one. expected_release_id moves with the second commit.
     upgrade_service=${INTEGRATION_UPGRADE_SERVICE:-}
     upgrade_base_image=${INTEGRATION_UPGRADE_BASE_IMAGE:-}
     upgrade_compose=
     upgrade_head_image=
 
-    # Exact-string match on the whole `image: <ref>` line, exactly one
-    # replacement required, indentation preserved. A regex substitution would
-    # treat the reference's own dots and slashes as pattern syntax, and a
-    # silent zero-replacement rewrite is the failure that would leave the lane
-    # converging one version twice and reporting success.
-    #
-    # Written as a shell read loop rather than as the obvious awk one-liner
-    # because tests/policy_test.rb refuses `$0` anywhere in this file -- it is
-    # how a program here would resolve a path from where the file sits instead
-    # of from CONTROLLER_REPO_DIR -- and awk's own whole-record variable is
-    # spelled the same way. The loop is a hundred lines of YAML once per repin.
+    # Exact whole-line match, exactly one replacement, indentation kept. A read loop,
+    # not awk: tests/policy_test.rb refuses awk's whole-record variable here.
     rewrite_subject_image() {
       rewrite_from=$1
       rewrite_to=$2
       rewrite_count=0
       : > "$upgrade_compose.repin"
-      # The `|| [ -n "$rewrite_line" ]` keeps a final line with no trailing
-      # newline, which `read` reports as end of input while still having read it.
+      # The `|| [ -n "$rewrite_line" ]` keeps a final line with no trailing newline.
       while IFS= read -r rewrite_line || [ -n "$rewrite_line" ]; do
         rewrite_indent=${rewrite_line%%[! ]*}
         rewrite_stripped=${rewrite_line#"$rewrite_indent"}
@@ -686,17 +556,8 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
     }
 
     if [ "$INTEGRATION_SUITE" = upgrade ]; then
-      # An explicit `if` rather than `A && B || C`, which is SC2015 and is fatal
-      # here by construction: tests/policy_test.rb requires the manifest line
-      # for this file to carry no --exclude at all, so an info-level finding
-      # reds the gate. It is a real smell and not a lint nit -- `A && B || C`
-      # runs C when A is true and B is false, which is not the branch structure
-      # it reads as. Version 0.11.0 does not emit it for this shape and the
-      # runner's does, so a local lint run is not evidence either way.
-      #
-      # A comment line here must also never BEGIN with the linter's own name:
-      # it parses that as a directive and answers SC1073, which is an error
-      # rather than an info. That is how this comment first failed.
+      # An explicit `if`, not `A && B || C` (SC2015 reds the gate: this file's lint
+      # line has no --exclude). Never begin a comment line with the linter's name.
       if [ -z "$upgrade_service" ] || [ -z "$upgrade_base_image" ]; then
         printf '%s\n' \
           'the upgrade lane requires INTEGRATION_UPGRADE_SERVICE and INTEGRATION_UPGRADE_BASE_IMAGE' >&2
@@ -718,20 +579,8 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
           exit 1
           ;;
       esac
-      # A ROLLBACK REDS THIS LANE AT roles/image_downgrade_guard, not here, and
-      # that is left deliberately. A revert or a Renovate rollback makes the
-      # base newer than the head, the pins differ so the lane is selected, the
-      # first converge runs the newer image and the second meets that guard --
-      # which both callers include before their backup and their Compose
-      # deployment, and which refuses a pin older than one that has already run.
-      # So the failure names the guard rather than the store. Comparing versions
-      # across arbitrary tags is exactly what that role exists to do; a
-      # direction check here would be a second and worse copy of it.
-      #
-      # A base equal to the head converges the same version twice and asserts a
-      # migration that never ran. It is refused rather than tolerated, because
-      # the result is green and says nothing -- which is the whole failure this
-      # lane exists to stop being invisible.
+      # A rollback reds this lane at roles/image_downgrade_guard, deliberately.
+      # A base equal to the head converges one version twice and proves nothing.
       [ "$upgrade_head_image" != "$upgrade_base_image" ] || {
         printf 'the upgrade base and head pins of %s are identical: %s\n' \
           "$upgrade_service" "$upgrade_head_image" >&2
@@ -759,47 +608,18 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
     fi
 
     lifecycle_success=false
-    # Which converge this is. The lifecycle table makes the second one reachable
-    # only after a repin, so this flag reads that ordering rather than deciding
-    # it: `repinned:converge` is the one transition that arrives here with it
-    # true, and no other ordering of these events is expressible.
+    # Reads the lifecycle ordering: only `repinned:converge` arrives here true.
     upgrade_repinned=false
     while IFS= read -r lifecycle_event; do
       case $lifecycle_event in
         converge)
-          # A converge that fails takes the controller with it -- `sh -eu`, no
-          # message. The first lane to pay for that was Seafile's, removed in
-          # #501: `container <ns>-... is unhealthy`, then silence after the PLAY
-          # RECAP, and no way to tell a slow boot from a wedged one.
-          #
-          # Gated on the containers existing rather than on `suite_is`, because
-          # what has to be true is that the stack exists to be read: `suite_is`
-          # also matches lanes whose tags never select the role, and a dump of
-          # containers that were never created explains nothing. It asked the
-          # deployment switch until #564 deleted the per-suite narrowing above,
-          # which left the switch with one value and this guard with nothing to
-          # decide. Docker is asked instead -- unanchored, so any of the four
-          # containers is enough to make the dump worth printing.
-          #
-          # The call is spelled once. tests/integration_controller_execution_test.sh
-          # plants "initial converge dropped" on this exact text as a single
-          # occurrence, so a second copy would stop that mutation from being
-          # placeable at all -- the same constraint the ephemeral vault
-          # invocation above records.
+          # A failing converge ends the controller silently under `sh -eu`, so dump the
+          # containers if any exist. Spelled once: the execution test plants on this call
+          # as a single occurrence.
           if [ "$upgrade_repinned" = true ]; then
-            # The upgrade converge. This is where the head image opens a store
-            # the base image wrote and runs its own migration against it -- the
-            # one thing no other lane in this repository does, because every
-            # other lane's store was created empty moments earlier.
-            #
-            # run_selected_play rather than perform_initial_converge, and not at
-            # that function's indentation: tests/policy_integration_test.rb
-            # locates the FIRST converge by the bare `run_play` line's exact
-            # indented text and tests/integration_controller_execution_test.sh
-            # plants "initial converge dropped" on that function's own call
-            # site as a single occurrence -- which is also why this comment does
-            # not spell that call site out. A second copy of either text would
-            # stop the mutation being placeable at all.
+            # The upgrade converge: the head image migrates a store the base image wrote.
+            # Not the initial-converge call site or its indentation: two tests anchor on
+            # that text as a single occurrence.
             upgrade_converge_status=0
             run_selected_play "$@" || upgrade_converge_status=$?
             if [ $upgrade_converge_status -ne 0 ]; then
@@ -825,19 +645,13 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
           integration_media_adopt_existing=false
           ;;
         seed)
-          # Writes rows through the subject's own HTTP API while the BASE pin is
-          # serving. A lane that migrates an empty store proves only that the
-          # migration runs; what cost #511 and #671 three days and four pull
-          # requests is a migration that runs and loses what was there.
+          # Seed rows while the BASE pin serves (#511, #671).
           run_contract "$upgrade_service" seed
           printf 'UPGRADE_SEEDED: %s at %s\n' \
             "$upgrade_service" "$upgrade_base_image"
           ;;
         repin)
-          # Back to the head pin the repository actually commits, and committed
-          # so platform_release_id moves with it. See the pin surgery above for
-          # why a bare file rewrite is the "Active release ... differs from the
-          # controller bundle" refusal rather than a repin.
+          # Back to the head pin, committed so platform_release_id moves.
           rewrite_subject_image "$upgrade_base_image" "$upgrade_head_image" || {
             printf 'could not repin %s to its head image %s\n' \
               "$upgrade_service" "$upgrade_head_image" >&2
@@ -850,100 +664,21 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
             "$upgrade_service" "$upgrade_head_image"
           ;;
         verify)
-          # Reads back what seed wrote, against the head image, after that image
-          # has opened and migrated the store the base one left.
           run_contract "$upgrade_service" verify
           printf 'UPGRADE_VERIFIED: %s survived %s -> %s\n' \
             "$upgrade_service" "$upgrade_base_image" "$upgrade_head_image"
           ;;
         stop)
-          # THE SHUTDOWN HALF OF #671, WHICH #773 LEFT UNCOVERED (#781).
-          #
-          # That upgrade was a patch whose migration ran correctly and whose
-          # shutdown handler raised, so every stop was waited out to Docker's
-          # SIGKILL -- 30.46s and exit 137 on the NAS. A lane that ends at verify
-          # reports a green migration and says nothing about that, which is half
-          # of what automerging these images needs.
-          #
-          # THE EXIT CODE IS THE MEASUREMENT, and it is a measurement rather than
-          # a reading of stop_grace_period on purpose: CLAUDE.md records two
-          # containers here that DECLARED a grace and were killed inside it
-          # anyway -- alert-relay, Python as PID 1 with no handler, and
-          # nextcloud-cron, whose image carries php:apache's ignored
-          # STOPSIGNAL SIGWINCH over busybox crond. 137 is 128+SIGKILL and means
-          # exactly "the grace expired"; 0 and 143 mean exactly that it did not.
-          # A wall-clock threshold beside that would add a load-dependent red
-          # without adding a claim, so the elapsed seconds are reported as
-          # evidence and nothing is asserted on them.
-          #
-          # WHICH grace expired is the container's own, not a flat ten seconds,
-          # and that is worth stating because the whole claim above rests on it.
-          # Compose sets StopTimeout on the container at create time from
-          # stop_grace_period -- pkg/compose/create.go, `StopTimeout:
-          # ToSeconds(service.StopGracePeriod)` -- and `docker stop` with no -t
-          # uses that configured value, falling back to the daemon's ten seconds
-          # only when the service declared none. So a future subject declaring
-          # 30s is measured against 30s rather than red at ten. Both subjects
-          # today land on ten either way (Kapowarr declares 10s since #751,
-          # Bindery declares nothing), which is exactly why the window is
-          # REPORTED on both paths below: the day that stops being true, the
-          # evidence line says so instead of this comment having to be trusted.
-          #
-          # WHAT THIS DOES NOT CATCH, stated rather than implied: #671's own
-          # raise needed a task at the head of the queue that had been created
-          # and never started, and services/kapowarr/tasks.py shows that state is
-          # a race rather than a reachable request -- _process_queue() starts
-          # queue[0] inside every add(), so an unstarted head exists only between
-          # the pop(0) and the _process_queue() of a finishing task's finally.
-          # Upstream reproduced it with 300 concurrent submissions. This arm
-          # therefore covers the deterministic shutdown regressions -- a PID 1
-          # with no handler, an ignored STOPSIGNAL, a handler that hangs, a
-          # carried patch that has stopped applying to the image it is mounted
-          # over -- and would have caught #671 only by luck.
-          #
-          # The base container's stop is still unobservable for the reason #773
-          # gave: Compose removes it inside the same recreate.
-          #
-          # ONE RISK ON A FIRST DISPATCH, which is not a defect in this
-          # assertion. Kapowarr's clean stop is measured -- services/kapowarr/
-          # compose.yml records 0.22s and exit 0 against the pinned image, and
-          # the tasks.py trailer beside it records the mechanism rather than the
-          # numbers. Bindery's is not measured anywhere: it
-          # declares no stop_grace_period, its runtime is distroless with
-          # /bindery as PID 1, and nothing in the Bindery dossier or
-          # roles/bindery says what it does with a SIGTERM. It is one of the
-          # eleven containers CLAUDE.md names as taking Docker's default grace
-          # on an expectation rather than a measurement. So the first red here
-          # for that subject may be pre-existing behaviour rather than the bump,
-          # which is what the failure message says.
-          #
-          # BOTH OF BINDERY'S FIRST-DISPATCH RISKS HAVE SINCE BEEN SETTLED, and
-          # the paragraph above is kept because it still describes every subject
-          # that has not run yet -- Kapowarr included. #785's settings canary
-          # wrote a key Bindery does not define and the route answered HTTP 400
-          # on #779's real run; tests/contracts/bindery-upgrade.rb records that
-          # as the reason its seed is one row. And this arm ran for Bindery on
-          # the same pull request afterwards:
-          #
-          #     UPGRADE_STOPPED_CONTAINER: ...-bindery exited:0 against a
-          #     configured StopTimeout of <nil>
-          #
-          # So Bindery's clean stop is a measurement now and not an expectation,
-          # and <nil> is the reporting earning its place on its first real run:
-          # it declares no stop_grace_period, so the window was the daemon's ten
-          # seconds and the exit was well inside it. That is one container off
-          # the eleven CLAUDE.md counts -- in this lane, against this pin, which
-          # is a narrower claim than the NAS-side one that paragraph makes.
+          # THE SHUTDOWN HALF OF #671 (#781). The exit code is the measurement: 137 means
+          # the container's own StopTimeout expired, 0 or 143 that it did not; elapsed time
+          # is reported, never asserted. It would catch #671 itself only by luck (a race),
+          # but covers the deterministic regressions. The base container's stop is unobservable.
           upgrade_project=$integration_project_namespace-$upgrade_service
           upgrade_running=$(docker ps \
             --filter "label=com.docker.compose.project=$upgrade_project" \
             --filter status=running --format '{{.Names}}')
-          # A container that had already died reads as a clean stop -- an exited
-          # container keeps whatever code it exited with, and docker stop answers
-          # 0 for it. So the running state is required BEFORE the stop rather
-          # than inferred from it, and an empty enumeration is a refusal: it is
-          # also what a subject whose Compose project is not named this way would
-          # produce, and that must not pass as a stack that stopped cleanly.
+          # Running state required before the stop: an exited container answers
+          # `docker stop` with 0, and an empty enumeration is refused.
           [ -n "$upgrade_running" ] || {
             printf 'no running container in the upgrade subject project %s to stop\n' \
               "$upgrade_project" >&2
@@ -966,11 +701,7 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
                 "$upgrade_container" >&2
               exit 1
             }
-            # The window that stop was measured against. StopTimeout is a
-            # pointer in the container config, so an undeclared grace prints
-            # <nil> rather than a number; both are reported verbatim, because
-            # naming the daemon's ten here would be this comment's guess rather
-            # than the daemon's answer.
+            # StopTimeout prints <nil> when undeclared; reported verbatim.
             upgrade_stop_grace=$(docker inspect \
               --format '{{.Config.StopTimeout}}' "$upgrade_container" 2>/dev/null) \
               || upgrade_stop_grace=unreadable
@@ -983,16 +714,10 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
                 exit 1
                 ;;
             esac
-            # Per container, because the window is per container and the elapsed
-            # below is the whole loop's. A project-level line carrying one
-            # container's StopTimeout would attribute it to the others, which is
-            # wrong the first time a multi-container subject is added -- and the
-            # obvious next subjects (Nextcloud, Immich, Paperless) all are.
+            # Per container: the window is per container, the elapsed is the loop's.
             printf 'UPGRADE_STOPPED_CONTAINER: %s %s against a configured StopTimeout of %s\n' \
               "$upgrade_container" "$upgrade_stop_state" "$upgrade_stop_grace"
           done
-          # The total across every container in the project, said as such: it is
-          # not any one container's stop duration. Nothing is asserted on it.
           printf 'UPGRADE_STOPPED: %s stopped cleanly, %ss for the project as a whole, on %s\n' \
             "$upgrade_project" "$upgrade_stop_elapsed" "$upgrade_head_image"
           ;;
@@ -1027,20 +752,8 @@ EOF
       "$sandbox/volume1/Docker/nas-platform/current/manifest.yml" \
       /repo /repo/services/manifest.yml nas integration "$expected_release_id"
 
-    # Seerr is the last acquisition project, so its lane is where the shared
-    # inert foundation's own runtime proof lives now: nothing else converges
-    # both readers, and a foundation nobody verifies is a foundation nobody
-    # would notice breaking. It runs first and then falls through to Seerr's
-    # own arm below rather than exiting here.
-    #
-    # The static half is not re-run here. It used to be, through
-    # tests/contracts/seerr-foundation.sh, which ran exactly
-    # `ruby tests/media_acquisition_foundation_test.rb --project seerr` -- the
-    # check the gate already runs bare, plus a --project branch whose only
-    # remaining work was verifying the wrapper's own bytes and mode. Seven
-    # byte-identical wrappers dispatching on basename, of which this was the one
-    # reachable caller, and what it proved over the gate was that the seven were
-    # identical (#639). What is left below is the part nothing else does.
+    # Seerr's lane carries the shared foundation's runtime proof, then falls
+    # through to Seerr's own arm (#639).
     case $INTEGRATION_SUITE in
       seerr)
         converge_media_acquisition_reader_prerequisites
@@ -1064,12 +777,7 @@ EOF
       /repo/tests/contracts/arr.sh static
       /repo/tests/contracts/downloaders.sh static
       run_arr_verify_only
-      # This lane's vault declares no Usenet provider, so every downloader
-      # assertion below is the undeclared half of the pair: SABnzbd started and
-      # stayed healthy with no server block, `verify.yml` asserts that no server
-      # carries the owned name, the second converge changes nothing with the
-      # reconciliation live, and check mode works. That is the whole of what
-      # issue #295 found no lane converged.
+      # The undeclared half of the downloader pair (#295).
       run_downloaders_verify_only
       run_enabled_idempotence arr,downloaders
       run_play --tags arr,downloaders --check --diff
@@ -1083,13 +791,7 @@ EOF
       /repo/tests/contracts/downloaders.sh static
       /repo/tests/contracts/bindery.sh static
       run_bindery_contract run
-      # The declared half of the downloader pair. This lane converges the same
-      # arr and downloaders stacks from a fully declared vault, so it is where
-      # `verify.yml`'s declared branch is asserted as a play of its own now that
-      # the downloaders lane converges the undeclared state instead. The inline
-      # verification already ran during the converge above; this is the
-      # standalone pass, and it is the reason a change inside roles/downloaders/
-      # selects this lane too.
+      # The declared half of the downloader pair, as a standalone verify play.
       run_downloaders_verify_only
       run_bindery_verify_only
       run_enabled_idempotence arr,downloaders,audiobookshelf,bindery
@@ -1150,20 +852,8 @@ EOF
       exit 0
     fi
 
-    # The upgrade lane's work is the lifecycle plan itself -- converge at base,
-    # seed, repin, converge, verify -- and it is finished by the time the loop
-    # ends. What it does NOT own is a second converge for idempotence or a
-    # check-mode pass: the service lane for the same service already proves both
-    # against the head pin, and re-proving them here would double the lane's cost
-    # to say a second time what a routed run already said.
-    #
-    # NOT asserted here, and stated rather than left to be assumed: the exit code
-    # and duration of the BASE container's stop. An upgrade must stop the old
-    # container, so the observation is available in principle, but Compose
-    # removes it as part of the same recreate and nothing in this lane is
-    # positioned to read it before that. The HEAD container's stop is asserted,
-    # in the stop event above (#781), which is where #671's shutdown half is
-    # covered as far as it can be covered deterministically.
+    # The upgrade lane owns no idempotence or check-mode pass: the service lane
+    # proves both against the head pin.
     if [ "$INTEGRATION_SUITE" = upgrade ]; then
       printf 'UPGRADE_LANE_COMPLETE: %s migrated from %s to %s with its seeded rows intact\n' \
         "$upgrade_service" "$upgrade_base_image" "$upgrade_head_image"
@@ -1171,13 +861,8 @@ EOF
       exit 0
     fi
 
-    # Bundle drift and symlink refusal are properties of deployment_bundle and of
-    # the target validator in the always-tagged pre_tasks, not of any one service:
-    # beszel and audiobookshelf are only the vehicles. Every suite used to
-    # re-prove them, six playbook invocations for 3m37s, on five critical paths at
-    # once. foundation owns them now because it already exists to prove deployment
-    # integrity and converges deployment_bundle alone, so it is the cheapest place
-    # to pay for them once.
+    # Bundle drift and symlink refusal belong to deployment_bundle, so the
+    # foundation lane proves them once for every suite.
     if [ "$INTEGRATION_SUITE" = foundation ] || [ "$INTEGRATION_SUITE" = full ]; then
     assert_selective_compose_refused() {
       service=$1
@@ -1256,29 +941,21 @@ EOF
     chown 0:0 "$active_release_dir/services/beszel/compose.yml"
     fi
 
-    # foundation converges deployment_bundle and nothing else, so there are no
-    # service scenarios below for it to run.
     if [ "$INTEGRATION_SUITE" = foundation ]; then
       cleanup_vault
       exit 0
     fi
 
     if [ "$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is beszel; then
-      # Named rather than left to the contract's default, which is `verify`
-      # (#667). What this adds is the wrapper: tests/beszel_contract_test.rb
-      # already runs beszel-static.rb against this tree, but it invokes the
-      # program, so the preloads, the `</dev/null` and the root the wrapper
-      # hands it were asserted by nothing. It costs a tenth of a second.
+      # Named rather than the default `verify` (#667): exercises the wrapper itself.
       run_beszel_contract static
       run_beszel_contract verify
       printf 'BESZEL_INITIAL_CONTRACT_OK\n'
 
       run_beszel_contract drift
       run_beszel_contract drift-verify
-      # No pipeline: POSIX sh has no pipefail, so `sha256sum ... | cut` reports
-      # cut's status and an unreadable .env yields an EMPTY checksum that `set -e`
-      # never sees. The comparison below then decided a drift guard's verdict from
-      # a value that means "could not read" (#640).
+      # No pipeline: POSIX sh has no pipefail, so an unreadable .env would yield an
+      # empty checksum unnoticed (#640).
       beszel_env_checksum_before_check=$(sha256sum \
         "$sandbox/volume1/Docker/nas-platform/runtime/services/beszel/.env") ||
         { printf 'BESZEL DRIFTED CHECK COULD NOT READ RUNTIME .env\n' >&2; exit 1; }
@@ -1384,15 +1061,7 @@ EOF
 
     if [ "$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is dozzle; then
 
-      # The static half renders every stack in services/manifest.yml through
-      # `docker compose config` and judges the dev.dozzle.* labels on the
-      # rendered document. Nothing ran it against a real render until #667: the
-      # wrapper defaults to `verify` and no caller passed a mode, and
-      # tests/dozzle_contract_test.rb drives static mode through a stubbed
-      # `docker`, so it asserts the argv the wrapper builds rather than the
-      # labels a render produces. That is why #656 found arr and downloaders
-      # carrying Dozzle names and no group at all -- the rule was stated, and
-      # the contract that states it had never been asked. Seven seconds.
+      # Judges dev.dozzle.* labels on a real render; nothing did before #667 (#656).
       run_dozzle_contract static
       run_dozzle_contract verify
       printf 'DOZZLE_INITIAL_CONTRACT_OK\n'
@@ -1495,9 +1164,7 @@ EOF
       run_dozzle_contract verify
       run_dozzle_contract notify
       printf 'DOZZLE_DRIFT_RECONCILED_AND_NOTIFIED\n'
-      # The one proof that Beszel's stored webhook reaches Pushover: hub, bridge,
-      # relay's /beszel route, and the recorder the relay publishes to. It is why
-      # this lane converges beszel as well.
+      # The one proof that Beszel's stored webhook reaches Pushover.
       run_dozzle_contract beszel-notify
       printf 'DOZZLE_BESZEL_NOTIFICATION_THROUGH_RELAY\n'
 
@@ -1657,33 +1324,13 @@ EOF
     if [ "$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is nextcloud; then
       run_nextcloud_contract run
       if [ "$INTEGRATION_SUITE" = nextcloud ]; then
-        # The second converge is what refutes a Nextcloud that rewrites its own
-        # trusted_domains on every start: the reconciliation would repair it,
-        # report changed, and fail the recap check below. That is the claim a
-        # restart-persistence mode would have bought, arriving one layer out --
-        # tests/contracts/nextcloud.sh records why it cannot be a mode here.
+        # The second converge refutes a Nextcloud that rewrites its trusted_domains.
         run_enabled_idempotence nextcloud
         run_play --tags nextcloud --check --diff
         run_nextcloud_verify_only
         printf 'NEXTCLOUD_RUNTIME_VERIFIED\n'
-        # THE WAY BACK, EXERCISED RATHER THAN CLAIMED, and this lane is where it
-        # lives now. Until #564 the controller narrowed this gate off for every
-        # lane but this one, so the tear-down branch was converged for free on
-        # smoke, idempotence-check and every service lane -- and the price of
-        # that was the enabled branch never running there either. Deleting the
-        # narrowing takes the free proof away: CI now requests what production
-        # runs, and nothing anywhere requests the other state.
-        # inventory/group_vars/all/main.yml calls setting the flag back to false
-        # "a deployment decision in both directions", and a line nothing runs is
-        # not a decision. Vaultwarden's lane carries the same block.
-        #
-        # ANCHORED BEFORE, UNANCHORED AFTER, and the asymmetry is the point.
-        # Nextcloud is four containers where vaultwarden is one: the app has to
-        # be there specifically, or the assertion below passes over a deployment
-        # that never happened, while afterwards ANY surviving `-nextcloud*`
-        # container is a failure -- roles/nextcloud tears the project down with
-        # remove_orphans, and an anchored check on the app alone would report
-        # success with the database, the cache and the cron sidecar still up.
+        # The way back, exercised rather than claimed (#564). Anchored before (the app
+        # must exist), unanchored after (no `-nextcloud*` container may survive).
         if ! docker ps --all --format '{{.Names}}' |
             grep -Eq '^'"$integration_project_namespace"'-nextcloud$'; then
           printf '%s\n' \
@@ -1698,14 +1345,7 @@ EOF
           exit 1
         fi
         printf 'NEXTCLOUD_TEARDOWN_VERIFIED\n'
-        # And back on, because a rollback nothing reverses is a one-way door.
-        # The re-converge is also the only thing on the platform that proves this
-        # stack comes up against a data root a previous deployment left behind:
-        # the bind mounts survive `state: absent`, so version.php is present and
-        # the image's entrypoint takes its existing-install path rather than the
-        # installer -- which is what keeps NC_setup_create_db_user out of the
-        # question here, the one setting services/nextcloud/compose.yml records
-        # as unrecoverable if it is wrong on a FIRST converge.
+        # And back on: also proves an existing-install start over a surviving data root.
         run_play --tags nextcloud
         run_nextcloud_verify_only
         printf 'NEXTCLOUD_RETURN_VERIFIED\n'
@@ -1714,58 +1354,22 @@ EOF
 
     if [ "$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is vaultwarden; then
       if [ "$INTEGRATION_SUITE" = vaultwarden ]; then
-        # No contract to run, and that is the service rather than a gap: this is
-        # the one role on the platform that reads no vault credential, so there
-        # is no identity a contract could sign in with. What the lane proves is
-        # what the role asserts -- the server is alive, it runs the version this
-        # release pins, its admin panel is disabled, and its registration door
-        # answers what the declared policy says it should, in whichever
-        # direction that policy is set.
-        #
-        # The second converge is what refutes a Vaultwarden that writes a
-        # config.json of its own at start: that file outranks every environment
-        # variable this role renders, and the role asserts it absent on every
-        # converge, so a release that started writing one fails here rather than
-        # being discovered on the NAS five minutes after a merge.
+        # No contract: the one role that reads no vault credential. The second converge
+        # refutes a Vaultwarden that writes its own config.json.
         run_enabled_idempotence vaultwarden
         run_play --tags vaultwarden --check --diff
         run_vaultwarden_verify_only
         printf 'VAULTWARDEN_RUNTIME_VERIFIED\n'
-        # THE WAY BACK, EXERCISED RATHER THAN CLAIMED. AdGuard carried the
-        # same block until #577 removed the service, and this is now the only
-        # place on the platform that proves a deployment gate switches OFF.
-        # While the stack was dark the disabled branch was converged by every
-        # lane on every run and nobody had to ask for it; turning the platform
-        # switch on took that proof away, because CI now requests what production
-        # runs and nothing anywhere requests the other state.
-        # inventory/group_vars/all/main.yml calls setting the flag back to false
-        # "a deployment decision in both directions", and a line nothing runs is
-        # not a decision.
-        #
-        # It matters here for a reason of its own. The way back is what an
-        # operator reaches for when this stack is the problem -- a config.json
-        # appeared, the door is answering something the repository did not
-        # declare -- and roles/vaultwarden/tasks/deploy.yml used to refuse
-        # exactly that state BEFORE the tear-down, so the switch could not
-        # actually switch it off. That ordering is fixed, and this is what would
-        # notice if it came back.
-        #
-        # The container has to be THERE FIRST, or the assertion below passes over
-        # a deployment that never happened and VAULTWARDEN_TEARDOWN_VERIFIED
-        # means nothing.
+        # The way back, exercised rather than claimed: the only proof a deployment gate
+        # switches OFF. The container must exist first.
         if ! docker ps -a --format '{{.Names}}' |
             grep -Eq '^'"$integration_project_namespace"'-vaultwarden$'; then
           printf '%s\n' \
             'the vaultwarden container is not present, so the teardown below proves nothing' >&2
           exit 1
         fi
-        # The override goes after the playbook path, where Ansible's last `-e`
-        # for a key wins. Measured rather than assumed, because run_play supplies
-        # this key through `-e vaultwarden_deployment_enabled=...` alongside two
-        # `-e @file` arguments and the merge is one left-to-right pass over all
-        # of them. Compose is asked directly rather than through the role,
-        # because what has to be gone is the container, not the role's opinion
-        # of it.
+        # After the playbook path, where the last `-e` wins (measured). Compose is
+        # asked directly: what must be gone is the container.
         run_play --tags vaultwarden -e vaultwarden_deployment_enabled=false
         if docker ps -a --format '{{.Names}}' |
             grep -Eq '^'"$integration_project_namespace"'-vaultwarden$'; then
@@ -1774,11 +1378,7 @@ EOF
           exit 1
         fi
         printf 'VAULTWARDEN_TEARDOWN_VERIFIED\n'
-        # And back on, because a rollback nothing reverses is a one-way door. The
-        # re-converge also proves the stack comes up against the data root the
-        # tear-down left behind -- the store survives, which for this service is
-        # the whole of what anybody cares about -- and the verification that
-        # follows reads the door on the server that came back.
+        # And back on, over the data root the tear-down left.
         run_play --tags vaultwarden
         run_vaultwarden_verify_only
         printf 'VAULTWARDEN_RETURN_VERIFIED\n'
@@ -1787,25 +1387,13 @@ EOF
 
     if [ "$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is karakeep; then
       if [ "$INTEGRATION_SUITE" = karakeep ]; then
-        # The first converge of this lane is the one that bootstraps: an empty
-        # data root, so the vault administrator cannot sign in, the role's
-        # read-only count of Karakeep's `user` table reads 0, and the role
-        # registers it with signups open on loopback and closes them again. What
-        # follows is the path where there is nothing to bootstrap. The second
-        # converge must sign in and read a count of 1 -- the role refuses a
-        # signed-in administrator beside a count of 0, which is what proves the
-        # count still reads Karakeep's table on this pin -- skip the whole
-        # bootstrap and change nothing;
-        # the review must plan nothing; and the verification must find
-        # Meilisearch and chrome connected and the door closed.
+        # The first converge bootstrapped; the second must sign in, read a user count
+        # of 1, skip the bootstrap and change nothing.
         run_enabled_idempotence karakeep
         run_play --tags karakeep --check --diff
         run_karakeep_verify_only
         printf 'KARAKEEP_RUNTIME_VERIFIED\n'
-        # The way back, exercised rather than claimed, landed with the lane so
-        # the flip does not have to add it. The application has to be there
-        # first; afterwards ANY surviving `-karakeep*` container is a failure,
-        # since the tear-down uses remove_orphans across three containers.
+        # The way back: afterwards no `-karakeep*` container may survive.
         if ! docker ps --all --format '{{.Names}}' |
             grep -Eq '^'"$integration_project_namespace"'-karakeep$'; then
           printf '%s\n' \
@@ -1820,18 +1408,13 @@ EOF
           exit 1
         fi
         printf 'KARAKEEP_TEARDOWN_VERIFIED\n'
-        # And back on. The data root survives `state: absent`, so this converge
-        # meets fresh containers over an existing administrator: the sign-in
-        # probe has to answer 200 and the door must never open.
+        # And back on over an existing administrator: the door must never open.
         run_play --tags karakeep
         run_karakeep_verify_only
         printf 'KARAKEEP_RETURN_VERIFIED\n'
       fi
     fi
-      # The full lane avoids the CPU-machine-learning seed contract because it
-      # would add an 800 MB external model download. The Immich suite owns the
-      # narrower upload/backup fixture that proves database recovery without
-      # waiting for generated assets or inference.
+      # The full lane skips the CPU-ML seed contract (an 800 MB model download).
 
     if [ "$INTEGRATION_SUITE" = full ] && \
        [ "$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ]; then
@@ -1857,9 +1440,7 @@ EOF
 
     if idempotence_phases; then
     printf '\n=== phase 2: asserting idempotence ===\n'
-    # Not piped into tee: the pipeline would report tee's status, and this shell
-    # has no pipefail. A play that died would reach the recap check below with
-    # whatever partial output it managed to print.
+    # Not piped into tee: no pipefail, so tee's status would hide a dead play.
     idempotence_status=0
     run_selected_play "$@" >/tmp/second.txt 2>&1 || idempotence_status=$?
     cat /tmp/second.txt
@@ -1868,22 +1449,8 @@ EOF
         "$idempotence_status" >&2
       exit 1
     fi
-    # The same parser run_enabled_idempotence uses, and for the reason two greps
-    # could not be made into one: they matched anywhere in the file, never had to
-    # describe the same line, and never looked at `unreachable` at all. A task
-    # that merely PRINTS `changed=0 failed=0` satisfied both of them -- so a recap
-    # reading `changed=118` passed, and so did one reading `unreachable=3`.
-    #
-    # This is phase 2 of the `full` and `idempotence-*` lanes, whose whole purpose
-    # is proving idempotence, and it was the loosest assertion in the harness. The
-    # strict parser has been one file away since it was written for the
-    # per-service lanes: exactly one recap, exactly one line naming the target,
-    # and changed/unreachable/failed all zero, with tests/integration_suite_test.sh
-    # driving eight cases through it -- including one named "task-output false
-    # match before failed recap", which is precisely the miss above.
-    #
-    # The comment this replaces recorded that the check had already been widened
-    # once, to require failed=0, without anybody reaching for the parser.
+    # The strict recap parser (one recap, one target line, changed/unreachable/failed
+    # zero): two greps passed on printed text and ignored `unreachable`.
     if enabled_idempotence_recap_is_clean /tmp/second.txt; then
       printf 'IDEMPOTENT: second run changed nothing\n'
     else

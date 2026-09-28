@@ -1,39 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#
-# Behaviour of the Bindery service contract's two Ruby programs.
-#
-# Until #147 both lived in `<<'RUBY'` heredocs inside tests/contracts/bindery.sh.
-# `sh -n` reads a quoted heredoc as opaque text, so the static half was only ever
-# executed by `tests/contracts/bindery.sh static` and the runtime half only by an
-# integration lane with Docker, a converged Bindery and a real vault.
-# tests/contracts/bindery-static.rb and tests/contracts/bindery-runtime.rb are
-# files now, so both are reachable here.
-#
-# Three layers, because the contract has three kinds of property:
-#
-#   Static -- build a fixture repository from the files the program reads, break
-#   exactly one thing in it, and require the program to name that thing. The
-#   assertion text is the interface: a guard that fails for the wrong reason has
-#   stopped guarding what it names, so every row pins the exact diagnostic.
-#
-#   Runtime -- serve the Bindery API from an HTTP fixture and put `docker` and
-#   `ansible-vault` stubs on PATH, so each access, ownership, storage and
-#   persistence outcome can be moved one at a time. This half had no test at all,
-#   and 195 lines of it are exactly what a deployment depends on. Both states of
-#   PLATFORM_BINDERY_USENET are covered: the `if USENET` block is twenty
-#   assertions that no local signal reaches with the flag left at its default.
-#
-#   Wrapper -- tests/contracts/bindery.sh is what turns a mode into an
-#   invocation. Its rows prove the mode guard, the run-mode environment contract,
-#   that both programs are reached, that they come from the checkout while the
-#   tree the static half inspects does not, and that neither can eat the caller's
-#   stdin.
-#
-# Run with --self-test to plant a regression in each program and in the wrapper.
-# It accumulates its mismatches rather than aborting on the first, and every
-# plant is built before the worker pool: `abort` inside a worker raises
-# SystemExit there, and the pool would report a KeyError in place of the message.
+# Behaviour of the Bindery contract's static and runtime programs and its wrapper.
+# Every row pins the exact diagnostic. --self-test plants a regression in each;
+# plants are built before the pool, because `abort` in a worker becomes a KeyError.
 
 require "fileutils"
 require "json"
@@ -52,8 +21,7 @@ include TestScaffold
 include ContractTestSupport
 
 ROOT = File.expand_path("..", __dir__)
-# The prefix every refusal this file judges has to carry. Matching the
-# fragment alone accepted a backtrace or an echoed argument as a refusal.
+# Matching the fragment alone accepted a backtrace or an echoed argument.
 DIAGNOSTIC_PREFIX = "Bindery contract failed: "
 CONTRACT = File.join(ROOT, "tests", "contracts", "bindery.sh")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "bindery-static.rb")
@@ -62,12 +30,8 @@ RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "bindery-runtime.rb")
 SUCCESS_LINE = "bindery static contract: two-library acquisition ownership holds"
 MODE_REFUSAL = "bindery contract accepts only static, run, seed or verify"
 
-# Exactly what the static program reads, and it is exactly the program's own
-# `required` list -- unlike tranche 1's pair it reads no file its existence
-# sweep does not check, which the "an intact repository" row proves by passing
-# against a fixture holding only these. tests/policy_support.rb is deliberately
-# absent: bindery-static.rb carries its own flatten_tasks, which is why
-# tests/contracts/bindery.sh exports no PLATFORM_CONTRACT_REPO_DIR.
+# Exactly the program's own `required` list. tests/policy_support.rb is absent on
+# purpose: bindery-static.rb carries its own flatten_tasks.
 FIXTURE_FILES = %w[
   roles/bindery/defaults/main.yml
   roles/bindery/meta/argument_specs.yml
@@ -93,10 +57,8 @@ def build_fixture_repository(root)
   end
 end
 
-# Every substitution states how many matches it expects. A replacement that still
-# contains its own pattern plants nothing, and a bare `sub` cannot tell that from
-# a plant that worked: the row then reports a pass, or a failure with the wrong
-# diagnostic.
+# A replacement that still contains its own pattern plants nothing, so every
+# substitution states how many matches it expects.
 def mutate_text(root, relative, pattern, replacement, occurrences: 1)
   path = File.join(root, relative)
   body = File.read(path)
@@ -122,8 +84,6 @@ def role_tasks(root, relative = "roles/bindery/tasks/main.yml")
   edit_yaml(root, relative) { |document| yield document }
 end
 
-# The flattened task list the program itself computes, so a row can find the task
-# it means to break the same way the assertion finds it.
 def find_task(document, &predicate)
   flatten = lambda do |tasks|
     Array(tasks).flat_map do |task|
@@ -245,10 +205,8 @@ STATIC_ROWS = [
     expects: "Bindery must assert the platform identity as BINDERY_PUID"
   },
   {
-    # One mount per leaf rather than per host share. rename(2) refuses to cross a
-    # mount boundary even when both sides are one filesystem, so this is the
-    # break that makes every import a byte copy while every other reading of the
-    # four paths stays identical.
+    # rename(2) refuses to cross a mount boundary even on one filesystem, so every
+    # import becomes a byte copy.
     name: "one bind mount per library leaf instead of per host share",
     break: lambda { |root|
       compose_service(root) do |service, _|
@@ -262,8 +220,7 @@ STATIC_ROWS = [
     expects: "Bindery must mount its database and each library's whole host share"
   },
   {
-    # Omitting either audiobook variable silently falls back to its ebook
-    # equivalent and collapses the two libraries into one.
+    # A missing audiobook variable falls back to the ebook one.
     name: "an audiobook staging root collapsed onto the ebook one",
     break: lambda { |root|
       compose_service(root) do |service, _|
@@ -308,9 +265,7 @@ STATIC_ROWS = [
     expects: "the Mac override must republish the web UI on the harness port"
   },
   {
-    # /bin, /sbin, /usr/bin and /usr/sbin all exist in the image and are all
-    # empty; the only executable is /bindery, so a CMD-SHELL probe cannot run at
-    # all and the failure surfaces as a deployment timeout saying nothing.
+    # The distroless image has no shell; the only executable is /bindery.
     name: "a shell-form health probe the distroless image cannot run",
     break: lambda { |root|
       compose_service(root) do |service, _|
@@ -338,9 +293,7 @@ STATIC_ROWS = [
     expects: "Bindery must declare exactly the two destination roots"
   },
   {
-    # Auto-grab is on by policy and the row is written anyway, to revert a
-    # manual disable. Dropping the key leaves the fail-open default in charge and
-    # a web-interface toggle permanent.
+    # Without the row, a manual disable in the web interface is permanent.
     name: "an auto-grab row left unpinned",
     break: lambda { |root|
       edit_yaml(root, "roles/bindery/defaults/main.yml") do |document|
@@ -375,8 +328,7 @@ STATIC_ROWS = [
     expects: "Bindery must leave the Usenet integrations disabled by default"
   },
   {
-    # Restores the substring search the line-oriented read replaced, which is the
-    # form a second live assignment satisfies while only one may exist.
+    # A substring search is satisfied by a second live assignment.
     name: "a CPU set rendered twice",
     break: lambda { |root|
       mutate_text(root, "roles/bindery/templates/env.j2",
@@ -419,8 +371,7 @@ STATIC_ROWS = [
     expects: "Bindery must verify its effective project CPU policy"
   },
   {
-    # Bindery applies its schema migrations on startup, so by the time the new
-    # image answers the old schema is already gone.
+    # Bindery migrates its schema on startup.
     name: "a pre-upgrade state guard that runs after the deployment",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -432,9 +383,7 @@ STATIC_ROWS = [
     expects: "the Bindery pre-upgrade state guard must run before the deployment"
   },
   {
-    # POST /backup is VACUUM INTO: the database runs in WAL mode, so a plain file
-    # copy silently omits what is still in the WAL, and a request that tolerates
-    # anything but 201 lets the play proceed with no backup.
+    # POST /backup is VACUUM INTO: a plain copy of the WAL-mode database omits the WAL.
     name: "a pre-upgrade backup that tolerates a failed VACUUM INTO",
     break: lambda { |root|
       role_tasks(root, "roles/bindery/tasks/pre_upgrade_backup.yml") do |document|
@@ -459,8 +408,7 @@ STATIC_ROWS = [
     expects: "the Bindery pre-upgrade backup must be gated on an actual image change"
   },
   {
-    # #858: under --check `current` is the release the run replaces, so a review
-    # that read the pin there reported no backup for a bump the live run backs up.
+    # Under --check `current` is the release the run replaces (#858).
     name: "a pre-upgrade backup that reads current's pin under --check",
     break: lambda { |root|
       role_tasks(root, "roles/bindery/tasks/pre_upgrade_backup.yml") do |document|
@@ -525,9 +473,7 @@ STATIC_ROWS = [
     expects: "the Bindery Usenet integrations must be gated on the transport flag"
   },
   {
-    # An author arrives with a null destination root and a null profile, and its
-    # books then read `wanted` and `monitored` while being ungrabbable. Deleting
-    # the include restores exactly the #425 state.
+    # Restores the #425 state: authors with no destination root or profile.
     name: "author reconciliation dropped from the role",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -539,9 +485,7 @@ STATIC_ROWS = [
     expects: "Bindery must reconcile its author destinations"
   },
   {
-    # A destination root is needed to hold a book whatever the transport is, so
-    # gating this the way the Usenet integrations are gated would leave every
-    # author on a Mac or a sandbox permanently unrepaired.
+    # A destination root is needed whatever the transport, including on a Mac.
     name: "author reconciliation gated on the transport flag",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -554,9 +498,7 @@ STATIC_ROWS = [
     expects: "the Bindery author reconciliation must not be gated on the transport flag"
   },
   {
-    # Writing every author rather than the incomplete ones reports `changed` on
-    # every converge, which is the idempotence requirement rather than a style
-    # preference.
+    # Would report `changed` on every converge.
     name: "an author repair that writes every author",
     break: lambda { |root|
       role_tasks(root, "roles/bindery/tasks/reconcile_authors.yml") do |document|
@@ -569,9 +511,7 @@ STATIC_ROWS = [
     expects: "the Bindery author repair must write only the authors missing a value"
   },
   {
-    # Overwriting a set value fights a deliberate per-author choice -- one
-    # author's books into a different root, or onto the strict E-Book profile --
-    # on every single converge.
+    # Fights a deliberate per-author choice on every converge.
     name: "an author repair that overwrites a chosen destination root",
     break: lambda { |root|
       mutate_text(root, "roles/bindery/tasks/reconcile_authors.yml",
@@ -581,8 +521,7 @@ STATIC_ROWS = [
     expects: "the Bindery author repair must leave a set rootFolderId alone"
   },
   {
-    # Whether you follow an author is yours. A role that wrote it every converge
-    # would re-follow an author you unfollowed, on the next tick, for ever.
+    # Following an author is the user's; this would re-follow on every tick.
     name: "an author repair that also owns the monitored state",
     break: lambda { |root|
       mutate_text(root, "roles/bindery/tasks/reconcile_authors.yml",
@@ -618,9 +557,8 @@ STATIC_ROWS = [
     },
     expects: "the Bindery downloadclient row must be repaired rather than duplicated"
   },
-  # The Audiobookshelf handoff. Every row here breaks something that leaves the
-  # converge green, the container healthy and the import successful: the scan
-  # that never fires is logged at WARN inside Bindery and read by nothing.
+  # The Audiobookshelf handoff: each break leaves the converge green; the missed
+  # scan is only logged at WARN inside Bindery.
   {
     name: "a declared Audiobookshelf reconciliation that is gone",
     break: ->(root) { FileUtils.rm(File.join(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml")) },
@@ -639,8 +577,7 @@ STATIC_ROWS = [
     expects: "Bindery must reconcile its Audiobookshelf integration unconditionally"
   },
   {
-    # A repair that resends the credential would have to re-mint one on every
-    # converge, because neither side can read back what it is holding.
+    # Neither side can read back the credential, so resending means re-minting.
     name: "an Audiobookshelf repair that rewrites the credential",
     break: lambda { |root|
       role_tasks(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml") do |document|
@@ -655,9 +592,7 @@ STATIC_ROWS = [
     expects: "the Bindery Audiobookshelf repair must not touch the credential"
   },
   {
-    # Upstream keeps every field the request omits, so a remap set by hand in
-    # the web interface survives every converge the repository is supposed to
-    # make authoritative.
+    # Upstream keeps every omitted field, so a hand-set remap would survive.
     name: "an Audiobookshelf repair that leaves the path remap alone",
     break: lambda { |root|
       role_tasks(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml") do |document|
@@ -700,8 +635,7 @@ STATIC_ROWS = [
     expects: "the Bindery Audiobookshelf repair must be gated on drift alone"
   },
   {
-    # `create` stores `!!req.body.isActive`, so an omitted flag mints a key that
-    # authenticates nothing and reports no error at creation time.
+    # `create` stores `!!req.body.isActive`: an omitted flag mints a dead key.
     name: "an Audiobookshelf key minted inactive",
     break: lambda { |root|
       role_tasks(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml") do |document|
@@ -716,8 +650,7 @@ STATIC_ROWS = [
     expects: "the Audiobookshelf key Bindery mints must be active and never expire"
   },
   {
-    # An expiry deactivates the key on first use past it, and the handoff then
-    # fails at WARN forever with nothing else changed.
+    # An expiry deactivates the key on first use past it.
     name: "an Audiobookshelf key minted with an expiry",
     break: lambda { |root|
       role_tasks(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml") do |document|
@@ -732,10 +665,8 @@ STATIC_ROWS = [
     expects: "the Audiobookshelf key Bindery mints must be active and never expire"
   },
   {
-    # The order this role shipped with until #446. A mint or a declare that
-    # fails after the revoke lands leaves Bindery holding a credential
-    # Audiobookshelf no longer honours, and both presence reads still say
-    # present, so only the probe catches it -- one poller tick later.
+    # The pre-#446 order: a failure after the revoke leaves Bindery holding a
+    # dead key that both presence reads still call present.
     name: "an Audiobookshelf key revoked before its replacement exists",
     break: lambda { |root|
       role_tasks(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml") do |document|
@@ -757,9 +688,7 @@ STATIC_ROWS = [
              "replacement is declared"
   },
   {
-    # Retiring last is only safe because the loop names the keys read before the
-    # mint. A list re-read afterwards holds the row this run just created, so
-    # the retirement revokes the credential it declared one task earlier.
+    # A list re-read after the mint holds the new row, which retirement then revokes.
     name: "an Audiobookshelf retirement that re-reads the key list after minting",
     break: lambda { |root|
       mutate_text(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml",
@@ -769,8 +698,7 @@ STATIC_ROWS = [
     expects: "the Audiobookshelf retirement must loop over the keys read before the mint"
   },
   {
-    # Without it the dead row survives, the mint makes a second of that name and
-    # the ambiguity refusal fails every converge after this one.
+    # The dead row survives and the ambiguity refusal fails every later converge.
     name: "an Audiobookshelf retirement that is gone",
     break: lambda { |root|
       role_tasks(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml") do |document|
@@ -783,8 +711,7 @@ STATIC_ROWS = [
     expects: "Bindery must retire the superseded Audiobookshelf API key"
   },
   {
-    # The two presence reads cannot tell a working pair from a restored database
-    # on either side: neither end reveals what it holds.
+    # Neither end reveals what it holds, so presence cannot prove a working pair.
     name: "a mint decision that trusts the two presence reads alone",
     break: lambda { |root|
       mutate_text(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml",
@@ -854,9 +781,8 @@ STATIC_ROWS = [
     expects: "Bindery must refuse an ambiguous prowlarr match"
   },
   {
-    # The login limiter records five failures per fifteen minutes per IP and then
-    # answers 429 to the correct password too, so a deliberately wrong password
-    # anywhere in this role locks the platform out of its own service.
+    # The login limiter (5 failures / 15 min / IP) then refuses the correct
+    # password too, locking the platform out.
     name: "a probe submitting a password the platform expects to be refused",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -899,9 +825,7 @@ STATIC_ROWS = [
     expects: "the Bindery credential shape guard must use no_log"
   },
   {
-    # The recoverability guard's whole purpose is the diagnostic it prints when
-    # Bindery will not hand over its API key, and a redacted assert prints its
-    # fail_msg beside a result of {"censored": ...}.
+    # A redacted assert prints its fail_msg beside {"censored": ...}.
     name: "a recoverability guard redacted away",
     break: lambda { |root|
       role_tasks(root, "roles/bindery/tasks/resolve_api_key.yml") do |document|
@@ -916,9 +840,7 @@ STATIC_ROWS = [
     expects: "the Bindery recoverability guard must stay readable"
   },
   {
-    # #510. Removing the Bindery database destroys every author, book, quality
-    # profile and setting it holds, and it was offered against a container that
-    # was answering nothing at all.
+    # #510: deleting the database destroys every author, book and setting.
     name: "a destructive remedy offered whatever the probes saw",
     break: lambda { |root|
       role_tasks(root, "roles/bindery/tasks/resolve_api_key.yml") do |document|
@@ -930,9 +852,7 @@ STATIC_ROWS = [
     expects: "only a refused Bindery identity may propose removing its database"
   },
   {
-    # A classification blind to the login status cannot separate a tripped login
-    # limiter from an identity the platform did not author, which is the pair
-    # that decides whether the destructive remedy is even offered.
+    # Without it a tripped login limiter looks like a foreign identity.
     name: "an API-key classification blind to the administrator login",
     break: lambda { |root|
       role_tasks(root, "roles/bindery/tasks/resolve_api_key.yml") do |document|
@@ -945,8 +865,6 @@ STATIC_ROWS = [
     expects: "the Bindery API-key classification must read bindery_identity_login.status"
   },
   {
-    # The classification is what every refusal message below it is chosen by, so
-    # a run that cannot see which state it was in falls back to asserting one.
     name: "an API-key refusal that classifies nothing",
     break: lambda { |root|
       role_tasks(root, "roles/bindery/tasks/resolve_api_key.yml") do |document|
@@ -957,9 +875,7 @@ STATIC_ROWS = [
     expects: "the Bindery API-key refusal must classify what its probes saw"
   },
   {
-    # #509. Nothing else in the run says a word about a container that runs and
-    # never serves: the deploy reported changed=0 against one in `Restarting`
-    # and the play walked on for three days.
+    # #509: a container stuck in `Restarting` reported changed=0 for three days.
     name: "a deployment nothing checks the container state after",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -969,9 +885,7 @@ STATIC_ROWS = [
     expects: "Bindery must detect and then refuse a container that runs but never serves"
   },
   {
-    # A container in `Restarting` still appears in `docker container ls`, so a
-    # verdict placed after the CPU verification lets that verification pass
-    # against a container that is crash-looping.
+    # A `Restarting` container still appears in `docker container ls`.
     name: "a container health verdict that runs after the CPU verification",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -984,8 +898,6 @@ STATIC_ROWS = [
     expects: "the Bindery container health passes must bracket the force-recreate"
   },
   {
-    # A first pass that refuses is a first pass the recreate below never runs
-    # after, which is refuse-only wearing the shape of a recovery.
     name: "a container health detection that refuses before the recreate can run",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -996,8 +908,6 @@ STATIC_ROWS = [
     expects: "the Bindery container health detection must not refuse before the recreate"
   },
   {
-    # A second pass that refuses nothing is a converge that goes green on a
-    # container the recreate failed to repair.
     name: "a container health verdict that refuses nothing",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1008,8 +918,7 @@ STATIC_ROWS = [
     expects: "the Bindery container health verdict must be the one that refuses"
   },
   {
-    # The project label is what selects the containers. Aimed at another project
-    # it inspects nothing and passes against any state at all.
+    # Aimed at another project it inspects nothing and passes against any state.
     name: "a container health pass aimed at another Compose project",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1020,9 +929,8 @@ STATIC_ROWS = [
     expects: "each Bindery container health pass must name the deployed Compose project"
   },
   {
-    # Compose fails a crash-looping container with "container bindery is
-    # unhealthy" and a parse error with something else entirely. Throwing the
-    # message away turns the second kind into the first.
+    # Compose reports a crash loop as "container bindery is unhealthy"; dropping
+    # the message makes a parse error look like one.
     name: "a deployment whose own failure message is thrown away",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1045,9 +953,6 @@ STATIC_ROWS = [
     expects: "the Bindery container health detection must be handed the deployment's own failure"
   },
   {
-    # A recreate that failed for a reason other than the container coming back
-    # stuck leaves nothing for the verdict to find, so its message is the only
-    # thing that can still fail the run.
     name: "a recreate whose own failure message is thrown away",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1070,9 +975,6 @@ STATIC_ROWS = [
     expects: "the Bindery container health verdict must be handed the recreate's own failure"
   },
   {
-    # A refusal that does not say the retry was already spent reads as a service
-    # needing one more converge, which is the dishonesty the bound exists to
-    # avoid.
     name: "a verdict that never says the retry was spent",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1083,8 +985,7 @@ STATIC_ROWS = [
     expects: "the Bindery container health verdict must say whether a recreate was spent"
   },
   {
-    # THE idempotence property. Unconditional, this replaces the Bindery stack
-    # on every five-minute converge for ever.
+    # Unconditional, this replaces the stack on every five-minute converge.
     name: "a force-recreate spent on every converge",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1095,9 +996,7 @@ STATIC_ROWS = [
     expects: "the Bindery force-recreate must be conditional on a container actually being stuck"
   },
   {
-    # --no-deps is what keeps a recovery from recreating a database beside the
-    # application that wedged. Bindery has one service today; naming them is
-    # what keeps that true when it gains another.
+    # --no-deps keeps a recovery from recreating a database beside the application.
     name: "a force-recreate that takes a stack's dependencies with it",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1121,7 +1020,6 @@ STATIC_ROWS = [
     expects: "Bindery must deploy through docker_compose_v2"
   },
   {
-    # The bound is one per converge, and it is a bound because it is one task.
     name: "a force-recreate spent twice in one converge",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1155,8 +1053,6 @@ STATIC_ROWS = [
     expects: "Bindery verification must read /system/storage"
   },
   {
-    # The refusal probe is a credential-free read of a protected route, never a
-    # deliberately wrong password.
     name: "an anonymous refusal probe that carries a credential after all",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1185,8 +1081,7 @@ STATIC_ROWS = [
     expects: "the Bindery anonymous refusal probe must stay readable"
   },
   {
-    # Five failures per fifteen minutes per IP, so a second login attempt in the
-    # verification path is a fifth of the platform's own budget.
+    # Five failures per fifteen minutes per IP.
     name: "verification spending a second login attempt",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1215,12 +1110,8 @@ STATIC_ROWS = [
     expects: "must accept any status and defer to the assertion"
   },
   {
-    # The service's own EXDEV probe, and the only reading that tells one bind
-    # mount per host share from one per directory.
-    # The break renames the fact to `hard_linkable` rather than to
-    # `hardlinkable_probe`: the contract's condition test is `include?`, so a
-    # superstring still satisfies it and a plant that appends plants nothing.
-    # That is #293's substring class, met in a break rather than in a guard.
+    # The contract tests with `include?`, so the break renames the fact rather
+    # than appending to it (#293).
     name: "an outcome assertion that stops asserting the hardlinkable layout",
     break: lambda { |root|
       mutate_text(root, "roles/bindery/tasks/main.yml", "hardlinkable", "hard_linkable",
@@ -1229,10 +1120,7 @@ STATIC_ROWS = [
     expects: "Bindery verification must assert the hardlinkable staging layout"
   },
   {
-    # The acquisition half of the verification, and the one #425 proved was
-    # missing: indexers arrive from Prowlarr's own sync rather than from this
-    # platform, so a sync that returned nothing leaves every search empty while
-    # every other reading stays correct.
+    # #425: indexers come from Prowlarr's sync, so an empty sync empties every search.
     name: "an outcome assertion that stops asserting the synced indexers",
     break: lambda { |root|
       mutate_text(root, "roles/bindery/tasks/main.yml",
@@ -1241,9 +1129,7 @@ STATIC_ROWS = [
     expects: "Bindery verification must assert the synced indexers"
   },
   {
-    # Gating on the transport flag alone asserts a synced indexer on every host
-    # that *could* have one, including every sandbox, which converges the whole
-    # acquisition stack against an empty `media_arr_indexers` on purpose.
+    # Sandboxes converge with an empty `media_arr_indexers` on purpose.
     name: "an indexer assertion gated on the transport rather than the declaration",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1257,9 +1143,7 @@ STATIC_ROWS = [
     expects: "the Bindery indexer assertion must be gated on the declared indexers"
   },
   {
-    # An author with a null destination root holds books that read `wanted` and
-    # `monitored` and can never be grabbed, because there is nowhere to put a
-    # release. Nothing else in the block can see it.
+    # Such an author's books read `wanted` but can never be grabbed.
     name: "an outcome assertion that stops asserting the author destinations",
     break: lambda { |root|
       mutate_text(root, "roles/bindery/tasks/main.yml",
@@ -1278,8 +1162,7 @@ STATIC_ROWS = [
     expects: "Bindery verification must assert the author quality profiles"
   },
   {
-    # `Any` rather than a narrower profile: an author here routinely has both an
-    # ebook and an audiobook edition and each narrower profile refuses one.
+    # An author often has both an ebook and an audiobook edition.
     name: "an author default pinned to a profile that refuses one media type",
     break: lambda { |root|
       edit_yaml(root, "roles/bindery/defaults/main.yml") do |document|
@@ -1334,10 +1217,8 @@ def static_failures(program, rows = STATIC_ROWS)
 end
 
 # --- runtime layer ---------------------------------------------------------
-#
-# The runtime half takes NO arguments and reads no repository file: every input
-# arrives in the environment. So the sandbox is entirely environment plus PATH
-# stubs plus one HTTP fixture, and each row moves exactly one of them.
+# The runtime half reads only its environment, so each row moves one env var,
+# PATH stub or HTTP fixture answer.
 
 ADMIN = "nasadmin"
 PASSWORD = "bindery-contract-admin-password"
@@ -1422,12 +1303,8 @@ def build_runtime_sandbox(root, options)
   [bin, docker_root]
 end
 
-# HttpFixtureSupport writes its third answer element straight into the
-# Content-Type header line, so a response that must also carry Set-Cookie --
-# Bindery's login is the only one in this contract -- states both headers there.
-# That is a deliberate use of the seam rather than a second copy of the fixture
-# server: the alternative is the thirty-five lines of TCPServer the helper exists
-# to prevent.
+# HttpFixtureSupport writes its third answer element into the Content-Type header
+# line, so a response that also needs Set-Cookie states both headers there.
 def with_headers(*headers)
   headers.join("\r\n")
 end
@@ -1440,9 +1317,7 @@ def storage_document(options)
       "writable" => options.fetch(:unwritable_dir) != name }
   end
   document = { "dirs" => dirs, "hardlinkable" => options.fetch(:hardlinkable) }
-  # The key is OMITTED rather than set to nil when there is no reason: the
-  # program reads it with `fetch(..., "no reason reported")`, and a present-but-
-  # null key returns nil, which is a different outcome from an absent one.
+  # OMITTED rather than nil: the program's `fetch` default applies only when absent.
   reason = options.fetch(:hardlink_reason)
   document["hardlinkReason"] = reason if !options.fetch(:hardlinkable) && reason
   document
@@ -1475,9 +1350,7 @@ def runtime_responder(options)
       rows = options.fetch(:users) || [{ "username" => ADMIN, "role" => "admin" }]
       [200, JSON.generate(rows)]
     when %w[GET /api/v1/rootfolder]
-      # The anonymous read and the keyed read are the same route: the contract
-      # reads it once with no credential, expecting a refusal, and once with the
-      # key. Splitting on the header is what keeps those two rows independent.
+      # The same route is read anonymously (expecting a refusal) and with the key.
       next [options.fetch(:anonymous_root_code), "[]"] if key.nil?
       next [options.fetch(:roots_code), "{}"] unless options.fetch(:roots_code) == 200
 
@@ -1515,8 +1388,7 @@ RUNTIME_ROWS = [
     expects: "the Bindery container could not be inspected"
   },
   {
-    # The image is distroless and has no shell, so this is also the proof that
-    # the probe is the binary's own subcommand rather than a CMD-SHELL.
+    # Distroless: the probe must be the binary's own subcommand.
     name: "a container Docker calls unhealthy",
     given: { health: "unhealthy" },
     expects: "the Bindery container is not healthy"
@@ -1527,8 +1399,7 @@ RUNTIME_ROWS = [
     expects: "Bindery left its first-run setup open"
   },
   {
-    # local-only grants administrator to every private-network peer with no
-    # credential, and an administrator may read the API key in clear.
+    # local-only makes every private-network peer an administrator, who can read the key.
     name: "authentication left at local-only",
     given: { auth_mode: "local-only" },
     expects: "Bindery does not enforce authentication"
@@ -1564,8 +1435,7 @@ RUNTIME_ROWS = [
     expects: "Bindery issued no session to the vault administrator"
   },
   {
-    # The seed is honoured only while the stored key is absent, so a deployment
-    # that converged is holding exactly the key the vault authored.
+    # The seed is honoured only while the stored key is absent.
     name: "an API key the vault did not author",
     given: { config_api_key: "0" * 32 },
     expects: "Bindery is not holding the vault-authored API key"
@@ -1587,8 +1457,6 @@ RUNTIME_ROWS = [
     expects: "Bindery refused to list its destination roots"
   },
   {
-    # An audiobook root that fell back to the ebook root is the single-library
-    # collapse the design forbids, and it looks identical everywhere else.
     name: "an audiobook root collapsed onto the ebook root",
     given: { root_paths: [EBOOKS_ROOT, EBOOKS_ROOT] },
     expects: "Bindery does not own exactly the declared ebook and audiobook roots"
@@ -1599,17 +1467,14 @@ RUNTIME_ROWS = [
     expects: "Bindery reports no audiobook directory"
   },
   {
-    # The image is distroless, starts as no one privileged and has no shell, so
-    # it cannot repair a wrongly owned directory.
+    # The distroless, unprivileged image cannot repair ownership.
     name: "a staging directory the container cannot write",
     given: { unwritable_dir: "download" },
     expects: "Bindery cannot write its download directory at /data/books/.acquisition/usenet/ebooks"
   },
   {
-    # rename(2) and link(2) refuse to cross a mount boundary even when both sides
-    # are one filesystem, so mounting a library and its staging directory
-    # separately makes every import a full byte copy while every other reading
-    # stays identical. The reason string is the diagnosis.
+    # rename(2) and link(2) refuse to cross a mount boundary even on one filesystem,
+    # so every import becomes a byte copy. The reason string is the diagnosis.
     name: "a staging layout that cannot hardlink into its libraries",
     given: { hardlinkable: false },
     expects: "Bindery cannot hardlink from its staging roots into its libraries: " \
@@ -1621,8 +1486,7 @@ RUNTIME_ROWS = [
     expects: "no reason reported"
   },
   {
-    # An absent row already reads as enabled, so the deployed state is not wrong
-    # -- but it is unowned, and a manual disable would then stick for ever.
+    # An absent row reads as enabled but is unowned, so a manual disable would stick.
     name: "an auto-grab row that is absent altogether",
     given: { settings: { "telemetry.enabled" => "false" } },
     expects: "Bindery does not pin autoGrab.enabled to true"
@@ -1633,8 +1497,7 @@ RUNTIME_ROWS = [
     expects: "Bindery does not pin telemetry.enabled to false"
   },
   {
-    # A repeated create answers 201 and adds a second row rather than failing, so
-    # the count is the property a converged reconciliation has to hold.
+    # A repeated create answers 201 and adds a second row.
     name: "duplicate Prowlarr instances",
     given: { usenet: true, prowlarr_rows: [prowlarr_row, prowlarr_row] },
     expects: "Bindery holds duplicate Prowlarr instances"
@@ -1665,8 +1528,7 @@ RUNTIME_ROWS = [
     expects: "Bindery does not reach Prowlarr by its control-network alias"
   },
   {
-    # Credentials are write-only in every response, so a stored key can be proved
-    # present and never proved correct.
+    # Credentials are write-only, so a key can be proved present, never correct.
     name: "a Prowlarr instance holding no credential",
     given: { usenet: true, prowlarr_rows: [prowlarr_row.merge("apiKeyConfigured" => false)] },
     expects: "Bindery stored no Prowlarr credential"
@@ -1741,22 +1603,16 @@ def runtime_failures(program, rows = RUNTIME_ROWS)
 end
 
 # --- wrapper layer ---------------------------------------------------------
-#
-# tests/contracts/bindery.sh resolves both programs from its own checkout rather
-# than from the tree it inspects, so a copy of the three files into a throwaway
-# tests/contracts/ is a whole working contract. That is what lets a row point
-# PLATFORM_CONTRACT_REPO_DIR at a broken fixture and still exercise the real
-# wrapper.
+# bindery.sh resolves both programs from its own checkout, so a copy of the three
+# files is a working contract that can point at a broken fixture.
 
 def with_contract_copy(static: File.read(STATIC_PROGRAM), runtime: File.read(RUNTIME_PROGRAM),
                        wrapper: File.read(CONTRACT), &block)
   with_contract_sandbox("bindery", wrapper, { "static" => static, "runtime" => runtime }, &block)
 end
 
-# Reports what each program saw on stdin and what the caller still has, which is
-# the only way the redirect is observable: neither real program reads stdin, so
-# the redirect is what keeps that true rather than something that changes an
-# outcome today.
+# Reports what each program saw on stdin and what the caller still has; neither
+# program reads stdin today, so the redirect is only observable this way.
 def stdin_failures(wrapper_source: File.read(CONTRACT))
   with_contract_copy(static: STDIN_PROBE, wrapper: wrapper_source) do |contract|
     stdin_probe_failures(contract, %w[static], { "PLATFORM_CONTRACT_REPO_DIR" => ROOT },
@@ -1764,8 +1620,7 @@ def stdin_failures(wrapper_source: File.read(CONTRACT))
   end
 end
 
-# The runtime half is reached by `exec`, so its redirect needs its own probe: the
-# static half must succeed first for the exec to happen at all.
+# The runtime half is reached by `exec`, after the static half succeeds.
 def runtime_stdin_failures(wrapper_source: File.read(CONTRACT))
   with_contract_copy(runtime: STDIN_PROBE, wrapper: wrapper_source) do |contract, copy_root|
     environment = {
@@ -1774,10 +1629,8 @@ def runtime_stdin_failures(wrapper_source: File.read(CONTRACT))
       "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(copy_root, "vault-password"),
       "PLATFORM_DOCKER_ROOT" => File.join(copy_root, "docker")
     }
-    # The probing shell's own status is `cat`'s, not the probe's, so it says
-    # nothing here. The probe's marker appearing IS the proof that the exec was
-    # reached; and run mode must not have printed the static success line, which
-    # is what exiting at the mode gate would look like.
+    # The shell's status is `cat`'s; the probe's marker proves the exec was reached,
+    # and the static success line must not have printed.
     stdin_probe_failures(contract, %w[run], environment, prefix: "runtime stdin",
                          subject: "the runtime program", status: false) do |output|
       if output.include?(SUCCESS_LINE)
@@ -1787,10 +1640,8 @@ def runtime_stdin_failures(wrapper_source: File.read(CONTRACT))
   end
 end
 
-# The run-mode environment contract. Each name is refused with the WRAPPER'S OWN
-# message, and that is what is asserted -- never the shell's own wording, which
-# differs between bash ("parameter null or not set") and dash ("parameter not set
-# or null"), and never the line number, which any edit to this file moves.
+# Each name is refused with the wrapper's own message, never the shell's wording
+# (bash and dash differ) or a line number.
 REQUIRED_RUN_ENV = %w[
   PLATFORM_CONTRACT_VAULT_FILE
   PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
@@ -1807,17 +1658,12 @@ def run_env_failures(wrapper_source: File.read(CONTRACT))
       "PLATFORM_DOCKER_ROOT" => File.join(copy_root, "docker"),
       "PLATFORM_MAC_VAULT_FILE" => nil,
       "PLATFORM_MAC_VAULT_PASSWORD_FILE" => nil,
-      # Unparseable on purpose, and it changes no outcome in the unmutated rows
-      # because the ${VAR:?} guard fires before the port is ever read. It bounds
-      # the SELF-TEST rows: a plant that turns one of those guards into `:=`
-      # lets the run reach the real runtime program, whose readiness loop then
-      # polls a closed port for 120 seconds. Two such plants took the self-test
-      # from forty seconds to four minutes before this line existed.
+      # Unparseable on purpose: bounds self-test plants that turn a `:?` guard into
+      # `:=`, which would otherwise poll a closed port for 120 seconds.
       "PLATFORM_BINDERY_PORT" => "not-a-number"
     }
     REQUIRED_RUN_ENV.each do |name|
-      # Set to "" rather than deleted: ${VAR:?} refuses null as well as unset,
-      # and a deleted key would pass silently for a developer who exports it.
+      # "" rather than deleted: ${VAR:?} refuses null too, and a developer may export it.
       stdout, stderr, status = Open3.capture3(full.merge(name => ""), contract, "run")
       output = stdout + stderr
       failures << "run env: #{name} unset was accepted" if status.success?
@@ -1825,9 +1671,7 @@ def run_env_failures(wrapper_source: File.read(CONTRACT))
                   "#{output.strip.inspect}" unless output.include?("#{name} is required")
     end
 
-    # The Mac fallback branch, which nothing else in the suite reaches:
-    # tests/mac/run.sh exports PLATFORM_MAC_VAULT_FILE, and the `:=` pair above
-    # the `:?` pair is what lets it stand in for the contract names.
+    # The Mac fallback branch: tests/mac/run.sh exports PLATFORM_MAC_VAULT_FILE.
     stdout, stderr, status = Open3.capture3(
       full.merge("PLATFORM_CONTRACT_VAULT_FILE" => nil,
                  "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => nil,
@@ -1847,10 +1691,8 @@ end
 def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
-    # `verify` was in this list until #773 made it a mode. It is replaced rather
-    # than dropped -- a refused-mode sweep that shrinks every time a mode is
-    # added stops covering the guard -- and `upgrade` is a deliberate near-miss
-    # of the lane that introduced the new arms.
+    # `verify` became a mode in #773 and was replaced, not dropped, so the sweep
+    # does not shrink; `upgrade` is a deliberate near-miss.
     %w[upgrade drift notify --platform].each do |mode|
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, mode
@@ -1862,10 +1704,8 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
         (stdout + stderr).include?(MODE_REFUSAL)
     end
 
-    # The other direction, which a refusal sweep alone cannot give: the two modes
-    # the upgrade lane dispatches must reach PAST the mode guard. They still fail
-    # here -- no vault file, no running service -- but with the environment
-    # requirement's own diagnostic rather than with the guard's exit 2.
+    # The upgrade lane's modes must pass the mode guard, failing instead on the
+    # environment requirement rather than exit 2.
     %w[seed verify].each do |mode|
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, mode
@@ -1903,9 +1743,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
       (stdout + stderr).include?("missing services/bindery/compose.mac.yml")
   end
 
-  # The branch every deployment actually takes: PLATFORM_CONTRACT_REPO_DIR unset,
-  # so the programs and the inspected tree both come from the script's own
-  # checkout. That is the only path in production.
+  # The production path: PLATFORM_CONTRACT_REPO_DIR unset, one checkout for both.
   with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => nil }, contract, "static"
@@ -1927,10 +1765,8 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures
 end
 
-# The two-roots property, stated as an OUTCOME rather than as the wrapper's text.
-# These are the invariant rows: a before/after capture diff can only show
-# differences, so the property that must stay identical is invisible in it. They
-# are asserted here instead, and they are what would have caught #251's defect.
+# The two-roots property as an outcome; a capture diff cannot show what must
+# stay identical (#251).
 def two_roots_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   with_contract_copy(wrapper: wrapper_source) do |contract|
@@ -1947,11 +1783,8 @@ def two_roots_failures(wrapper_source: File.read(CONTRACT))
         stdout.include?(SUCCESS_LINE)
     end
 
-    # The other direction, and it is the opposite polarity to the Kapowarr
-    # contract's: bindery-static.rb carries its own flatten_tasks and takes the
-    # inspected tree as an argument, so a tree whose tests/policy_support.rb
-    # raises must be IGNORED. An export added here -- copying the Kapowarr
-    # wrapper's shape without checking -- would make this row fail.
+    # Opposite to Kapowarr: bindery-static.rb carries its own flatten_tasks, so a
+    # raising tests/policy_support.rb in the inspected tree must be ignored.
     Dir.mktmpdir("nas-platform-bindery-support.") do |raw|
       inspected = File.realpath(raw)
       build_fixture_repository(inspected)
@@ -1970,13 +1803,8 @@ def two_roots_failures(wrapper_source: File.read(CONTRACT))
   failures
 end
 
-# The runtime program's own two-roots row, and it needs a layer of its own.
-# runtime_stdin_failures points PLATFORM_CONTRACT_REPO_DIR at the contract copy,
-# so the checkout and the inspected tree ARE the same directory there and a
-# rerooted $runtime_program resolves to the same file: the self-test reported
-# that plant as "accepted" until this row existed, which is hazard 1 caught by
-# the harness rather than argued about. Here the inspected tree is a separate
-# fixture with no tests/contracts at all, so a reroot cannot find the program.
+# The runtime program's own two-roots row: the inspected tree here has no
+# tests/contracts, so a rerooted $runtime_program cannot be found.
 def runtime_program_root_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   with_contract_copy(runtime: STDIN_PROBE, wrapper: wrapper_source) do |contract|
@@ -2061,8 +1889,7 @@ PROGRAM_MUTATIONS = [
   {
     label: "the exactly-once CPU set read",
     program: :static,
-    # Restores the substring search the line-oriented read replaced, which is the
-    # form a second live assignment satisfies while only one may exist.
+    # A substring search is satisfied by a second live assignment.
     from: 'env_assignments.select { |name, _value| name == "PLATFORM_CONTAINER_CPUSET" } ==
       [["PLATFORM_CONTAINER_CPUSET", "{{ platform_effective_container_cpuset }}"]]',
     to: 'File.read(File.join(root, "roles/bindery/templates/env.j2"))
@@ -2410,13 +2237,8 @@ PROGRAM_MUTATIONS = [
     to: "true",
     rows: ["an OPDS catalogue served to an unauthenticated caller"]
   },
-  # No plant for the issued-session check, deliberately. Removing `cookie.empty?`
-  # cannot be isolated: the very next read sends the empty cookie to
-  # /api/v1/auth/config, which cannot then return the vault-authored key, so the
-  # break is caught by "Bindery is not holding the vault-authored API key"
-  # instead of by its own sentence. That redundancy is the program's, not this
-  # test's, and a row expecting the downstream sentence would freeze it. The
-  # unmutated row above still pins the right diagnostic, which is what matters.
+  # No plant for `cookie.empty?`: removing it is caught downstream by "not holding
+  # the vault-authored API key", and a row pinning that would freeze the redundancy.
   {
     label: "the vault-authored API key check",
     program: :runtime,
@@ -2534,8 +2356,7 @@ PROGRAM_MUTATIONS = [
   }
 ].freeze
 
-# The wrapper's own regressions. Each is a line that changes no outcome today,
-# which is exactly why it needs a plant rather than a passing contract.
+# The wrapper's regressions: lines that change no outcome today.
 WRAPPER_MUTATIONS = [
   {
     label: "a dropped stdin redirect on the static half",
@@ -2584,11 +2405,8 @@ WRAPPER_MUTATIONS = [
 if ARGV.include?("--self-test")
   mismatches = []
 
-  # Every plant is prepared on the main thread, before the pool. `plant` and
-  # `rows_named` abort with a sentence naming what they could not find, and an
-  # abort inside a worker raises SystemExit there: the thread dies without
-  # recording its result and the pool's own `collected.fetch` then reports a
-  # KeyError instead of that sentence.
+  # Plants are prepared before the pool: `abort` in a worker raises SystemExit
+  # there, and the pool reports a KeyError instead of the sentence.
   program_cases = PROGRAM_MUTATIONS.map do |mutation|
     canonical = mutation.fetch(:program) == :static ? STATIC_PROGRAM : RUNTIME_PROGRAM
     rows = mutation.fetch(:program) == :static ? STATIC_ROWS : RUNTIME_ROWS

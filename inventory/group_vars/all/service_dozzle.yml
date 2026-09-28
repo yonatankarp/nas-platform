@@ -2,41 +2,18 @@
 # dozzle: non-secret settings and the storage this service owns.
 # Cross-cutting facts live in main.yml; secrets in vault_dozzle.yml.
 
-# vault_dozzle_alert_relay_token has no default here. It used to be derived from
-# another service's publish token; since #558 the operator authors it in
-# vault_dozzle.yml, and that encrypted file is its only source. vault_contract
-# requires it, so a vault without it is refused by name before any mutation.
+# vault_dozzle_alert_relay_token has no default: vault_dozzle.yml is its only source (#558).
 
-# The one home for the alert relay's listener port, and shared inventory rather
-# than a roles/dozzle default because Beszel converges before Dozzle and must
-# name the same relay: a role default is in scope only inside its own role. None
-# of its consumers may carry their own copy: the relay process and the Compose
-# healthcheck both read it as ALERT_RELAY_PORT out of the rendered environment
-# file, and the managed dispatcher URL interpolates it directly. The relay
-# publishes no host port, so this is a container-internal port only.
+# Shared inventory rather than a role default because Beszel converges before
+# Dozzle and must name the same relay. Container-internal port only.
 dozzle_alert_relay_port: 8081
 
-# The one home for golem's Dozzle agent, as Dozzle's own `address|name` form.
-# golem-platform publishes the agent on golem's tailnet address only, because
-# Docker-published ports bypass golem's ufw; its copy of this address lives in
-# that repository's inventory. The hub and the agent authenticate each other
-# with vault_dozzle_agent_certificate / vault_dozzle_agent_private_key, a pair
-# this platform generates: the image's built-in pair is public and is no
-# authentication at all. What an unreachable agent costs is a warning in
-# Dozzle's log; the hub still starts and serves the NAS's own containers.
-#
-# Alerts do not follow the logs across, measured against v11.1.2's source: the
-# hub's notification manager watches only its local clients, and it pushes its
-# rules and dispatchers -- the relay's bearer header included -- to every agent,
-# which evaluates them itself and POSTs from its own host. On golem alert-relay
-# does not resolve and the relay publishes no port, so golem's containers are
-# shown but do not page, and golem holds the relay token in memory regardless.
-# Paging for them needs the relay reachable from golem, which is a new NAS
-# endpoint and a decision of its own.
+# golem's Dozzle agent, as `address|name`. Published on golem's tailnet address
+# only (Docker ports bypass ufw). The hub pushes alert rules to the agent, which
+# evaluates them itself; alert-relay is unreachable from golem, so golem never pages.
 dozzle_remote_agent: "100.104.25.70:7007|golem"
 
 nas_storage_dozzle:
-  # Dozzle authentication and notification configuration.
   - path: "{{ nas_docker_root }}/dozzle/data"
     owner: "{{ nas_uid }}"
     group: "{{ nas_gid }}"

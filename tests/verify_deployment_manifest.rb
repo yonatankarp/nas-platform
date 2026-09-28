@@ -103,10 +103,8 @@ source_manifest = load_yaml.call(source_manifest_path)
 implemented = source_manifest.fetch("services").select do |service|
   %w[implemented accepted].include?(service.fetch("status"))
 end
-# The controller files deployment_bundle ships into the release outside any
-# service directory, in the order manifest.yml.j2 renders them. Each carries the
-# noun its own refusals are phrased with, because a diagnostic that named a
-# generic "platform input" would not tell an operator which file drifted.
+# Controller files shipped outside any service directory, in manifest.yml.j2
+# order, each with the noun its refusals name it by.
 PLATFORM_INPUTS = [
   ["config/media-acquisition.yml", "acquisition catalog"],
   ["config/managed-user-capabilities.yml", "managed-user capability register"]

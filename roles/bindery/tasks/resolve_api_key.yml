@@ -1,13 +1,6 @@
 ---
-# Bindery keeps its API key in its own database and hands it to nobody except an
-# authenticated administrator. Three states are possible and all three are
-# resolved without ever submitting a password the platform expects to be wrong:
-# the login limiter is per IP at five failures in fifteen minutes and, once
-# tripped, answers 429 to the correct password too, so a deliberate wrong-guess
-# probe would lock the platform out of its own service.
-#
-# Redacted: the request carries the vault-authored key and the response returns
-# the deployed one in clear.
+# Never submit a password expected to be wrong: once five failures in fifteen
+# minutes trip the per-IP limiter, it answers 429 to the correct password too.
 - name: Probe the vault-authored Bindery API key
   ansible.builtin.uri:
     url: "{{ bindery_api }}/auth/config"
@@ -22,13 +15,9 @@
   check_mode: false
   no_log: true
 
-# The seed is a one-way door: BINDERY_API_KEY is honoured only while the stored
-# key is absent, and the only route that changes one afterwards mints a random
-# value. So a key rotated in the web interface cannot be pushed back, and the
-# single recovery path is the vault-authored administrator reading it out. This
-# runs only when the seeded key has already stopped working, which is why it can
-# afford the one login attempt it costs.
-# Redacted: the request is the vault-authored administrator identity.
+# BINDERY_API_KEY seeds only an absent key and later changes mint a random
+# value, so the administrator reading it out is the only recovery. Runs only
+# when the seeded key already fails, so it can afford the one login.
 - name: Recover the deployed Bindery API key with the vault administrator
   ansible.builtin.uri:
     url: "{{ bindery_api }}/auth/login"
@@ -45,7 +34,6 @@
   no_log: true
   when: bindery_key_probe.status | default(0) | int != 200
 
-# Redacted: the response returns the deployed API key in clear.
 - name: Read the deployed Bindery API key from the recovered session
   ansible.builtin.uri:
     url: "{{ bindery_api }}/auth/config"
@@ -61,7 +49,6 @@
   no_log: true
   when: bindery_identity_login.status | default(0) | int == 200
 
-# Redacted: the resolved value is the application's own authorization secret.
 - name: Resolve the effective Bindery API key
   ansible.builtin.set_fact:
     bindery_api_key: >-
@@ -70,44 +57,17 @@
          else (bindery_session_config.json | default({})).apiKey | default('') }}
   no_log: true
 
-# Redacted because it names the resolved key, and reduced to a bare boolean so
-# that everything downstream of it can stay readable. A failing assert under
-# no_log still prints its fail_msg, but its result is replaced by
-# {"censored": ...}, so a redacted refusal is one that can no longer say which
-# of the states below it was in.
+# Reduced to a boolean so downstream refusals need no no_log and can say which
+# state failed.
 - name: Resolve whether the Bindery API key was recovered
   ansible.builtin.set_fact:
     bindery_key_recovered: "{{ bindery_api_key | length > 0 }}"
   no_log: true
 
-# Credential-free: every input is an HTTP status code, and no response body,
-# header or vault value reaches it.
-#
-# The three probes above accept every status and defer, which is what lets this
-# tell four states apart that a bare `did a key come back` collapses into one.
-# The order is deliberate rather than incidental:
-#
-#   * A negative status is what ansible.builtin.uri reports for a connection
-#     that never completed -- measured as -1 against a closed port on
-#     ansible-core 2.21.3. It is tested FIRST because it is evidence about the
-#     service and no evidence at all about the credentials, and because a
-#     crash-looping container answers some requests in this file and not others:
-#     the readiness gate in main.yml demands a 200 from /health with no retries
-#     left over, so reaching this file at all means Bindery was serving a moment
-#     ago. A probe that then failed to connect means it stopped between two
-#     requests, which is exactly what a container in `Restarting` does. That is
-#     #509, not a credential.
-#   * 429 next, because Bindery's login limiter is per IP at five failures in
-#     fifteen minutes and answers 429 to the correct password once tripped, so a
-#     429 says nothing about whether the submitted identity is right.
-#   * 401/403 on BOTH probes is the only state in which the identity claim is
-#     established, and it is the only one that may propose the destructive
-#     remedy.
-#   * Anything else reports the statuses rather than inferring a cause.
-#
-# A status of 0 means the request was never made: the login is skipped when the
-# key probe already answered 200, and the session read is skipped when the login
-# did not.
+# Status codes only. Order matters: a negative status (connection never
+# completed) is service evidence, not credential evidence (#509); 429 says
+# nothing about the identity; only 401/403 on both probes establishes it. 0
+# means never requested.
 - name: Classify the Bindery API key resolution
   ansible.builtin.set_fact:
     bindery_key_resolution: >-
@@ -125,16 +85,8 @@
             and (bindery_identity_login.status | default(0) | int) in [401, 403]
          else 'unexpected' }}
 
-# One assert, four messages, and the remedy is chosen by the cause rather than
-# offered whatever the cause was. Until #510 this refusal asserted a single
-# cause -- an identity the platform did not author -- and proposed removing the
-# Bindery database, which destroys every author, book and setting it holds. It
-# printed that against a container that was answering nothing at all, and sent
-# two people down a credentials investigation while the actual fault was a
-# container that had exited 144 times.
-#
-# Not redacted, deliberately: every value it renders is a status code, and the
-# diagnostic is the entire reason the task exists.
+# The remedy follows the cause: only a rejected identity may propose deleting
+# the database (#510). Not redacted: it renders only status codes.
 - name: Refuse an unresolved Bindery API key
   vars:
     bindery_key_probe_status: "{{ bindery_key_probe.status | default(-1) | int }}"
@@ -181,17 +133,8 @@
         rather than inferring a credential fault from them; none of them
         establishes one, and nothing here justifies touching the Bindery
         database.
-  # `.get` with a fallback, not a subscript, and the reason is not defensive
-  # style. Ansible finalizes a task's arguments BEFORE it decides the assertion
-  # passed, so fail_msg is rendered on the success path too -- where
-  # bindery_key_resolution is 'resolved', which this table deliberately has no
-  # entry for. A subscript there raised "object of type 'dict' has no attribute
-  # 'resolved'" and killed the run at task 658 of the bindery lane, on the
-  # happy path, after every assertion before it had passed.
-  #
-  # The fallback also covers a state the classification could grow that nobody
-  # adds a row for: it names the state rather than rendering empty, so the next
-  # such omission reads as itself instead of as a blank refusal.
+  # `.get`, not a subscript: fail_msg is rendered on the success path too, where
+  # 'resolved' has no entry, and unknown future states name themselves.
   ansible.builtin.assert:
     that:
       - bindery_key_resolution == 'resolved'

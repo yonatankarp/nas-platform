@@ -1,13 +1,5 @@
 ---
-# The two Seerr identities are identities that already exist. The owner is the
-# vault Jellyfin administrator the bootstrap signed in as; the second household
-# member is the single vault_managed_jellyfin_users entry. Seerr needs no
-# administrator password of its own, because the owner row carries a Jellyfin
-# user type and no local password at all.
-#
-# GUIDs are discovered rather than guessed: the role matches on username and
-# never hardcodes one.
-#
+# Identities are matched on username; GUIDs are never hardcoded.
 # Redacted: the request carries the API key.
 - name: Read the Jellyfin users Seerr can see
   ansible.builtin.uri:
@@ -55,11 +47,7 @@
       or service-administration bit.
   when: ansible_check_mode
 
-# The import is cleanly idempotent: it creates only when absent, and the
-# response body is the list of newly created users. Measured — run 1 returned
-# one entry and run 2 returned an empty list, both with status 201, so
-# changed_when cannot key on the status code.
-#
+# Always 201; the body lists only newly created users, so changed_when keys on it.
 # Redacted: the request carries the API key.
 - name: Import the Seerr household identities from Jellyfin
   ansible.builtin.uri:
@@ -100,12 +88,7 @@
          | rejectattr('permissions', 'equalto', seerr_household_permissions)
          | map(attribute='id') | list }}
 
-# The owner is asserted rather than written, and the difference is not
-# stylistic: POST /api/v1/user/1/settings/permissions answers 403 "You do not
-# have permission to modify this user" — measured — because the owner row
-# cannot be modified through that route at all. The bootstrap already set ADMIN,
-# and ADMIN short-circuits every permission check, so the single bit is the
-# whole of what the owner needs.
+# Asserted, not written: the API answers 403 to any change of user 1.
 - name: Require the exact Seerr owner permissions
   ansible.builtin.assert:
     that:
@@ -120,9 +103,7 @@
       be undone in the application — and its absence is the takeover window
       standing open.
 
-# No quota means the quota fields left null, and posting zeroes stores them as
-# null because zero means unlimited. The defaults are already null, so this
-# asserts the design's clause rather than writing it.
+# No quota = null fields, already the default, so asserted rather than written.
 - name: Require unlimited Seerr request quotas
   ansible.builtin.assert:
     that:
@@ -149,10 +130,7 @@
     - ansible_check_mode
     - seerr_permission_repairs | length > 0
 
-# The write is POST, not PUT: PUT on this route answers 405. Read, compare,
-# write only on drift, because the write is unconditional and returns 200 with
-# the same body on an identical request.
-#
+# POST (PUT answers 405), only on drift since it always returns 200.
 # Redacted: the request carries the API key.
 - name: Repair the Seerr household permissions
   ansible.builtin.uri:

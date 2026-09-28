@@ -1,23 +1,15 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Shared fixtures and helpers for the media acquisition reconciliation checks.
-#
-# The reconciliation contract is exercised by several test files rather than
-# one, because tests/validate-policy.sh runs its checks concurrently and a
-# single file made the gate's wall time the sum of every relationship instead
-# of the slowest one. Everything they share lives here; each file owns its own
-# relationships and its own failure list.
+# Shared fixtures and helpers for the media acquisition reconciliation checks,
+# split across several test files so the concurrent gate is not serialised.
 # frozen_string_literal: true
 
 require "fileutils"
 require "digest"
 require "digest/md5"
-# require "digest" only installs an autoload for Digest::SHA256. The case
-# workers touch it for the first time concurrently, and autoloading it from
-# several threads at once raises "Digest::Base cannot be directly inherited"
-# on the Ruby the runners carry. Loading it here means no thread ever
-# triggers that autoload.
+# Load Digest::SHA256 eagerly: concurrent first use of its autoload raises
+# "Digest::Base cannot be directly inherited".
 require "digest/sha2"
 require "json"
 require "open3"
@@ -61,22 +53,13 @@ CONFIGARR_QUALITY_DEFINITION_SHA256 = {
   "radarr" => "bca0755668a9f55fa512a7e5d2d0e8000ed4339ac4ccd996bb8be0efa6dbef3c",
   "sonarr" => "2e2c0fe9dcbf148d9282cee4ff76c1e56e096d10965aafaa12f39890a063782b"
 }.freeze
-# These three bound how long the harness waits before calling something hung.
-# They are not performance assertions: every behavioural property has its own
-# check. tests/validate-policy.sh runs its checks concurrently, so on a
-# four-core CI runner a play that takes four seconds unloaded can take far
-# longer, and deadlines tuned on an idle workstation reported
-# "Ansible playbook exceeded 30.0s deadline" for work that was merely waiting
-# for a core. They are generous enough that only a genuine hang trips them, and
-# overridable for anyone who wants them strict.
+# Hang detectors, not performance assertions: generous because the gate runs
+# checks concurrently, and overridable.
 PLAYBOOK_TIMEOUT_SECONDS = Float(ENV.fetch("ACQUISITION_PLAYBOOK_TIMEOUT", "120"))
 PROCESS_TERM_GRACE_SECONDS = Float(ENV.fetch("ACQUISITION_PROCESS_TERM_GRACE", "5"))
 SOCKET_DEADLINE_SECONDS = Float(ENV.fetch("ACQUISITION_SOCKET_DEADLINE", "10"))
-# Releasing a blocked reader is a shutdown and a thread wake-up, which is work
-# measured in milliseconds. The bound is separate from the read deadline above
-# and far below it on purpose: when the two were the same, a reader that was
-# never woken and instead sat out its full read deadline still finished inside
-# the allowance, so the fixture looked healthy while doing nothing of the kind.
+# Far below the read deadline on purpose, so a reader never woken cannot pass by
+# sitting out its read deadline.
 SHUTDOWN_DEADLINE_SECONDS = Float(ENV.fetch("ACQUISITION_SHUTDOWN_DEADLINE", "3"))
 CONFIGARR_MUTATION_PATTERN = ENV["ACQUISITION_CONFIGARR_MUTATION_PATTERN"]
 PROFILE_TREE_ID_TARGETED_ONLY =
@@ -100,13 +83,8 @@ SECRET_TASK_FILES = [
   [ARR_TASKS, "verify.yml"],
   [DOWNLOADER_TASKS, "verify.yml"]
 ].freeze
-# Tasks in the acquisition path that render nothing private, so redacting them
-# would only hide which condition failed. Every entry is an unlooped `assert` or
-# a `set_fact` over pinned role files, projections and hashes: `assert` prints
-# the source text of the failing condition and its untemplated message, never a
-# value, and none of these facts derive from a credential-bearing read. The
-# files whose basename contains "fingerprint" have no escape hatch here and are
-# redacted regardless.
+# Tasks that render nothing private, so redaction would only hide which condition
+# failed. Files named "fingerprint" are redacted regardless.
 NON_SECRET_TASK_NAMES = [
   "Reconcile each Prowlarr full-sync application",
   "Record a bounded Configarr execution summary",
@@ -128,20 +106,11 @@ NON_SECRET_TASK_NAMES = [
   "Refuse ambiguous Servarr SABnzbd ownership",
   "Resolve Servarr SABnzbd name and URL ownership before mutation",
   "Mark downloader relationship verification successful",
-  # The undeclared half of the owned-server pair. Its declared sibling is
-  # redacted because its `vars` carry the whole vault-authored provider
-  # connection; this one names only the server list and the platform's own
-  # server name, so redacting it would hide which of its four conditions failed
-  # and nothing else. `tests/policy_vault_test.rb` refuses the redaction from
-  # the other direction.
+  # Names only server names, unlike its redacted declared sibling;
+  # tests/policy_vault_test.rb refuses the redaction.
   "Verify SABnzbd owns no Usenet server while none is declared",
-  # Both read a Bazarr 406 body that echoes the credential it refused, and both
-  # render only the setting name dynaconf named -- everything before the first
-  # " must ". Redacting them would censor exactly that name and put the run back
-  # to reporting "Status code was 406 and not [204]" and nothing else, which is
-  # the failure they exist to replace. `tests/policy_vault_test.rb` requires an
-  # assertion that can render no credential to stay unredacted for the same
-  # reason.
+  # Render only the setting name before " must ", never the echoed credential;
+  # redacting them would reduce the failure to a bare status code.
   "Refuse a rejected Bazarr connection request by the setting it named",
   "Refuse rejected Bazarr provider requests by the settings they named"
 ].freeze
@@ -152,10 +121,8 @@ VERIFICATION_GATE_SUCCESS_TASK_NAME = "Mark Arr reconciliation verification succ
 DOWNLOADER_GATE_INIT_TASK_NAME = "Initialize downloader relationship verification gate"
 DOWNLOADER_GATE_SUCCESS_TASK_NAME = "Mark downloader relationship verification successful"
 
-# The complementary pair that verifies the one Usenet server the platform owns.
-# Exactly one of the two runs, and which one is the operator's declaration
-# rather than anything the platform decides, so both names are pinned: a run
-# where neither executed is the shape that used to pass over zero servers.
+# Exactly one of the pair runs, decided by the operator's declaration; both names
+# are pinned so a run where neither executed cannot pass.
 DOWNLOADER_DECLARED_SERVER_TASK_NAME = "Verify the operator-owned SABnzbd Usenet server"
 DOWNLOADER_UNDECLARED_SERVER_TASK_NAME =
   "Verify SABnzbd owns no Usenet server while none is declared"
@@ -168,11 +135,7 @@ FINGERPRINT_FILE_SAFETY_PREDICATES = {
   "group" => "not item.stat.exists or item.stat.gid | int == nas_gid | int"
 }.freeze
 
-# The subset the downloaders role loads and records, pinned whole and by exact
-# equality. It is deliberately not an `include?`: the loader and the recorder
-# must agree with each other and with the role, and a key silently added to or
-# dropped from either is exactly what this is here to catch. Widening it is a
-# deliberate edit, which is how this list last changed.
+# Pinned whole by exact equality: loader, recorder and role must agree.
 DOWNLOADER_FINGERPRINT_SUBSET = %w[
   servarr_sabnzbd
   downloaders_usenet_server
@@ -209,9 +172,8 @@ FINGERPRINT_INPUT_BY_KIND = {
 }.freeze
 FINGERPRINT_BASELINE_CACHE = { "enabled" => false }
 ARR_COMPOSE_FILES = { "arr" => ["compose.yml"] }.freeze
-# Read from the Compose definition that deploys Configarr, exactly as the
-# fingerprint task does. Restating the pin here let the fixture agree with the
-# drift instead of catching it when Renovate bumped only the Compose line.
+# Read from Compose like the fingerprint task, so a Renovate bump cannot be
+# agreed with instead of caught.
 CONFIGARR_IMAGE = YAML.safe_load_file(
   File.join(ROOT, "services", "arr", ARR_COMPOSE_FILES.fetch("arr").first),
   aliases: true
@@ -323,18 +285,14 @@ end.freeze
 SABNZBD = {
   "config" => {
     "misc" => { "complete_dir" => "/data/complete", "download_dir" => "/data/incomplete" },
-    # `script` is served because the role verifies it, and it is the gate that
-    # decides whether a completed download is scanned before the arr imports it.
-    # A fixture that omitted it would let the category assertion pass against a
-    # SABnzbd running no post-processing script at all.
+    # The role verifies `script`; omitting it would pass against a SABnzbd with no
+    # post-processing gate.
     "categories" => [
       { "name" => "movies", "dir" => "movies", "script" => "clamav_gate.py" },
       { "name" => "series", "dir" => "series", "script" => "clamav_gate.py" }
     ],
-    # The password is ten asterisks because that is what `get_config` returns for
-    # it, which is the whole reason the reconciliation projects it out and the
-    # fingerprint carries it instead. A fixture that returned the real one would
-    # let a comparison pass here that cannot pass against SABnzbd.
+    # `get_config` masks the password as ten asterisks, which is why the
+    # fingerprint carries it instead.
     "servers" => [
       {
         "name" => "usenet", "displayname" => "usenet",
@@ -350,11 +308,7 @@ SABNZBD = {
   }
 }.freeze
 
-# SABnzbd creates the `servers` section only once a server exists, so a target
-# that has never had a Usenet provider answers `get_config` with no `servers` key
-# at all. That is what the NAS actually looks like, and it is a different fixture
-# from an empty list: the undeclared verification has to survive the key being
-# absent, not merely empty.
+# SABnzbd has no `servers` key until a server exists: absent, not empty.
 SABNZBD_WITHOUT_SERVERS = {
   "config" => SABNZBD.fetch("config").reject { |key, _value| key == "servers" }
 }.freeze
@@ -374,9 +328,7 @@ INDEXER_DECLARATION = {
 }.freeze
 INDEXER = {
   "id" => 31, "name" => "Fixture Indexer", "enable" => true, "priority" => 17,
-  # Prowlarr validates AppProfileId above zero and returns it on every read, so
-  # a fixture without it is a Prowlarr that cannot exist. 1 is the Standard sync
-  # profile the declaration above defaults to.
+  # Prowlarr always returns AppProfileId above zero; 1 is the Standard profile.
   "appProfileId" => 1, "redirect" => true,
   "implementation" => "Newznab", "implementationName" => "Newznab",
   "configContract" => "NewznabSettings", "tags" => [3, 9],
@@ -568,11 +520,8 @@ CONFIGARR = %w[radarr sonarr].each_with_index.to_h do |service, index|
   }]
 end.freeze
 
-# Every owned Configarr field, paired with a mutation that breaks it.
-# Two checks read this: the fast one proves each field is visible in the owned
-# projection, and the fixture proves a representative of each class drives a
-# real reconciliation. Both must see the same table or the fast check would be
-# proving coverage of fields the contract does not actually own.
+# Every owned Configarr field paired with a breaking mutation; the fast coverage
+# test and the fixture must read the same table.
 def configarr_owned_field_mutations
   mutations = {}
   %w[radarr sonarr].each do |service|
@@ -624,9 +573,8 @@ def configarr_owned_field_mutations
 
     CONFIGARR.dig(service_name, "qualitydefinition").each_with_index do |definition, index|
       quality_name = definition.dig("quality", "name")
-      # Configarr v1.28.0 only applies the three numeric TRaSH leaves in this
-      # bundled configuration. Identity metadata, title and weight are retained
-      # in the verified state hash and fail closed if they drift.
+      # Configarr v1.28.0 applies only the three numeric TRaSH leaves; the rest is
+      # in the verified state hash and fails closed on drift.
       definition_mutations = if QUALITY_SIZES.fetch(service_name).key?(quality_name)
         {
         "minSize" => ->(item) { item["minSize"] = item["minSize"].nil? ? 1 : item["minSize"] + 1 },
@@ -688,8 +636,7 @@ def configarr_owned_field_mutations
       state.dig("configarr", service, "config/naming")[field] = nil
     end
   end
-  # Whole resources going missing, rather than a field changing value. The
-  # projection has to notice an absence as readily as a difference.
+  # Whole resources going missing: absence must be noticed like a difference.
   %w[radarr sonarr].each do |service|
     mutations["#{service}.missing quality profile among unrelated profiles"] = lambda do |state|
       state.dig("configarr", service, "qualityprofile").reject! do |profile|
@@ -717,21 +664,9 @@ def configarr_owned_field_mutations
   mutations
 end
 
-# The class a mutation belongs to, for the fixture's purposes.
-#
-# Every mutation in the table proves the same pure property, that the field is
-# visible in the owned projection, and
-# tests/acquisition_configarr_field_coverage_test.rb proves that for all of them
-# in about a second. What only a real play can show is that a difference reaches
-# Configarr as exactly one write and is recorded, and that is a property of the
-# code path rather than of the field: every quality-definition size travels the
-# same path as every other. The fixture therefore runs one field per class per
-# service instead of all of them.
-#
-# Classes are cut where the projection's code path forks, not by resource: a
-# custom format's own fields and its specification's fields are projected by
-# different functions, and a nullable naming value is the branch that a present
-# one is not.
+# The class a mutation belongs to. The fast test proves every field is visible;
+# the fixture runs one representative per class, cut where the projection's
+# code path forks.
 def configarr_mutation_class(label)
   service, resource, *rest = label.split(".")
   detail = case resource
@@ -751,8 +686,7 @@ def configarr_mutation_class(label)
   "#{service}.#{detail}"
 end
 
-# One mutation per class, chosen by the table's own order so the selection is
-# deterministic and a reordering shows up as a diff rather than as drift.
+# One mutation per class, in table order, so selection is deterministic.
 def configarr_representative_mutations(mutations)
   seen = {}
   mutations.each do |label, mutate|
@@ -1554,9 +1488,7 @@ def quality_item_tree_projection(items, label)
     kind = quality.is_a?(Hash) ? "quality" : "group"
     name = identity.fetch("name")
     identifier = identity.fetch("id")
-    # Radarr and Sonarr number the built-in "Unknown" quality 0 and start
-    # generated quality groups at 1000, so a quality may legitimately be 0
-    # while a group may not.
+    # Quality 0 is the built-in "Unknown"; generated groups start at 1000.
     minimum_identifier = kind == "quality" ? 0 : 1
     unless identifier.is_a?(Integer) && identifier >= minimum_identifier
       raise "#{label} #{kind} #{name.inspect} ID must be " \
@@ -1701,9 +1633,8 @@ def configarr_expected_with_server_ids(settings, desired)
       assignment["name"] == CONFIGARR_FORMAT_NAME
     end
     expected_assignment["format"] = current_format.fetch("id")
-    # reset_unmatched_scores is enabled in the pinned Configarr policy. The
-    # resulting score relationship therefore owns one assignment for every
-    # current custom-format identity, with zero for every unmatched format.
+    # reset_unmatched_scores is on, so every custom format gets an assignment,
+    # zero when unmatched.
     expected_profile["formatItems"] = settings.fetch(service).fetch("customformat").map do |format|
       if format["name"] == CONFIGARR_FORMAT_NAME
         deep_copy(expected_assignment)
@@ -1816,15 +1747,8 @@ class AcquisitionApi
         begin
           next if client.closed?
 
-          # Shut the socket down before closing it. Closing alone relies on the
-          # interpreter waking a thread that is blocked in IO.select on that
-          # descriptor, which is not something every platform delivers: a CI
-          # runner left the reader waiting out its full ten-second deadline
-          # while the same close returned instantly on a developer machine.
-          # A shutdown is the kernel telling the descriptor there is nothing
-          # more to read, so the select returns readable, the read reports end
-          # of file, and the server thread unwinds through the EOFError that
-          # serve already treats as an ordinary end.
+          # Shut down before closing: a close alone does not reliably wake a thread
+          # blocked in IO.select on every platform.
           begin
             client.shutdown(Socket::SHUT_RDWR)
           rescue Errno::ENOTCONN, Errno::EBADF, Errno::EINVAL, IOError
@@ -2025,12 +1949,8 @@ class AcquisitionApi
       send_json(client, 200, public_bazarr_languages)
     when ["POST", "/api/system/settings"]
       request["form"] = URI.decode_www_form(body)
-      # Bazarr answers a settings POST its dynaconf schema refuses with 406 and a
-      # body that echoes the offending value, which for an API key is the
-      # credential itself. Nothing is applied on that path, exactly as Bazarr
-      # applies nothing. The refusal is decided from the submitted form, the way
-      # every other matcher in this fixture is, so a case can refuse the
-      # connection request and the provider requests independently.
+      # A refused settings POST answers 406 echoing the value (for an API key, the
+      # credential) and applies nothing, as Bazarr does.
       rejection = @bazarr_settings_rejection&.call(request.fetch("form"))
       if rejection
         send_response(client, 406, rejection, "text/plain")
@@ -2489,10 +2409,7 @@ def base_variables(port)
     "vault_downloaders_sabnzbd_api_key" => SECRETS.fetch("sab_api"),
     "vault_downloaders_sabnzbd_admin_username" => SECRETS.fetch("sab_username"),
     "vault_downloaders_sabnzbd_admin_password" => SECRETS.fetch("sab_password"),
-    # Typed, not stringy, because these four stopped being vault strings in #298
-    # and inventory carries them as an integer port, an integer connection count
-    # and a boolean flag. A probe that fed strings here would not exercise the
-    # `| int` the role renders ssl through.
+    # Typed, as inventory carries them since #298, so the role's `| int` is exercised.
     "media_usenet_provider" => {
       "host" => "news.fixture.invalid", "port" => 563,
       "connections" => 8, "ssl" => true
@@ -2501,10 +2418,7 @@ def base_variables(port)
     "vault_downloaders_sabnzbd_server_password" => SECRETS.fetch("usenet_password"),
     "downloaders_sabnzbd_api" => "http://127.0.0.1:#{port}/sabnzbd/api",
     "downloaders_sabnzbd_categories" => { "movies" => "movies", "series" => "series" },
-    # Supplied explicitly like every other role default this probe needs: the
-    # probe builds its own variable set rather than loading roles/downloaders's
-    # defaults, so a name it omits is undefined rather than defaulted, and the
-    # expression reading it fails under a no_log that hides which one it was.
+    # Probes load no role defaults, so every name used must be supplied.
     "downloaders_sabnzbd_category_script" => "clamav_gate.py",
     "downloaders_sabnzbd_server_name" => "usenet",
     "downloaders_sabnzbd_owned_server" => {
@@ -2523,9 +2437,7 @@ def base_variables(port)
     "media_arr_automatic_rename_enabled" => false,
     "media_usenet_enabled" => true,
     "platform_runtime_dir" => nil, "role_path" => File.join(ROOT, "roles", "arr"),
-    # The desired-input fingerprint reads the Configarr image out of the
-    # Compose definition this names, so every probe kind needs the selection
-    # deployment_bundle publishes in production, not only the Configarr one.
+    # Every probe kind needs the Compose selection deployment_bundle publishes.
     "platform_service_compose_files" => ARR_COMPOSE_FILES,
     "nas_uid" => Process.uid, "nas_gid" => Process.gid,
     "arr_installed_reconciliation_fingerprints" => {
@@ -2542,26 +2454,14 @@ def base_variables(port)
   variables
 end
 
-# The role derives this in `roles/downloaders/defaults/main.yml`, and a probe
-# loads no role defaults, so the derivation is repeated rather than hardcoded:
-# a case that leaves the provider undeclared gets the matching gate on its own,
-# and a case that declares one keeps the declared one. Hardcoding `true` here
-# would leave the undeclared branch unreachable by any probe.
-#
-# It reads the policy host rather than a vault key since #298, which is the
-# whole gain from that move: "is a provider declared?" needs no credential.
+# Repeats roles/downloaders' derivation (probes load no defaults) so undeclared
+# cases stay reachable; reads the host, not a vault key (#298).
 def usenet_provider_declared?(variables)
   !variables.fetch("media_usenet_provider").fetch("host").to_s.empty?
 end
 
-# What an operator who has bought no Usenet subscription declares. The role reads
-# the host to decide, and refuses a half-declared provider, so both halves move
-# together and this is the only shape of "no provider".
-#
-# The port, connection count and TLS flag keep their values rather than being
-# emptied: they are typed policy with defaults now (#298), and the role treats an
-# empty host as undeclared without consulting them. Emptying them would be a
-# shape the filter rejects rather than the shape a real target has.
+# What an operator with no Usenet subscription declares: an empty host. Typed
+# fields keep their values; the role ignores them when the host is empty.
 UNDECLARED_USENET_PROVIDER = {
   "media_usenet_provider" => {
     "host" => "", "port" => 563, "connections" => 8, "ssl" => true
@@ -2612,12 +2512,8 @@ def write_fake_configarr_module(collection_root)
   )
 end
 
-# The probes lift task files out of the roles and run them in a synthetic play,
-# so Ansible loads neither inventory/group_vars/all/main.yml nor the defaults
-# beside those tasks, and every timing keyword the tasks read would be undefined.
-# The values are taken from the real files rather than restated here, so a probe
-# waits exactly as production does and a retimed platform stays one edit. A probe
-# that declares its own value still wins, because these are merged underneath it.
+# Probes load neither group_vars nor role defaults, so timing values are read
+# from the real files and merged underneath each probe's own.
 TIMED_ROLES = %w[arr downloaders].freeze
 TIMING_VARIABLE = /\A(?:platform|#{TIMED_ROLES.join('|')})_\w*(?:_retries|_delay|_wait_timeout)\z/
 HARNESS_TIMING_DEFAULTS = (
@@ -2819,13 +2715,8 @@ def desired_fingerprint_values(variables)
       "username" => variables.fetch("vault_downloaders_sabnzbd_admin_username"),
       "password" => variables.fetch("vault_downloaders_sabnzbd_admin_password")
     },
-    # Mirrors the role's dict literal, key order included: `ansible_json`
-    # serializes in insertion order, so a reordering here would hash differently
-    # from Jinja and the digests would never match.
-    # Two fields since #298, matching the role: the four non-credential values are
-    # compared field by field against the API read-back, so only the password --
-    # which SABnzbd masks on read-back -- needs a digest to be noticed, and the
-    # username rides along as the other half of the account.
+    # Mirrors the role's dict literal including key order: `ansible_json` hashes
+    # in insertion order. Only username and password since #298.
     "downloaders_usenet_server" => {
       "username" => variables.fetch("vault_downloaders_sabnzbd_server_username"),
       "password" => variables.fetch("vault_downloaders_sabnzbd_server_password")
@@ -2877,10 +2768,7 @@ def seed_fingerprint_baseline(runtime, variables, kind:, state:)
       mode: "w", perm: 0o600
     )
   end
-  # Not in FINGERPRINT_FILE_BY_KIND because it is not a probe kind: no probe
-  # reconciles the Usenet server on its own. It is one of the two digests the
-  # downloaders role records, so a baseline without it leaves a verify-only run
-  # comparing a real desired digest against an absent installed one.
+  # One of the two digests the downloaders role records, though not a probe kind.
   File.write(
     File.join(directory, DOWNLOADER_USENET_FINGERPRINT_FILE),
     "#{desired.fetch('downloaders_usenet_server')}\n", mode: "w", perm: 0o600
@@ -2918,8 +2806,7 @@ def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprint
     runtime ||= File.join(directory, "runtime")
     FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
     variables = base_variables(api.port).merge(extra_variables)
-    # After the merge, so a case that empties the provider credentials cannot
-    # leave the gate behind claiming a provider is still declared.
+    # After the merge, so emptied credentials cannot leave the gate claiming a provider.
     variables["downloaders_usenet_provider_declared"] = usenet_provider_declared?(variables)
     if (fixture_servarr_instance = variables.delete("fixture_servarr_instance"))
       variables["arr_servarr_instance"] = fixture_servarr_instance.merge(
@@ -3100,15 +2987,9 @@ def mutation_requests(api, matcher)
   end
 end
 
-
-
 module CaseIteration
-  # Drives independent cases through the same worker pool. Defined on the
-  # collection so a loop becomes parallel by changing `each` to `each_case`,
-  # without relocating a receiver that is often a multi-line literal. The block
-  # takes the case, its own failure list, and declares as block-locals every
-  # name the body assigns that also exists in the enclosing scope — otherwise
-  # the workers would share those temporaries.
+  # Runs independent cases through the worker pool; the block must declare as
+  # block-locals every name it assigns that exists in the enclosing scope.
   def each_case(failures, &block)
     in_parallel_cases(failures, to_a, &block)
   end

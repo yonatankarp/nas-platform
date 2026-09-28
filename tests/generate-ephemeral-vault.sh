@@ -87,21 +87,9 @@ validate_output_path() {
     die 'refusing to overwrite ephemeral credential material'
 }
 
-# Credential groups a target may legitimately leave undeclared, and which this
-# generator can therefore be asked not to stand in for.
-#
-# A group qualifies because `inventory/group_vars/all/main.yml` carries every key
-# in it as an empty string and `OPTIONAL_KEY_GROUPS` in
-# filter_plugins/vault_credential_schema.py suppresses that group's shape rules
-# when all of them are empty. Both halves are what make the undeclared state
-# valid rather than a failed converge, and tests/policy_vault_test.rb pins this
-# list against the filter's tuple so a group added there cannot be missed here.
-#
-# The reason this exists at all: a fixture that supplies a credential can never
-# catch a bug about that credential's absence. Standing in for all six Usenet
-# provider values unconditionally is what let #274 merge with every lane green
-# and then fail the NAS's next converge in `vault_contract`, before any service
-# could deploy (#295).
+# Credential groups a target may leave undeclared (empty in group_vars and
+# suppressed by OPTIONAL_KEY_GROUPS; tests/policy_vault_test.rb pins the two).
+# A fixture that always supplies a credential cannot catch its absence (#295).
 optional_credential_groups='usenet'
 
 # Which of them this run leaves undeclared. Set by --undeclared.
@@ -127,11 +115,7 @@ select_undeclared_credential_groups() {
   case $requested in
     ,*|*,|*,,*) die 'malformed undeclared credential group list' ;;
   esac
-  # Split on the comma with `tr` rather than by reassigning IFS, so nothing has
-  # to be restored around the validation the loop body performs. `set -f` is
-  # still needed: an unquoted expansion is what splits the list, and a group
-  # spelled `*` would otherwise reach the known-group check as a directory
-  # listing rather than as the one word it is.
+  # `set -f` so a group spelled `*` is one word, not a directory listing.
   set -f
   for requested_group in $(printf '%s' "$requested" | tr ',' ' '); do
     set +f
@@ -146,36 +130,9 @@ select_undeclared_credential_groups() {
   set +f
 }
 
-# Letters and digits only, thirty-two of them, which is exactly the alphabet
-# and length generate-secrets.yml mints a real credential with
-# (`chars=ascii_letters,digits length=32`). That agreement is the point, not a
-# coincidence: a fixture drawn from a wider alphabet than the platform's own
-# generator makes CI test values an operator's vault can never hold, and the
-# lane then fails -- or passes -- for a reason production does not share.
-#
-# This was `openssl rand -base64 24`, whose alphabet adds `+` and `/`, and the
-# `/` is what made the seafile lane fail intermittently and unrecoverably.
-# Measured against the pinned seafileltd/seafile-pro-mc:13.0.27:
-# seahub/seahub/settings.py:1261 builds its Django cache location by
-# interpolating REDIS_PASSWORD into a URL raw --
-# f'redis://{(":" + redis_pwd + "@") if redis_pwd else ""}{host}:{port}' -- with
-# no percent-encoding, so a password containing `/` ends the URL's netloc early.
-# The bundled redis-py 6.2.0 then raises ValueError('Port could not be cast to
-# integer value as ...') out of Redis.from_url, every seahub request that
-# touches the cache answers 500, and the container never goes healthy. A full
-# local stack reproduced it exactly -- the same `curl: (22) The requested URL
-# returned error: 500` health log CI recorded -- and the same stack with a
-# letters-and-digits password of the same length was healthy in thirteen
-# seconds. It was intermittent because it needed a draw containing `/`, and
-# unrecoverable because the force-recreate redraws nothing.
-#
-# So this is not a Seafile workaround: it is the fixture agreeing with the
-# generator. roles/seafile refuses the shape outright, for an operator who
-# authors the value by hand.
-#
-# Ninety-six bytes in, thirty-two characters out: base64 yields 128 characters,
-# `tr -dc` keeps the ~97% that are alphanumeric, and the draw stays uniform
-# because discarding symbols from a uniform alphabet is rejection sampling.
+# 32 letters and digits, the alphabet generate-secrets.yml mints with, so CI
+# never tests values a real vault cannot hold (a `/` once broke a URL-built
+# password). base64 then `tr -dc` is rejection sampling, so the draw stays uniform.
 random_password() {
   openssl rand -base64 96 2>/dev/null | tr -dc 'A-Za-z0-9' | cut -c1-32
 }
@@ -186,15 +143,9 @@ bcrypt_password() {
     htpasswd -nBC 10 -i ephemeral 2>/dev/null | cut -d: -f2
 }
 
-# Bazarr's settings form is POSTed the Radarr and Sonarr API keys, and Bazarr
-# 1.6.0 casts every submitted value with int() unless the last dash-segment of
-# its key is one of app/config.py's str_keys -- `apikey` is not one. dynaconf
-# then validates the whole schema, so a key of only decimal digits fails
-# `is_type_of str` and the request is answered 406 for as long as that key is
-# deployed. A hex draw with no a-f in it is about one in 3e-7, so redrawing a
-# bounded number of times is certain in practice and cannot hang; exhausting the
-# bound is reported rather than papered over. Only these two keys need it: no
-# other vault credential reaches that cast.
+# Bazarr int()-casts submitted values whose key is not a str_key, so an all-digit
+# API key fails its schema with a 406. Redraw a bounded number of times and
+# report exhaustion rather than hang.
 random_api_key() {
   attempt=0
   while [ "$attempt" -lt 8 ]; do
@@ -255,25 +206,9 @@ generate_vault() (
   radarr_api_key=$(random_api_key) || die 'failed to generate a Radarr API key'
   sonarr_api_key=$(random_api_key) || die 'failed to generate a Sonarr API key'
 
-  # The Usenet provider group, computed before the heredoc because it is the one
-  # group whose values depend on --undeclared. Each key name appears exactly once
-  # below: tests/policy_vault_test.rb refuses a duplicate vault key in this file,
-  # so a declared and an undeclared arm each spelling the pair is not available
-  # -- only the values may branch.
-  #
-  # The group is two keys rather than six because four of the provider's values
-  # are not credentials and are no longer vault-authored (#298). Those four are
-  # operator policy in inventory, so a lane declares them the way it declares any
-  # other inventory value -- tests/integration_controller.sh passes
-  # `media_usenet_provider` explicitly -- and this generator has nothing to say
-  # about them. What it still owns is the account behind the host.
-  #
-  # Undeclared is two empty strings rather than two omitted lines.
-  # roles/vault_contract declares both required and this generator's own
-  # --self-test validates the vault with no group_vars in play, so an omitted key
-  # would have nothing to satisfy that requirement. An empty string is also the
-  # exact value a real undeclared target sees, because
-  # inventory/group_vars/all/main.yml supplies one there.
+  # Computed before the heredoc because its values depend on --undeclared; each
+  # key name must appear once (tests/policy_vault_test.rb). Undeclared is two empty
+  # strings, the exact value a real undeclared target sees (#298).
   usenet_server_username=ephemeral-usenet-username
   usenet_server_password=$(random_password)
   if credential_group_is_undeclared usenet; then
@@ -500,13 +435,8 @@ self_test() {
   rm -f -- "$trap_marker"
   self_test_trap_marker=
 
-  # The undeclared shape, proved here rather than only in the integration lane
-  # that consumes it: it is the state issue #295 found nothing converged, and a
-  # break in it would otherwise be visible only after a Docker suite has run.
-  # Both halves are asserted -- that all six values really are empty, and that
-  # the resulting vault still satisfies the shared credential contract, which is
-  # what OPTIONAL_KEY_GROUPS in filter_plugins/vault_credential_schema.py exists
-  # to make true.
+  # Prove the undeclared shape (#295) here: all values empty, and the vault still
+  # satisfies the credential contract.
   undeclared_directory=$(mktemp -d "$temporary_parent_input/nas-platform-vault.XXXXXX")
   self_test_fixture_directory=$undeclared_directory
   trap self_test_cleanup_on_exit EXIT
@@ -537,8 +467,6 @@ self_test() {
   trap - EXIT HUP INT TERM
 
   refusal_directory=$(mktemp -d "$temporary_parent/nas-platform-vault.XXXXXX")
-  # Each malformed list is quoted so the trailing and leading commas read as
-  # part of the value rather than as separators a reader has to squint at.
   for refused_groups in '' unknown-group 'usenet,usenet' 'usenet,' ',usenet'; do
     if "$0" --undeclared "$refused_groups" \
         --output "$refusal_directory/vault.yml" \

@@ -1,24 +1,7 @@
 ---
-# The administrator password, which is the one credential in this stack that has
-# no push path through the environment at all.
-#
-# NEXTCLOUD_ADMIN_PASSWORD is read by the installer alone, exactly as Seafile's
-# INIT_SEAFILE_ADMIN_PASSWORD is, so rotating it in the vault is a silent no-op
-# on a converged deployment. Unlike the database credential beside it there is
-# no NC_ override to fall back on either: the administrator's password is a row
-# in oc_users, not a system setting. `occ user:resetpassword` is the only way in.
-#
-# What this stage does NOT do is run that command unconditionally. Resetting a
-# password re-hashes it and invalidates the sessions and app tokens derived from
-# it, and the auto-deploy poller converges every five minutes -- so an
-# unconditional reset would log every client out several hundred times a day to
-# assert a value that was already correct. It probes first and repairs only on
-# drift.
-#
-# The probe is a push being checked, not a credential being read back. Nothing
-# here asks Nextcloud what its password is; it presents the vault's value and
-# observes whether the server accepts it, which is the shape every verification
-# on this platform uses.
+# NEXTCLOUD_ADMIN_PASSWORD is read only on install and has no NC_ override, so occ is
+# the only way in. Probe first and reset only on drift: a reset logs every client out,
+# and the poller converges every five minutes.
 
 - name: Probe the vault Nextcloud administrator credential
   ansible.builtin.uri:
@@ -27,13 +10,10 @@
     url_username: "{{ vault_nextcloud_admin_username }}"
     url_password: "{{ vault_nextcloud_admin_password }}"
     force_basic_auth: true
-    # Without this header Nextcloud refuses every OCS request with 412 and a
-    # CSRF message, whatever the credential was.
+    # Without it Nextcloud answers every OCS request 412.
     headers:
       OCS-APIRequest: "true"
-    # Every status is accepted so the classification below is what decides, and
-    # so a server that is merely down does not get treated as a rotated
-    # password.
+    # All statuses accepted so a down server is not read as a rotated password.
     status_code: "{{ range(100, 600) | list }}"
   register: nextcloud_admin_probe
   when:
@@ -42,14 +22,9 @@
   failed_when: false
   changed_when: false
   check_mode: false
-  # The request carries the administrator credential.
   no_log: true
 
-# 401 and nothing else. A 200 means the vault value is in force and there is
-# nothing to do; anything else -- 500 from a database that is gone, a connection
-# refused, a 400 from an untrusted Host -- is a different failure, and resetting
-# a password in response to it would be a repair aimed at the wrong thing.
-# verify.yml is what reports those, by name.
+# Only 401 means rotated; any other failure is verify.yml's to report.
 - name: Classify the Nextcloud administrator credential probe
   ansible.builtin.set_fact:
     nextcloud_admin_status: >-
@@ -60,12 +35,7 @@
     - nextcloud_deployment_enabled | bool
     - not ansible_check_mode
 
-# The password is taken from the container's own environment rather than passed
-# in the module arguments, so the vault value is not written a second time into
-# a place that has to be redacted. Compose already put it there from the same
-# rendered .env this role owns, which makes it the same value by construction.
-#
-# --password-from-env is the only non-interactive form: occ otherwise prompts.
+# The password comes from the container's own environment so it is not passed again.
 - name: Reconcile the rotated Nextcloud administrator credential
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/nextcloud"
@@ -87,29 +57,11 @@
     - not ansible_check_mode
     - nextcloud_admin_status | default('') == 'rotated'
   changed_when: true
-  # Stated rather than inherited, and it is the example issue #521 was filed on.
-  # Measured against community.docker 5.3.0: docker_compose_v2_exec sets
-  # check_rc only when `detach` is true, so until this line a reset occ refused
-  # -- an OC_PASS the container never received, an oc_users table the command
-  # could not reach, any refusal at all -- returned its exit code and Ansible
-  # reported success. The converge went green, the deployment report announced a
-  # repaired administrator, and the vault password still did not authenticate.
-  # Paired with the changed_when above it was worse than silent: the stage
-  # claimed a repair it had not verified, on every five-minute poller tick.
-  #
-  # occ writes most of its refusals to stdout rather than stderr, so a message
-  # quoting stderr alone would be empty exactly when it was needed -- the shape
-  # tests/contracts/nextcloud-runtime.rb's diagnosis helper exists for. None is
-  # written here regardless, and that is the redaction working rather than a
-  # hole: the line below censors the whole result and no message could survive
-  # it. What a reader gets is the task banner and where the run stopped, which
-  # is more than it looks -- reaching this task at all means the probe above
-  # answered 401, so the credential is rotated and occ refused to reset it.
-  # `docker compose exec --user www-data nextcloud php occ user:resetpassword
-  # <admin>` by hand is what prints the sentence that says why.
+  # docker_compose_v2_exec checks rc only with detach (#521); without this a refused
+  # reset reported a repair. Nothing is printed under no_log: run
+  # `occ user:resetpassword <admin>` by hand to see why.
   failed_when: nextcloud_admin_repair.rc | default(1) | int != 0
-  # The exec renders the container environment on failure, which is the whole
-  # rendered credential set.
+  # On failure the exec result renders the whole container environment.
   no_log: true
 
 - name: Report the Nextcloud administrator reconciliation check mode defers

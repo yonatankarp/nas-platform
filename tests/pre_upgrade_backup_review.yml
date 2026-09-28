@@ -1,10 +1,6 @@
 ---
-# The review case of tests/pre_upgrade_backup_test.yml, which runs this with
-# --check against the fixture it has just written. A play of its own because
-# the role gates every write on ansible_check_mode, which only a --check run
-# sets. It exits 0 only when it really ran as a review and the role reported the
-# copy it would take; the caller then reads the daemon and the store to prove
-# nothing was stopped or written.
+# The --check review case of tests/pre_upgrade_backup_test.yml: its own play because
+# the role gates every write on ansible_check_mode, which only a --check run sets.
 - name: Review the pre-upgrade copy
   hosts: localhost
   gather_facts: false

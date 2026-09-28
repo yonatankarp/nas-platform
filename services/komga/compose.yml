@@ -1,9 +1,6 @@
 ---
-# Platform fragments. Compose resolves a YAML anchor only inside the file that
-# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
-# copies equal and records there why cross-file sharing was not taken. A
-# container needing different health-check timing overrides only the fields it
-# changes, so a deviation reads as a deviation.
+# Platform fragments: anchors are file-local; tests/policy_test.rb pins the copies.
+# Overrides change only the fields that differ.
 x-logging: &default-logging
   driver: json-file
   options:
@@ -46,7 +43,5 @@ services:
         - >-
           test "$$(/usr/bin/curl --fail --silent --show-error
           http://127.0.0.1:25600/actuator/health)" = '{"status":"UP"}'
-    # Komga keeps its library database and its search index under a recovery:
-    # critical config directory, and a scan writes to both. 30s covers the
-    # commit and the index flush; the scan itself resumes on the next start.
+    # 30s covers the library database commit and index flush; scans resume on start.
     stop_grace_period: 30s

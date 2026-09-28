@@ -1,21 +1,5 @@
 #!/usr/bin/env ruby
-# Remove Bindery's audiobook destination root, which is the drift the Mac lane's
-# reconcile repairs.
-#
-# usage: 56-bindery.rb   (no arguments; every input is an environment variable)
-#
-# tests/mac/hooks/drift/56-bindery.sh is the hook this belongs to. It requires
-# PLATFORM_BINDERY_PORT, PLATFORM_MAC_VAULT_FILE and
-# PLATFORM_MAC_VAULT_PASSWORD_FILE, runs this program, then runs verify.yml
-# alone and insists it refuses the deployment with a fixed diagnostic. Only the
-# mutation lives here, and the hook's comment records why a root folder is the
-# drift rather than the identity.
-#
-# It ran from a `<<'RUBY'` heredoc in that hook until #315, opened as a bare
-# `ruby -` with no `-r` preloads, where nothing syntax-checked it, no linter
-# reached it and no reader could open it. The body below is byte-identical to
-# what that heredoc rendered, its own requires included, and the hook resolves
-# it from its own checkout rather than from any tree under inspection.
+# Remove Bindery's audiobook root folder: the drift 56-bindery.sh verifies is refused (#315).
 require "json"
 require "net/http"
 require "open3"

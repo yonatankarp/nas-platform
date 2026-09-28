@@ -1,16 +1,7 @@
 ---
-# The scheduled task triggers. Reads the server's twenty tasks, resolves the
-# declared keys against them, and posts the declared trigger set for any key
-# whose triggers differ. jellyfin_scheduled_task_triggers carries what is
-# declared and why; this file is only how it is reconciled.
-#
-# The read is gated the way preflight.yml's are: jellyfin_reconcile_token only
-# exists once authentication.yml has run, which on a fresh server under --check
-# it has not. That gate is also why the loops below read
-# jellyfin_scheduled_task_targets through default([]): on that one path the fact
-# is never set, and a POST over no targets is the correct outcome there rather
-# than a failure. It is the only place a gate change would turn this file's hard
-# failure on a missing key into a silent skip, so keep the two gates identical.
+# The declared triggers are posted for any key whose triggers differ. Gated like
+# preflight.yml on jellyfin_reconcile_token (absent on a fresh --check); keep
+# that gate identical to the default([]) the loops rely on.
 
 - name: Read the Jellyfin scheduled tasks
   ansible.builtin.uri:
@@ -25,11 +16,8 @@
   check_mode: false
   no_log: true
 
-# Unlooped and unredacted on the same reasoning as bootstrap.yml's ownership
-# assert: nothing but condition source text reaches the result dict, and none of
-# these values is a credential. The tick literal is pinned rather than merely
-# type-checked because the failure this declaration exists to prevent is a
-# silent one, and a unit slip of three zeroes is silent too.
+# Unredacted: no credentials. The tick literal is pinned because a unit slip of
+# three zeroes would be silent.
 - name: Require the fixed Jellyfin scheduled task declaration
   ansible.builtin.assert:
     that:
@@ -64,9 +52,8 @@
   when: not ansible_check_mode or jellyfin_wizard_completed | bool
   no_log: true
 
-# A declared key that the server does not offer is the version bump this whole
-# declaration exists to catch, so it fails the run rather than skipping the
-# post and leaving the compiled default in force unmentioned.
+# A declared key the server no longer offers is the version bump this exists to
+# catch, so it fails rather than skipping.
 - name: Require the declared Jellyfin scheduled tasks to exist
   ansible.builtin.assert:
     that:

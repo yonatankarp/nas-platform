@@ -1,26 +1,7 @@
 ---
-# The deployment report, a stage of its own rather than the last task of
-# deploy.yml so that it can see every result that stage registers -- the
-# deployment, the teardown, the bounded force-recreate, the pre-upgrade copy --
-# and the Serve front
-# that tasks/serve.yml places, which is a deployment change as surely as a
-# container is. deploy.yml and serve.yml are imported statically, so they share
-# one variable scope with this file and nothing has to be passed.
-#
-# Ungated on purpose, and it says nothing when nothing moved: the report is
-# gated on the results themselves, so a converge with the flag off and a project
-# already absent is silent, and the run that first tears the project down
-# reports that it did.
-#
-# Every term carries a default, because each of the tasks behind them is
-# conditional and a reader of an undefined name is an error rather than a false.
-#
-# The pre-upgrade copy is not a term (#836). roles/pre_upgrade_backup registers
-# it host-wide, and when this role skips its include nothing overwrites the one
-# Kapowarr's include left, so naming it would report Kapowarr's copy as a
-# Vaultwarden deployment. Nothing is lost: a copy runs only on a pending upgrade,
-# so a run that reaches here after one has changed vaultwarden_deploy too. The
-# restart is safe to name because only a rescue that fails the host writes it.
+# A stage of its own so it sees every result deploy.yml and serve.yml register.
+# Every term carries a default because the tasks behind them are conditional. The
+# pre-upgrade copy is not a term: its register is host-wide and may be Kapowarr's (#836).
 - name: Report the Vaultwarden deployment
   ansible.builtin.include_role:
     name: deployment_bundle

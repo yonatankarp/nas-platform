@@ -8,7 +8,6 @@ import sys
 import tempfile
 import unittest
 
-
 SCRIPT = (
     Path(__file__).resolve().parents[1]
     / "roles"
@@ -16,7 +15,6 @@ SCRIPT = (
     / "files"
     / "validate_controller_input.py"
 )
-
 
 class ControllerInputFixture(unittest.TestCase):
     """A checkout with one tracked input, and a sibling directory outside it."""
@@ -33,7 +31,6 @@ class ControllerInputFixture(unittest.TestCase):
         self.tracked.write_text("services: []\n")
         self.secret = self.outside / "secret.yml"
         self.secret.write_text("stolen\n")
-
 
 class ControllerInputValidatorTest(ControllerInputFixture):
     def run_validator(self, path, *, root=None, allow_missing="0"):
@@ -77,11 +74,8 @@ class ControllerInputValidatorTest(ControllerInputFixture):
         self.assert_refused(link, "a symlink inside the checkout was accepted")
 
     def test_path_outside_the_checkout_is_refused_even_if_it_resolves_inside(self):
-        # Isolates the lexical containment check from the canonical one: this
-        # path's realpath lands on a tracked file inside the checkout, so only
-        # the pre-canonicalization comparison can reject it.
-        # The symlink is an ancestor, not the leaf, so the leaf lstats as a
-        # regular file and the symlink rule does not fire.
+        # Only the pre-canonicalization check can reject this: the realpath lands
+        # inside the checkout, and the symlink is an ancestor, not the leaf.
         os.symlink(self.checkout / "services", self.outside / "linked")
         self.assert_refused(
             self.outside / "linked" / "manifest.yml",
@@ -96,12 +90,8 @@ class ControllerInputValidatorTest(ControllerInputFixture):
             "a symlinked ancestor escaping the checkout was accepted",
         )
 
-
-# The batch entry point the role actually calls since #333. Every case above
-# still exercises the single-input form, which the batch calls once per input, so
-# these only have to hold the batch to the two properties batching could break:
-# every input is really validated, and the first refusal is the one reported,
-# with the message a single-input invocation would have produced.
+# The batch entry point (#333): every input is validated, and the first refusal
+# is reported with the single-input message.
 class ControllerInputBatchTest(ControllerInputFixture):
     def run_batch(self, entries, *, root=None):
         return subprocess.run(
@@ -127,9 +117,7 @@ class ControllerInputBatchTest(ControllerInputFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_batch_refuses_a_single_bad_input_among_good_ones(self):
-        # The refusal has to survive being surrounded by acceptable inputs: a
-        # batch that stopped iterating, or validated only its first entry, would
-        # pass this.
+        # A batch that stopped early or validated only its first entry would pass.
         result = self.run_batch(
             [(self.tracked, "0"), (self.secret, "0"), (self.tracked, "0")]
         )
@@ -187,7 +175,6 @@ class ControllerInputBatchTest(ControllerInputFixture):
                 )
                 self.assertNotEqual(result.returncode, 0, description)
                 self.assertIn("Unsafe controller bundle input batch", result.stderr)
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -9,13 +9,8 @@ require_relative "policy_support"
 
 ROOT = File.expand_path("..", __dir__)
 
-# Absence and presence invariants over a whole task file reach every task, but
-# they read the parsed scalars one at a time rather than the file's bytes: a SQL
-# keyword a comment warns against is not a statement the restore runs, and a
-# pattern matched against the joined file spans two unrelated tasks. A folded or
-# literal scalar carries its line breaks into the parsed value, so each scalar is
-# also offered with its whitespace removed, and a forbidden statement wrapped
-# across two lines still trips the guard.
+# Invariants read parsed scalars, not file bytes (a comment is not a statement), and
+# each scalar is also offered whitespace-stripped so a wrapped statement still trips.
 def scalar_forms(tasks)
   PolicySupport.task_strings(tasks).flat_map do |value|
     [value, value.gsub(/[[:space:]]+/, "")].uniq
@@ -97,13 +92,8 @@ def classifier_uses_deployed_helper?(main_tasks, restore_tasks)
   invocations_valid && Array(target_paths).count(expected) == 1
 end
 
-# The classifier's controller input is one entry of a batch since #333, so it is
-# read off the list expression handed to the validator rather than off a task of
-# its own. The pair's second element is the allow_missing flag, so pinning '0'
-# beside the path asserts the input is required -- what the separate
-# deployment_controller_input_allow_missing: false used to assert. The
-# include_tasks filter is what makes it a validated input: a list carried by a
-# task that hands it to nothing validates nothing.
+# The controller input is one batch entry (#333); '0' beside the path means
+# allow_missing is false, and include_tasks is what makes it validated.
 def classifier_controller_input_required?(input_tasks)
   input_tasks.any? do |candidate|
     candidate["ansible.builtin.include_tasks"] == "controller_input.yml" &&
@@ -188,9 +178,8 @@ def require_mutation_rejected(label)
   refuse("#{label} mutation was not detected") if yield
 end
 
-# The rule that refuses the backup filename reaching the restore shell as source
-# text rather than as a positional argument, as a predicate so that the mutation
-# rows below can run the real rule instead of asserting the literal they planted.
+# The backup filename must reach the restore shell as a positional argument, not
+# source text; a predicate so the mutation rows run the real rule.
 def shell_source_free_of_filename?(source)
   !source.include?("backupFilename") && !source.include?("immich_restore_backup_filename")
 end
@@ -436,11 +425,7 @@ classifier_argv = classifier.dig("ansible.builtin.command", "argv")
     option_index && classifier_argv.fetch(option_index + 1, nil) == value
 end
 refuse("classifier can bypass effective roots") if classifier_argv.include?("--media-root")
-# The sanitized status is an allow-list on one fact. Asserting the whole list off
-# that fact says what the check means: a refusal code the classifier can emit and
-# the list does not carry is reported as classification-failed, and a code added
-# to the list without the classifier emitting it is drift. A substring anywhere in
-# main.yml said neither, and was satisfied by a comment.
+# Classifier refusal codes and the sanitized-status allow-list must match both ways.
 SANITIZED_REFUSALS = %w[
   unsafe-storage unsafe-originals missing-safe-backup ambiguous-newest-backup
   unsafe-newest-backup incompatible-newest-backup stale-newest-backup
@@ -513,8 +498,6 @@ refuse("restored path can create a new administrator") unless
   initialized_guard&.dig("ansible.builtin.assert", "that").to_s.include?("immich_initialized")
 
 restore_tasks = PolicySupport.flatten_tasks(YAML.safe_load_file(restore_path, aliases: true))
-# The source-file check reports how many sampled assets it could not read, and
-# still refuses on any one of them.
 source_guard = task(restore_tasks, "Require verified restored Immich source files")
 source_conditions = Array(source_guard&.dig("ansible.builtin.assert", "that"))
 refuse("a missing restored source file does not refuse startup") unless
@@ -712,10 +695,7 @@ refuse("restore removes provenance before server initialization") if
   restore_task_names.include?("Remove the Immich restore failure marker")
 refuse("restore does not verify the pinned v3 migration marker") unless
   restore_scalars.any? { |value| value.include?("to_regclass('public.kysely_migrations')") }
-# Every stage the restore can fail in has to name itself, and the rescue has to
-# record whichever one was reached. Two substrings could not say that: they were
-# satisfied by one stage assignment anywhere in the file, including one the rescue
-# never sees.
+# Every failing stage names itself, and the rescue records the one reached.
 rescue_marker = task(restore_tasks, "Record sanitized Immich restore failure stage")
 recorded_stages = restore_tasks.filter_map do |candidate|
   Hash(candidate["ansible.builtin.set_fact"])["immich_restore_stage"]
@@ -805,29 +785,17 @@ end
   require_mutation_rejected(label) { lifecycle_ordered?(mutated) }
 end
 
-# The rule above, run against a mutant rather than restated against one. It used
-# to assert that shell_source.sub('$1', "{{ immich_restore_backup_filename }}")
-# contained "immich_restore_backup_filename" -- the literal the sub had just
-# inserted -- so it held for any predicate at all, including none, and would have
-# stayed green with the real rule deleted. Both interpolations the rule names get
-# a row, because a mutant for only one of them leaves the other term proved by
-# nothing.
+# Runs the real rule against a mutant, one row per interpolation, rather than
+# asserting the literal the plant inserted.
 ["{{ immich_restore_backup_filename }}", "backupFilename"].each do |interpolation|
   require_mutation_rejected("filename injection via #{interpolation}") do
     shell_source_free_of_filename?(shell_source.sub('$1', interpolation))
   end
 end
 
-# The two clean-restore modes are dispatched by the contract's runtime half,
-# which #147 moved out of a heredoc in tests/contracts/immich.sh and into
-# tests/contracts/immich-runtime.rb. Reading the wrapper for them would now find
-# nothing and report a lane that is in fact still wired.
+# Clean-restore modes are dispatched from tests/contracts/immich-runtime.rb (#147).
 contract_text = File.read(File.join(ROOT, "tests", "contracts", "immich-runtime.rb"))
-# The controller's own dispatch is a program in a file of its own, so the calls
-# it makes are read there rather than out of the launcher that starts it.
 integration_text = File.read(File.join(ROOT, "tests", "integration_controller.sh"))
-# The launchers the Immich lane drives live in the controller's library, where
-# they are ordinary shell for the same reason.
 library_text = File.read(File.join(ROOT, "tests", "integration_controller_lib.sh"))
 clean_restore_source = library_text[/^run_immich_clean_restore\(\) \{.*?^\}/m].to_s
 [
@@ -844,9 +812,7 @@ refuse("clean restore removes the live Redis container") if clean_restore_source
 %w[clean-restore-seed clean-restore-assert].each do |mode|
   refuse("Immich contract omits #{mode}") unless contract_text.include?(mode)
 end
-# What the restore scenarios do is written in the launcher library; that the
-# Immich suite reaches them is written in the controller's own dispatch. Both
-# halves are required: a library nothing calls proves nothing.
+# Both halves required: the launcher library and the controller dispatch that calls it.
 [
   %(docker compose --project-name "$integration_project_namespace-immich"),
   "run_play --tags immich",

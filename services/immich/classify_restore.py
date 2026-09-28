@@ -138,13 +138,8 @@ UNVERIFIED_POSTGRES_VERSION = "postgres-version-unverified"
 def read_postgres_major(descriptor):
     """Read the cluster major initdb recorded, or None when access is denied.
 
-    A cluster whose version is missing, is not a regular file or does not parse
-    is never treated as fresh: that would let the pinned image initialize over,
-    or crash-loop on, a store it cannot open. Permission denied is the one
-    exception. The file is 0600 and owned by the postgres account, the deploy
-    account's right to read it has not been measured on the NAS, and a refusal
-    there would stall every deployment on a check the platform never had; the
-    caller proceeds as it did before and reports the major as unverified.
+    Missing or unparseable is never "fresh". Permission denied is tolerated because the
+    deploy account's access was never measured on the NAS; the caller reports it unverified.
     O_NONBLOCK keeps a FIFO from holding the open before the S_ISREG check.
     """
     try:
@@ -248,24 +243,17 @@ def originals_present(originals_root):
         os.close(immich_fd)
 
 
-# ponytail: a household library is tens of thousands of entries, so a million
-# is never reached in practice; past it the dump is accepted unproven, and
-# source-file verification after the restore is what still refuses it. Emit a
-# warning, the way postgres-version-unverified does, if a library ever nears it.
+# ponytail: past a million entries the dump is accepted unproven (post-restore source
+# verification still refuses it); warn if a library ever nears it.
 STALE_SCAN_ENTRY_CAP = 1_000_000
 
 
 def originals_changed_since(originals_root, dump_mtime):
     """Report whether any originals directory changed after the dump.
 
-    Directory mtimes, not file mtimes: rename(2) keeps a moved file's own
-    mtime, so a storage-template move shows only in the directories it left
-    and entered, and every create or unlink shows in its parent. A file
-    rewritten in place changes no path a restored row could name. Symlinks
-    are never followed, and the walk stops at the first newer directory.
-    ponytail: the dump's mtime is when it finished, while pg_dump's snapshot
-    is from when it began, so a move inside that window passes here; the
-    source-file verification after the restore still refuses it.
+    Directory mtimes, because rename(2) keeps a file's own mtime. Symlinks are never followed.
+    ponytail: the dump's mtime is when it finished, not when its snapshot began; a move in
+    that window passes here and is caught by source-file verification after the restore.
     """
     scanned = 0
 

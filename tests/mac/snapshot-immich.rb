@@ -1,21 +1,7 @@
 #!/usr/bin/env ruby
 # Coordinated snapshot, restore and rollback drill for Immich.
-#
 # usage: snapshot-immich.rb snapshot|restore|drill SNAPSHOT_DIR
-#
-# Immich keeps one application state in several places that must move together:
-# PostgreSQL rows, the original files under the media root, and the profile and
-# thumbnail trees under the Docker root. Every operation here takes all of them
-# or none. The Valkey job queue is discarded on restore rather than captured,
-# because it holds work queued against a database state the restore replaced.
-#
-# tests/mac/snapshot-immich.sh is the shell wrapper: it validates the mode,
-# refuses `drill` outside a disposable Mac sandbox project, and exports the
-# PLATFORM_* environment this program reads. It ran this program from a
-# `<<'RUBY'` heredoc until #315 -- nothing syntax-checked it and no linter
-# could reach it. The body below is byte-identical to what that heredoc
-# rendered, and tests/mac/snapshot-immich-test.rb covers the manifest logic it
-# duplicates offline.
+# Run via snapshot-immich.sh, which refuses `drill` outside a disposable sandbox (#315).
 require "digest"
 require "fileutils"
 require "json"
@@ -37,15 +23,8 @@ POSTGRES = ENV.fetch("PLATFORM_IMMICH_POSTGRES_CONTAINER")
 REDIS = ENV.fetch("PLATFORM_IMMICH_REDIS_CONTAINER")
 
 DUMP_NAME = "database.sql"
-# The trees that must move with the database. The originals tree carries the
-# irreplaceable uploads; the profile tree is classified critical in nas_storage
-# and is regenerable from nothing; the thumbnail tree is the generated state a
-# restored database expects to find already present.
-#
-# encoded-video and model-cache are deliberately absent because both are
-# regenerable caches, and /data/backups is excluded because it holds Immich's
-# own dumps: snapshotting a backup into a backup only doubles what a restore
-# has to sift through.
+# Trees that must move with the database. encoded-video and model-cache are
+# regenerable caches, and /data/backups holds Immich's own dumps, so all are excluded.
 TREES = [
   ["originals.tar", MEDIA_ROOT.join("Immich")],
   ["profile.tar", DOCKER_ROOT.join("immich", "data", "profile")],
@@ -134,9 +113,7 @@ DB_USERNAME = CREDENTIALS.fetch("vault_immich_db_username")
 ADMIN_EMAIL = CREDENTIALS.fetch("vault_immich_admin_email")
 ADMIN_PASSWORD = CREDENTIALS.fetch("vault_immich_admin_password")
 
-# Stopping the application is what makes the dump application-consistent: the
-# job queues cannot enqueue a thumbnail whose row lands after pg_dump has read
-# the asset table but whose file lands before the tar reads the directory.
+# Stopping the application makes the dump consistent with the trees.
 def stop_writes
   run("docker", "stop", SERVER, MACHINE_LEARNING)
 end
@@ -145,18 +122,13 @@ def start_writes
   run("docker", "start", MACHINE_LEARNING, SERVER)
 end
 
-# Immich deletes assets asynchronously through a job queue held in Valkey, so a
-# restore that puts the rows and files back while the queue still holds the jobs
-# that removed them gets quietly undone the moment the server starts draining
-# it. The queue describes work against a database state that no longer exists,
-# so discarding it is both safe and necessary.
+# Queued deletion jobs in Valkey would undo a restore once the server drains them.
 def discard_queued_work
   run("docker", "exec", REDIS, "redis-cli", "flushall")
 end
 
 def dump_database(target)
-  # Client and server are the same PostgreSQL 14 build inside this container, so
-  # the dump and its restore can never disagree about dump-format directives.
+  # Same PostgreSQL build dumps and restores, so dump-format directives always agree.
   output = run(
     "docker", "exec", POSTGRES,
     "pg_dump", "--username=#{DB_USERNAME}", "--dbname=#{DB_NAME}",
@@ -282,8 +254,6 @@ when "restore"
   restore_snapshot(directory)
   puts "Immich database, originals, and generated assets restored together"
 when "drill"
-  # The shell preamble has already refused any project that is not a disposable
-  # Mac sandbox; this is the destructive path it was guarding.
   directory = validate_directory(SNAPSHOT_DIR, require_empty: true)
   wait_for_application
   token = authenticate
@@ -299,10 +269,7 @@ when "drill"
   ids = before.map { |record| record.fetch("id") }
   request("delete", "/api/assets", token: token, expected: [204],
           body: { "ids" => ids, "force" => true })
-  # The poll reuses the session the deletion was authorized with, for the reason
-  # the Paperless drill does: a login on every pass is about forty logins against
-  # an endpoint whose rate limit no test controls, and nothing inside the loop
-  # invalidates the session it would be replacing.
+  # Reuse the session: a login per poll could trip an uncontrolled rate limit.
   deadline = Time.now + 120
   loop do
     break if catalogue(token).empty?

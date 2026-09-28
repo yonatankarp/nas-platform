@@ -3,24 +3,15 @@ set -eu
 set +x
 
 mode=${1:-run}
-# Two roots, and they are not the same thing. $contract_repo_dir is the checkout
-# this script belongs to, which is where its three Ruby programs live -- a
-# heredoc had that property by construction, because the program travelled inside
-# the file. $repo_dir is the tree those programs *inspect*, which
-# PLATFORM_CONTRACT_REPO_DIR lets a caller point at a fixture. Resolving a
-# program from $repo_dir would make this contract read its own assertions out of
-# the tree it is judging.
+# $contract_repo_dir holds this script's programs; $repo_dir is the tree they inspect.
 contract_repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$contract_repo_dir}
-# The Ruby programs below read tests/policy_support.rb from here instead of
-# carrying their own copy of flatten_tasks. It names the inspected tree.
+# The Ruby programs read tests/policy_support.rb from the inspected tree.
 PLATFORM_CONTRACT_REPO_DIR=$repo_dir
 export PLATFORM_CONTRACT_REPO_DIR
 render_program=$contract_repo_dir/tests/contracts/paperless-render.rb
 static_program=$contract_repo_dir/tests/contracts/paperless-static.rb
-# The three greps below read this program's source for constants no static
-# assertion can observe. They read the copy that will actually run, which is the
-# one in this checkout -- exactly what "$0" named while the code lived here.
+# Greps below read the runtime program from this checkout, the copy that runs.
 runtime_program=$contract_repo_dir/tests/contracts/paperless-runtime.rb
 compose=$repo_dir/services/paperless-ngx/compose.yml
 mac_compose=$repo_dir/services/paperless-ngx/compose.mac.yml
@@ -32,11 +23,7 @@ storage_inventory=$repo_dir/inventory/group_vars/all/service_paperless_ngx.yml
 host_prep=$repo_dir/roles/host_prep/tasks/main.yml
 generator=$repo_dir/generate-secrets.yml
 snapshot=$repo_dir/tests/mac/snapshot-paperless.sh
-# The coordinated snapshot has been a program beside its wrapper since #315, and
-# both are read out of the tree under inspection: the wrapper for the one
-# setting that is genuinely shell, the program for everything its heredoc held.
-# Grepping the wrapper for the program's text would be a positive match that can
-# no longer fail.
+# The snapshot wrapper and program are both read from the inspected tree (#315).
 snapshot_program=$repo_dir/tests/mac/snapshot-paperless.rb
 environment_template=$repo_dir/roles/paperless_ngx/templates/env.j2
 ocr_fixture=$repo_dir/tests/fixtures/paperless-ocr.png.base64
@@ -98,11 +85,7 @@ ruby -ryaml "$static_program" "$compose" "$mac_compose" "$integration_compose" \
   "$role" "$defaults" "$argument_specs" "$storage_inventory" "$host_prep" \
   "$generator" "$environment_template" "$snapshot" "$snapshot_program" </dev/null
 
-# Two of these three subjects live in the controller program that
-# tests/integration.sh runs inside the container; the fixture pre-seed is the
-# launcher's own work, on the Docker host, before the container starts. Reading
-# each from the file that actually spells it is what keeps all three able to
-# fail.
+# Each subject is read from the file that actually spells it, so all three can fail.
 grep -qF 'run_paperless_contract seed' "$repo_dir/tests/integration_controller.sh" ||
   fail_contract 'integration does not exercise Paperless document fixtures'
 grep -qF '"$repo_dir/tests/contracts/paperless.sh" seed-fixture-only' \
@@ -116,16 +99,8 @@ grep -qF 'wait_healthy(REDIS, WEBSERVER)' "$snapshot_program" ||
   fail_contract 'Paperless restore does not wait for application health'
 grep -qF 'request("delete", "/api/documents/' "$snapshot_program" ||
   fail_contract 'Paperless rollback drill does not destructively test restoration'
-# These two were vacuous while the runtime half shared this file: `grep -F`
-# matches a substring, and the grep line spells its own pattern, so each
-# assertion was satisfied by itself and a planted defect in the runtime code
-# passed. Reading the runtime program instead is what makes them bite.
-#
-# They sit above the static exit rather than inside it (#667). Nothing invokes
-# this contract as `static`: the lane runs `seed` and `assert-persistence`, and
-# run_contracts.rb --execute takes the `run` default. Inside the branch they ran
-# only for a mode nobody passed; here every mode reaches them, which is where
-# every other assertion in this file already was.
+# Read from the runtime program, not this file, so the greps cannot match themselves;
+# above the static exit so every mode reaches them (#667).
 grep -F 'MAIL_PROBE_READ_TIMEOUT = 180' "$runtime_program" >/dev/null ||
   fail_contract 'runtime Gmail probe timeout constant differs'
 grep -F 'read_timeout: MAIL_PROBE_READ_TIMEOUT' "$runtime_program" >/dev/null ||

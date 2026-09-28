@@ -1,34 +1,15 @@
 #!/usr/bin/env ruby
-# The mutation audit's coverage report, checked without running the audit.
-#
-# `ruby tests/policy_manifest_test.rb --audit` runs only on the nightly and
-# workflow_dispatch (#727): it re-runs all eight policy scripts per row and costs
-# about half an hour. The report it prints -- how many mutations it re-derived,
-# and how many it could not see -- carries two guards, and both of them exist
-# because #439 found the audit claiming a wider verdict than it had. A guard
-# reachable only a day after the change that broke it is the same defect one
-# level down, so this checks
-# the reporting directly: the counters are driven with synthetic rows and the
-# report is read back, which takes a second because no policy script runs.
-#
-# What this cannot check is the figures a real tree produces. Those come from the
-# run itself, and there is no correct value to pin, only a current one. Since
-# #725 there is a lower bound on two of them -- POLICY_MUTATION_CENSUS_BASELINE,
-# which a shrinking census fails against and a growing one does not -- and the
-# same division applies to it: the arithmetic of the floor is driven here with
-# synthetic figures and synthetic baselines, and whether a real tree clears the
-# real baseline is something only the real run says.
+# The mutation audit's coverage report and census floor, driven with synthetic rows
+# so no policy script runs (the real `--audit` is nightly only, #727).
 
 require "open3"
 require "rbconfig"
 require "stringio"
 require "tmpdir"
 
-# POLICY_AUDIT is read from ARGV when the support file loads, and every figure
-# here exists only under `--audit`. Set before the require, not after.
+# POLICY_AUDIT is read from ARGV when the support file loads: set before the require.
 ARGV.replace(["--audit"])
-# The stub of run_policy_scripts below is only reached on the serial path; the
-# pooled one builds a real sandbox (#727).
+# The run_policy_scripts stub below is only reached on the serial path (#727).
 ENV["CASE_POOL_WORKERS"] = "1"
 require_relative "policy_mutation_support"
 
@@ -36,9 +17,7 @@ include TestScaffold
 
 failures = []
 
-# `record_audit_detection` wants whatever `caller_locations` gave the row; only
-# its line number is read, and a stated one keeps a case's identity in the case
-# rather than in this file's own layout.
+# Only the line number of a row's site is read.
 Site = Struct.new(:lineno)
 
 # One result set per script, where exactly the named scripts reject the mutation.
@@ -54,8 +33,6 @@ def reset_coverage
   POLICY_AUDIT_COVERAGE[:bypass_sites].clear
 end
 
-# The report goes to stdout, and a check that only read the returned failures
-# would pass while the printed half said nothing.
 def capture_audit(failures)
   captured = StringIO.new
   previous_stdout = $stdout
@@ -68,14 +45,8 @@ def capture_audit(failures)
   captured.string
 end
 
-# The census half, captured the same way and for the same reason: the floor
-# reports through `failures` and the headroom only through stdout, so a check
-# reading one of them would pass while the other said nothing.
-#
-# The baseline is splatted rather than defaulted here. A default of its own would
-# have been the committed constant again, so the case below that means to reach
-# report_mutation_census's *own* default would have been reaching this one
-# instead -- which is what it did until a planted vacuous default passed it.
+# The floor reports through `failures`, the headroom only through stdout. The
+# baseline is splatted, not defaulted, so the default case reaches the real default.
 def capture_census(failures, **baseline_argument)
   captured = StringIO.new
   previous_stdout = $stdout
@@ -88,8 +59,6 @@ def capture_census(failures, **baseline_argument)
   captured.string
 end
 
-# A census of a given size. The call sites are keyed by line number in the real
-# harness, so the keys here are arbitrary and only their count is read.
 def set_census(mutations:, call_sites:)
   POLICY_MUTATION_CENSUS[:mutations] = mutations
   POLICY_MUTATION_CENSUS[:single_script] = mutations
@@ -97,30 +66,21 @@ def set_census(mutations:, call_sites:)
   POLICY_MUTATION_CENSUS[:sites] = (1..call_sites).to_h { |lineno| [lineno, true] }
 end
 
-# Where the tripwire's arithmetic comes from. The subtraction that catches an
-# unlabelled bypass is `policy_runs` minus what the audit recorded, so it is only
-# sound while the real run_policy_scripts is what increments `policy_runs` --
-# every case below stubs that method, and stubbing it would prove the stub.
-#
-# An empty script list runs no subprocess, so this costs one fixture copy.
+# Before stubbing: the bypass arithmetic is only sound while the real
+# run_policy_scripts increments `policy_runs`.
 reset_coverage
 run_policy_scripts([]) { |_root| nil }
 check(failures, POLICY_AUDIT_COVERAGE[:policy_runs] == 1,
       "run_policy_scripts must count the sandbox it runs: the bypass total is derived from that " \
       "count and reads short without it")
 
-# From here the policy set is never really run: every case is about the
-# bookkeeping, and a sandbox per case would put this check in the gate's floor,
-# which is what took the mutation harness out of the gate in the first place.
+# From here the policy set is never really run; every case is bookkeeping.
 def run_policy_scripts(scripts)
   POLICY_AUDIT_COVERAGE[:policy_runs] += 1
   scripts.map { |script| [script, "", true] }
 end
 
-# The two shapes that reach a sandbox through run_policy_scripts must label
-# themselves there. Asserted through the public helpers rather than by calling
-# the recorder, because what silently stops working is the wiring, not the
-# recorder.
+# Asserted through the public helpers, because what breaks silently is the wiring.
 reset_coverage
 run_policy(["tests/policy_test.rb"]) { |_root| nil }
 expect_success([], "synthetic success row") { |_root| nil }
@@ -136,9 +96,7 @@ check(failures, POLICY_AUDIT_COVERAGE[:policy_runs] == 3,
       "a shape that runs its own checker must count its own run: run_policy and expect_success " \
       "are counted in run_policy_scripts, and record_direct_audit_bypass has to count itself")
 
-# A loop is one row covering several mutations, which is how the audited half
-# keys its call sites; the bypass half has to read the same way, or the two
-# figures in one sentence are not comparable.
+# A loop is one call site covering several mutations, in both halves.
 reset_coverage
 2.times { record_audit_bypass(:looped_shape) }
 record_audit_bypass(:looped_shape)
@@ -148,8 +106,6 @@ check(failures, POLICY_AUDIT_COVERAGE[:bypass_sites].length == 2,
       "bypass call sites must be keyed on the chain of lines inside the program under test: a " \
       "loop is one site, and two rows are two")
 
-# The healthy case: what the audit re-derived plus what it could not see is every
-# run there was, so there is nothing to report but the figures.
 reset_coverage
 POLICY_AUDIT_COVERAGE[:policy_runs] = 3
 [[Site.new(11), 2], [Site.new(22), 1]].each do |site, mutations|
@@ -165,8 +121,6 @@ report = capture_audit(healthy)
 check(failures, healthy.empty?,
       "an audit whose halves account for every run must report no failure, got #{healthy.inspect}")
 
-# The printed line, by substring: the halves must be in one unit, and the
-# per-shape breakdown is the part that says which rows are outside the verdict.
 check(failures, report.scan(/mutations at \d+ call sites/).length == 2,
       "both halves of the audit line must carry mutations and call sites, in that unit, so no " \
       "ratio between them can be misread: #{report.strip.inspect}")
@@ -176,8 +130,7 @@ check(failures, report.scan(/mutations at \d+ call sites/).length == 2,
         "the audit line must state #{fragment.inspect}: #{report.strip.inspect}")
 end
 
-# The tripwire. A run counted with no shape to label it is a bypass nobody is
-# reporting, which is this issue's own defect reappearing in the fix for it.
+# An unlabelled run is a bypass nobody is reporting.
 reset_coverage
 POLICY_AUDIT_COVERAGE[:policy_runs] = 4
 [Site.new(31), Site.new(32)].each do |site|
@@ -189,9 +142,7 @@ capture_audit(unlabelled)
 check(failures, unlabelled.any? { |failure| failure.include?("2 runs bypass the re-derivation but 1 are labelled") },
       "an unlabelled bypass must be reported by name and by count, got #{unlabelled.inspect}")
 
-# The floor. Every property the audit asserts is asserted over the sites it
-# collected, so a collection that goes quiet passes vacuously -- and prints a
-# clean verdict while doing it.
+# A collection that goes quiet would otherwise pass vacuously.
 reset_coverage
 POLICY_AUDIT_COVERAGE[:policy_runs] = 1
 record_audit_detection("only row", "planted", %i[policy], results_detected_by(%i[policy]), Site.new(41))
@@ -201,8 +152,6 @@ check(failures, collapsed.any? { |failure| failure.include?("re-derived only 1 c
       "an audit that re-derived one call site must say so rather than print a clean verdict, " \
       "got #{collapsed.inspect}")
 
-# The drift the audit exists for, both directions, since the coverage report is
-# printed from the same method and a change there could silence them.
 reset_coverage
 POLICY_AUDIT_COVERAGE[:policy_runs] = 2
 record_audit_detection("wider than declared", "planted", %i[policy],
@@ -217,15 +166,8 @@ check(failures,
       drift.any? { |failure| failure.include?("line 52") && failure.include?("no longer detect it") },
       "a script that has stopped detecting a row must be reported, got #{drift.inspect}")
 
-# The census floor (#725). Everything above is about the audit's own report,
-# which only the nightly reaches (#727); the census is printed by
-# every run of the harness, including the one every pull request runs, so the floor that catches
-# a collapsing subject list lives there.
-#
-# Asserted through expect_failure rather than by calling the recorder, because
-# what silently stops working is the wiring: a row that no longer registers is
-# the whole defect, and a recorder called directly would count a row nothing
-# registered. run_policy_scripts is stubbed above, so this runs no policy script.
+# The census floor (#725) runs on every pull request, not only the nightly. Through
+# expect_failure, because a row that no longer registers is the whole defect.
 reset_coverage
 set_census(mutations: 0, call_sites: 0)
 expect_failure([], "synthetic census row", "planted", detected_by: %i[policy]) { |_root| nil }
@@ -234,13 +176,9 @@ check(failures, POLICY_MUTATION_CENSUS[:mutations] == 1 && POLICY_MUTATION_CENSU
       "read off those counters and reads short without them, got " \
       "#{POLICY_MUTATION_CENSUS[:mutations]} mutations at #{POLICY_MUTATION_CENSUS[:sites].length} sites")
 
-# A synthetic baseline, so these cases do not rot the next time the real one is
-# refreshed -- and so the real constant is exercised separately, below, where
-# nothing but its own arithmetic can be what passes.
+# Synthetic, so these cases survive a refresh of the real baseline.
 synthetic_baseline = { mutations: 10, call_sites: 4 }
 
-# The rise, which is the direction this file moves in: a census above the floor
-# reports no failure and prints the gap the floor cannot see.
 set_census(mutations: 12, call_sites: 5)
 grown = []
 report = capture_census(grown, baseline: synthetic_baseline)
@@ -250,17 +188,14 @@ check(failures, report.include?("headroom +2 mutations +1 call sites"),
       "the census must print how far it stands above the floor, since a ratchet cannot see that " \
       "span: #{report.strip.inspect}")
 
-# The boundary. A floor is cleared by standing on it, or a legitimate refresh
-# reds the run that wrote it.
+# A floor is cleared by standing on it, or a legitimate refresh reds its own run.
 set_census(mutations: 10, call_sites: 4)
 exact = []
 capture_census(exact, baseline: synthetic_baseline)
 check(failures, exact.empty?,
       "a census exactly at its floor must report no failure, got #{exact.inspect}")
 
-# The collapse, in each figure on its own. Separately, because they move
-# separately -- a loop is one call site covering several mutations -- and a check
-# reading only the mutation count would pass a file whose call sites had gone.
+# Each figure on its own: they move separately.
 set_census(mutations: 3, call_sites: 4)
 shrunk = []
 capture_census(shrunk, baseline: synthetic_baseline)
@@ -278,9 +213,7 @@ check(failures, pruned_sites.any? { |failure| failure.include?("2 call sites, be
       "call sites must be floored on their own, not only through the mutation count, got " \
       "#{pruned_sites.inspect}")
 
-# The real constant, reached through the default argument. Every case above
-# passes a baseline of its own, so all of them would still pass if the default
-# were an empty hash or a zero -- which is the floor not being there at all.
+# The real constant, via the default argument; every case above passes its own.
 collapsed_census = []
 set_census(mutations: 0, call_sites: 0)
 capture_census(collapsed_census)
@@ -294,10 +227,7 @@ check(failures,
       end,
       "the default floor must be the committed baseline itself, got #{collapsed_census.inspect}")
 
-# The baseline's own shape, derived rather than stated: a floor that had been
-# zeroed, or whose two figures had been swapped, would be cleared by a census
-# that had collapsed. Every call site carries at least one mutation, so the
-# mutation figure can never legitimately be the smaller of the two.
+# A zeroed or swapped baseline would be cleared by a collapsed census.
 check(failures,
       POLICY_MUTATION_CENSUS_BASELINE.fetch(:call_sites).is_a?(Integer) &&
         POLICY_MUTATION_CENSUS_BASELINE.fetch(:call_sites).positive? &&
@@ -305,18 +235,8 @@ check(failures,
       "POLICY_MUTATION_CENSUS_BASELINE must floor both figures with positive counts and at least " \
       "as many mutations as call sites, got #{POLICY_MUTATION_CENSUS_BASELINE.inspect}")
 
-# The two shapes that execute a checker themselves are invisible to the
-# subtraction above -- nothing counts a run this file never sees -- so their
-# registration is asserted where it lives. Stated by name rather than derived:
-# the point is that these two are known to be outside the audit, and a third
-# arriving is what the tripwire is for.
-#
-# There were three until #639. `run_foundation_wrapper` in
-# tests/policy_manifest_test.rb was the other, and it went with the seven
-# tests/contracts/*-foundation.sh wrappers it planted defects into. This list
-# being stated is what turned that deletion into a failing check rather than a
-# silently shorter census -- which is the whole argument for stating it, made
-# once in practice.
+# The two shapes that execute a checker themselves are invisible to the subtraction
+# above. Stated rather than derived, so a removal fails here instead of shrinking the census.
 {
   "tests/policy_mutation_support.rb" => ["def check_direct_policy_hostile_environment",
                                          "def run_compose_metadata_behavior"]
@@ -333,10 +253,8 @@ check(failures,
   end
 end
 
-# The pool (#727), which everything above pins to one worker. Run in child
-# processes so each meets CASE_POOL_WORKERS when the support file loads; the
-# sandbox and the policy scripts are stubbed, and each row sleeps for as long as
-# it says, so the rows written first finish last.
+# The pool (#727), in child processes so each reads CASE_POOL_WORKERS at load. Rows
+# written first sleep longest, so they finish last.
 POOLED_ROWS_CHILD = <<~'RUBY'
   ARGV.replace(["--audit"])
   require ENV.fetch("POLICY_MUTATION_SUPPORT")
@@ -398,9 +316,7 @@ check(failures, pooled_out == serial_out,
       "the pooled audit must print its drift in the serial order, whichever row finishes first: " \
       "serial #{serial_out.inspect}, pooled #{pooled_out.inspect}")
 
-# A row's scripts are still running while later rows are written, so a write to
-# process-wide state would reach them. The support file refuses one while rows
-# are pending, which holds whatever the spelling of the row that makes it.
+# A write to process-wide state would reach rows still running, so it is refused.
 guarded_out, guarded_err, = pooled_rows_output("4", "PLANT_PROCESS_STATE_WRITE" => "1")
 ["ENV[]=", "ENV.delete", "Dir.chdir", "File.umask"].each do |name|
   check(failures, guarded_out.match?(/^REFUSED #{Regexp.escape(name)}: .*drain_policy_rows/),

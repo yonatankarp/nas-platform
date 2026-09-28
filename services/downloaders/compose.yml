@@ -1,9 +1,6 @@
 ---
-# Platform fragments. Compose resolves a YAML anchor only inside the file that
-# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
-# copies equal and records there why cross-file sharing was not taken. A
-# container needing different health-check timing overrides only the fields it
-# changes, so a deviation reads as a deviation.
+# Platform fragments, one copy per stack (anchors are file-local); policy_test
+# pins the copies equal. Health-check deviations override only changed fields.
 x-logging: &default-logging
   driver: json-file
   options:
@@ -12,10 +9,8 @@ x-logging: &default-logging
 
 x-service-defaults: &service-defaults
   cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
-  # SABnzbd's linuxserver.io entrypoint reaches PUID/PGID by calling setuid(2)
-  # as root, which no_new_privs does not restrict, and Unpackerr is a single Go
-  # binary already running as the platform identity. Neither executes a setuid
-  # binary, so neither loses anything by refusing that escalation outright.
+  # Entrypoints reach PUID/PGID via setuid(2), which no_new_privs allows; nothing
+  # here executes a setuid binary.
   security_opt:
     - no-new-privileges:true
   restart: unless-stopped
@@ -39,12 +34,8 @@ services:
     labels:
       dev.dozzle.group: downloaders
       dev.dozzle.name: sabnzbd
-      # A changed bind source is not a changed container: Docker resolves the
-      # mount below once, when this container starts, so without this label
-      # Compose leaves a container running an older release's gate while
-      # `current` moves on (#810). The gate's sha256 makes editing it a changed
-      # definition, and nothing else does -- so the recreate happens when the
-      # gate changes rather than on every release.
+      # Docker resolves the bind source once at container start, so the gate's
+      # sha256 makes editing it a changed definition and forces a recreate (#810).
       dev.nas-platform.downloaders.clamav-gate-sha256: ${SABNZBD_CLAMAV_GATE_SHA256:?}
     ports:
       - "8085:8080"
@@ -52,16 +43,8 @@ services:
       - ${SABNZBD_CONFIG_PATH:?}:/config
       - ${MEDIA_ACQUISITION_PATH:?}:/data/media/.acquisition
       - ${BOOKS_ACQUISITION_PATH:?}:/data/books/.acquisition
-      # The post-processing gate, mounted from the immutable release rather than
-      # copied into /config, for the reason services/dozzle/alert_relay.py is
-      # mounted the same way: the release is what a deployment replaces, so the
-      # controller writes the script in exactly one place. That alone does not
-      # keep the script and the compose file that references it on one revision
-      # -- the mount is resolved at container start and `current` is a symlink
-      # that moves -- which is what the sha256 label above is for (#810).
-      # `misc.script_dir` points SABnzbd at this directory and
-      # `misc.script_can_fail` is what makes its exit code mean anything; both
-      # are reconciled in roles/downloaders/defaults/main.yml.
+      # Mounted from the immutable release; misc.script_dir and
+      # misc.script_can_fail are reconciled in roles/downloaders/defaults/main.yml.
       - ${PLATFORM_CURRENT_DIR:?}/services/downloaders/clamav_gate.py:/scripts/clamav_gate.py:ro
     environment:
       PUID: ${NAS_UID:?}
@@ -69,12 +52,8 @@ services:
       UMASK: "022"
       TZ: ${TZ:?}
       SABNZBD_API_KEY: ${SABNZBD_API_KEY:?}
-      # The gate above pages the operator when it imports a job it could not
-      # scan, so the Pushover Alerts application reaches it the way it reaches
-      # services/dozzle/alert_relay.py: through this container's environment.
-      # A post-processing script has no other route -- the protected curl
-      # configs the poller and the image prune use live in the deploy account's
-      # home on the host.
+      # The gate pages when it imports a job it could not scan; the environment
+      # is a post-processing script's only route to Pushover.
       PUSHOVER_API_URL: ${PUSHOVER_API_URL:?}
       PUSHOVER_ALERTS_TOKEN: ${PUSHOVER_ALERTS_TOKEN:?}
       PUSHOVER_USER_KEY: ${PUSHOVER_USER_KEY:?}
@@ -86,88 +65,42 @@ services:
           curl --fail --silent --show-error
           "http://127.0.0.1:8080/api?mode=version&output=json&apikey=$${SABNZBD_API_KEY}"
           >/dev/null
-    # SABnzbd answers SIGTERM by pausing the active download and writing the
-    # queue and history admin under its recovery: critical config directory. A
-    # minute lets that finish, so a restart resumes the transfer instead of
-    # re-fetching it. Unpackerr deliberately gets no window: it holds no
-    # database, and a half-finished extraction is discarded and retried.
+    # A minute to pause the download and write the queue, so a restart resumes
+    # rather than re-fetches. Unpackerr needs no window.
     stop_grace_period: 1m
 
-  # The gate the SABnzbd post-processing script talks to, and the reason this is
-  # a daemon rather than a `clamscan` per job: the signature database is ~1.4GB
-  # to parse, which is minutes of CPU on this host, and a per-job scan would pay
-  # it every time. clamd parses it once at start and holds it resident. Expect
-  # roughly 1.5-2.0GB RSS from this container -- the largest single figure on the
-  # host, against the 4.9GB the other thirty held when CLAUDE.md last measured
-  # them -- and no `mem_limit`, deliberately: the resident set is a fixed
-  # database rather than a leak, and a limit under it would OOM-kill clamd in the
-  # middle of a scan, which this platform's gate reads as "scanner unavailable"
-  # and turns into a failed download.
-  #
-  # The image carrying the bundled database rather than `1.5.1_base`, which does
-  # not: `_base` cannot answer a scan until freshclam has fetched the whole set,
-  # so every job completing in that window would hit the fail-closed path and
-  # blocklist its release. freshclam still runs inside this container and
-  # refreshes from the bundled snapshot forward.
+  # A daemon rather than a clamscan per job: the ~1.4GB signature set is parsed
+  # once and held resident (~1.5-2GB RSS). No mem_limit on purpose: an OOM kill
+  # mid-scan reads as "scanner unavailable" and fails the download. The bundled
+  # image (not `_base`) can scan before freshclam finishes its first fetch.
   clamav:
     <<: *service-defaults
     container_name: clamav
     image: docker.io/clamav/clamav:1.5.4@sha256:0e31ce089574268aefa0b543767d66b70240ab51ed49eec53e07f18d5629d817
-    # One CPU, and the ceiling is the point rather than a guess at the workload.
-    # A full-volume ADM clamscan holding a whole core is what kept the Beszel
-    # temperature alert ringing for 22 hours; this container is the same engine
-    # pointed at far less, and the ceiling is what keeps it from becoming the
-    # same thing again.
+    # The ceiling is the point: a full-volume ADM clamscan holding a core kept the
+    # temperature alert ringing for 22 hours.
     cpus: 1.0
     labels:
       dev.dozzle.group: downloaders
       dev.dozzle.name: clamav
-    # Read-only, and the paths are identical to SABnzbd's on purpose. The gate
-    # sends clamd a path string that SABnzbd resolved in its own namespace, and
-    # clamd resolves it again in this one; if the two mounts ever diverge, clamd
-    # scans a different tree or answers ERROR. Changing one of these four lines
-    # means changing its twin above.
+    # Paths identical to SABnzbd's on purpose: clamd resolves the gate's path
+    # string in its own namespace. Change these with their twins above.
     volumes:
       - ${MEDIA_ACQUISITION_PATH:?}:/data/media/.acquisition:ro
       - ${BOOKS_ACQUISITION_PATH:?}:/data/books/.acquisition:ro
     environment:
       TZ: ${TZ:?}
-    # No PUID/PGID and no `user:`, unlike every other container in this stack.
-    # The image's entrypoint runs freshclam as its own `clamav` user against
-    # /var/lib/clamav, which that user owns; a foreign uid cannot write there and
-    # the database would never refresh. The mounts above are read-only, so what
-    # this container can reach is bounded by them rather than by its uid.
+    # No PUID/PGID or `user:`: freshclam runs as the image's own `clamav` user
+    # and a foreign uid could not refresh the database. Read-only mounts bound it.
     healthcheck:
       <<: *healthcheck-defaults
-      # A real round-trip to the daemon, not an observation that a process
-      # exists: clamd does not accept a connection at all until it has parsed
-      # the signature set, so PING/PONG is exactly the readiness the gate needs.
-      # `clamdscan` reaches clamd over whichever transport clamd.conf declares,
-      # which in this image is both the local socket and TCP 3310; the probe
-      # therefore proves the daemon is answering rather than that this one port
-      # is bound. The image's own clamdcheck.sh wraps the same call.
+      # clamd accepts no connection until the signatures are parsed, so PING/PONG
+      # is exactly the readiness the gate needs.
       test: [CMD-SHELL, "clamdscan --ping 1"]
-      # Parsing ~1.4GB of signatures takes a minute or two on this host, and a
-      # clamd still doing it is not broken. The shared 60s start period would
-      # report it unhealthy before it had a chance to answer.
-      #
-      # 240s is deliberately *longer* than the 180s platform_compose_wait_timeout
-      # this stack deploys under, which looks backwards and is the safer of the
-      # two failures. Inside its start period a slow container reports
-      # Health=starting and Status=running, which is neither of the two things
-      # roles/container_health selects on (status=restarting, health=unhealthy),
-      # so the deployment fails on Compose's own wait and leaves clamd running
-      # and still parsing. The poller's next tick five minutes later finds it
-      # healthy and converges. Shorten this below the wait and the opposite
-      # happens: clamd is declared unhealthy while it is merely slow,
-      # container_health force-recreates it, the parse restarts from zero and the
-      # next run is no more likely to finish than the last.
-      #
-      # Whether clamd actually needs more than 180s here has not been measured --
-      # it is one core of a Celeron N5105 against a database this pin will keep
-      # growing. If the first converge after this lands reds at the downloaders
-      # role on a wait timeout, that is this paragraph and not a fault; the tick
-      # after it should be green.
+      # Parsing takes minutes. Longer than the 180s Compose wait on purpose: a
+      # starting container is not recreated by container_health, so a slow first
+      # converge fails the wait and the next tick converges; shorter would restart
+      # the parse from zero in a loop.
       start_period: 240s
 
   unpackerr:
@@ -188,16 +121,8 @@ services:
       UN_DIR_MODE: "0755"
       UN_PARALLEL: "1"
       UN_MAX_RETRIES: "3"
-      # Unpackerr caps the uncompressed size of a single extraction and defaults
-      # that cap per application: 20GB for Sonarr, 75GB for Radarr
-      # (unpackerr v0.16.1, pkg/unpackerr/start.go). A television season pack is
-      # routinely larger than 20GB, and the refusal is neither a download failure
-      # nor an archive failure -- it reports "extracted size exceeds maximum
-      # bytes", holds the item at "Awaiting Import" for ever and reads, from the
-      # library, as a season that silently never arrived. This platform bounds
-      # extraction by the disk it writes to rather than by an archive-size
-      # guess, so both caps are disabled explicitly. "0" is upstream's spelling
-      # for no limit; empty would restore the default.
+      # Unpackerr's per-app extraction caps (20GB Sonarr) silently strand season
+      # packs at "Awaiting Import"; "0" disables the cap, empty restores the default.
       UN_SONARR_0_MAX_BYTES: "0"
       UN_RADARR_0_MAX_BYTES: "0"
       UN_SONARR_0_URL: http://sonarr:8989
@@ -208,39 +133,17 @@ services:
       UN_RADARR_0_API_KEY: ${RADARR_API_KEY:?}
       UN_RADARR_0_PATHS_0: /data/media/.acquisition/usenet/movies
       UN_RADARR_0_PROTOCOLS: usenet
-      # The only endpoint the binary can be asked to expose, and the only reason
-      # it is asked. `metrics` is upstream's on-switch for the whole web server
-      # rather than a separate exporter — WebServer.Enabled() is `Metrics &&
-      # ListenAddr != ""` — so it is what turns the listener on. The address is
-      # the loopback of the container's own network namespace, which is where
-      # the health check runs and nowhere else: no port is published, the
-      # media-control network cannot reach it, and there is no credential on it
-      # to protect.
+      # `metrics` is upstream's on-switch for the whole web server; it listens on
+      # the container's own loopback only, for the health check.
       UN_WEBSERVER_METRICS: "true"
       UN_WEBSERVER_LISTEN_ADDR: 127.0.0.1:5656
     healthcheck:
       <<: *healthcheck-defaults
-      # PID 1 in this container is Unpackerr itself, so the `kill -0 1` this
-      # replaces asked the process whether it existed and was answered by the
-      # fact that it was asking — and a container whose PID 1 is gone is a
-      # container Docker has stopped probing. The probe could not fail. This one
-      # can: it is served by the same process, from a goroutine started before
-      # the work loop, so a dead, deadlocked or unschedulable Unpackerr answers
-      # nothing and the container goes unhealthy for Dozzle's rule to see.
-      # It reads the index handler, which is a static string; /metrics would
-      # walk the live extraction map from the HTTP goroutine, and the probe is
-      # not the place to exercise that. busybox wget is what the alpine base
-      # provides — there is no curl in this image — and the GET is deliberate,
-      # because the router registers GET only and answers --spider's HEAD 405.
+      # Served by Unpackerr itself, so a dead or deadlocked process answers
+      # nothing. GET, not HEAD: the router answers --spider's HEAD with 405.
       test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1:5656/"]
-      # Deviation carried over unchanged from before the defaults existed; the
-      # repository still records no reason for it, and replacing the probe is
-      # not where a readiness window gets renegotiated either. The value is kept
-      # rather than explained, and the new probe is comfortable inside it: the
-      # listener binds during startup, before the first queue poll, so this
-      # container is ready in about a second. Keeping it also keeps a broken
-      # probe reporting unhealthy at ~105s, inside the 180s Compose deploy wait,
-      # where the shared 60s/5 tuple would time the deployment out instead.
+      # Deviation kept from before the defaults, reason unrecorded; it keeps a
+      # broken probe unhealthy at ~105s, inside the 180s deploy wait.
       retries: 3
       start_period: 15s
 

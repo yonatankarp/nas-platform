@@ -1,37 +1,21 @@
-# Run from a workstation over the LAN or Tailscale. Connection coordinates are
-# inventory inputs, not portable application credentials.
+# Run from a workstation over the LAN or Tailscale.
 platform_hosts:
   children:
     nas_hosts:
       hosts:
         nas:
           ansible_connection: ssh
-          # The two transport coordinates refuse to be inferred. lookup('env')
-          # returns the empty string for a variable that was never exported, not
-          # an undefined value, so a bare lookup hands Ansible a falsy value and
-          # Ansible substitutes its own default: ansible_host falls back to the
-          # inventory hostname -- the literal `nas`, which may be a different
-          # machine on this network -- and ansible_user falls back to the login
-          # name of whoever ran the playbook. Both substitutions are plausible
-          # and silent. undef() turns the empty string back into an undefined
-          # value, which fails while Ansible is templating the connection
-          # keyword, naming the variable and this line, before a single packet
-          # is sent. Contrast platform_public_host below: it is not a transport
-          # coordinate, its failure mode is a wrong published address rather
-          # than the wrong machine, and preflight already refuses it empty
-          # before any target mutation -- so it stays a bare lookup, which is
-          # also what tests/policy_test.rb requires of it.
+          # undef() makes an unexported variable fail loudly: a bare lookup returns "",
+          # and Ansible then silently falls back to the inventory name `nas` and the
+          # local login -- possibly the wrong machine.
           ansible_host: >-
             {{ lookup('env', 'PLATFORM_NAS_ADDRESS') |
                default(undef(hint='PLATFORM_NAS_ADDRESS is unset: export the address this run reaches the NAS at'), true) }}
           ansible_user: >-
             {{ lookup('env', 'PLATFORM_NAS_USER') |
                default(undef(hint='PLATFORM_NAS_USER is unset: export the account this run logs into the NAS as'), true) }}
-          # Deliberately has no fallback to PLATFORM_NAS_ADDRESS. This is the
-          # identity handed to clients -- Beszel's application URL, Seerr's
-          # notification links, Vaultwarden's WebAuthn domain -- so inheriting
-          # the SSH transport address hands devices an address they may not use
-          # and nothing reports an error. Unset fails preflight loudly instead.
+          # No fallback to PLATFORM_NAS_ADDRESS: this is the address handed to clients,
+          # so unset fails preflight instead.
           platform_public_host: >-
             {{ lookup('env', 'PLATFORM_PUBLIC_HOST') }}
           platform_callback_host: >-

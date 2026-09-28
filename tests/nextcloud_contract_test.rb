@@ -1,45 +1,9 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 #
-# Behaviour of the Nextcloud service contract's two Ruby programs and its
-# wrapper.
-#
-# Three layers, because the contract has three kinds of property:
-#
-#   Static -- build a fixture repository from the files the program reads, break
-#   exactly one thing in it, and require the program to name that thing. The
-#   assertion text is the interface: a guard that fails for the wrong reason has
-#   stopped guarding what it names, so every row pins the exact diagnostic.
-#
-#   Runtime -- serve Nextcloud's status endpoint and OCS from an HTTP fixture and
-#   put `docker` and `ansible-vault` stubs on PATH, so every census, occ read,
-#   status field and credential outcome can be moved one at a time. There is one
-#   runtime mode here rather than Seafile's four, and tests/contracts/nextcloud.sh
-#   records why.
-#
-#   Wrapper -- tests/contracts/nextcloud.sh is what turns a mode into an
-#   invocation. Its rows prove the mode guard, that the mode reaches the runtime
-#   half, the run-mode environment contract, that both programs come from the
-#   checkout while the tree the static half inspects does not, and that neither
-#   can eat the caller's stdin.
-#
-# Run with --self-test to plant a regression in each program and in the wrapper.
-# It accumulates its mismatches rather than aborting on the first, and every
-# plant is built before the worker pool: `abort` inside a worker raises
-# SystemExit there, which in_parallel_cases deliberately does not rescue, so the
-# run ends on it with nothing reported rather than naming the plant that failed.
-#
-# On the cost of this file, which the `static` budget rules in CLAUDE.md and their
-# evidence in docs/ci-performance-history.md are about:
-# every invocation that must end in a refusal by the wrapper substitutes a stub
-# for the runtime half, and every invocation that reaches the real runtime half
-# carries each of its timeout budgets in its own environment. Nothing here is
-# entitled to wait -- a row whose expected outcome is a refusal has no reason to
-# sit out a readiness budget, and that shape is exactly what cost the seerr
-# self-test 368 seconds before #331. RUNTIME_BUDGETS is the shared set, and a row
-# may override any of them through `environment:`; exactly one does, because it
-# is the only row whose expected refusal IS a deadline expiring, and it says so
-# where it stands.
+# Nextcloud contract: static rows break one fixture file each, runtime rows move one
+# stub/HTTP field each, wrapper rows prove mode guard, env, two roots and stdin.
+# --self-test plants are built before the pool: `abort` in a worker reports nothing.
 
 require "fileutils"
 require "json"
@@ -59,8 +23,7 @@ include TestScaffold
 include ContractTestSupport
 
 ROOT = File.expand_path("..", __dir__)
-# The prefix every refusal this file judges has to carry. Matching the fragment
-# alone accepted a backtrace or an echoed argument as a refusal (#352).
+# Matching the fragment alone accepted a backtrace as a refusal (#352).
 DIAGNOSTIC_PREFIX = "Nextcloud contract failed: "
 CONTRACT = File.join(ROOT, "tests", "contracts", "nextcloud.sh")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "nextcloud-static.rb")
@@ -69,10 +32,7 @@ RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "nextcloud-runtime.rb")
 SUCCESS_LINE = "nextcloud static contract: gated four-container document store ownership holds"
 MODE_REFUSAL = "nextcloud contract accepts only static or run"
 
-# Exactly the static program's own `required` list plus the shared flatten_tasks
-# it requires through PLATFORM_CONTRACT_REPO_DIR. tests/contracts/nextcloud.sh is
-# in it because the static half reads the wrapper's default port out of the
-# inspected tree and compares it with that tree's role default.
+# The static program's `required` list plus flatten_tasks and the wrapper (default port).
 FIXTURE_FILES = %w[
   roles/nextcloud/defaults/main.yml
   roles/nextcloud/meta/argument_specs.yml
@@ -103,10 +63,7 @@ def build_fixture_repository(root)
   end
 end
 
-# Every substitution states how many matches it expects. A replacement that
-# still contains its own pattern plants nothing, and a bare `sub` cannot tell
-# that from a plant that worked: the row then reports a pass, or a failure with
-# the wrong diagnostic.
+# Counted substitution: a replacement still matching its pattern would plant nothing.
 def mutate_text(root, relative, pattern, replacement, occurrences: 1)
   path = File.join(root, relative)
   body = File.read(path)
@@ -237,9 +194,7 @@ COMPOSE_STATIC_ROWS = [
     expects: "the Nextcloud cron sidecar must bypass the installing entrypoint"
   },
   {
-    # Correct for postgres 17 and earlier, and it is what services/immich still
-    # does on its pinned 14 -- which is exactly why copying the wrong sibling is
-    # the plausible mistake rather than an implausible one.
+    # Correct for postgres <=17 (Immich still uses it), hence the plausible wrong copy.
     name: "a cluster bound one level below where postgres 18 puts it",
     break: lambda { |root|
       edit_yaml(root, "services/nextcloud/compose.yml") do |document|
@@ -267,9 +222,8 @@ COMPOSE_STATIC_ROWS = [
     expects: "the Nextcloud cron sidecar must wait for an installed application"
   },
   {
-    # THE ROW THIS CONTRACT EXISTS FOR. Removing this variable is not a
-    # misconfiguration that a later converge repairs: the installer mints
-    # `oc_admin` on the first converge and the install branch never runs again.
+    # THE ROW THIS CONTRACT EXISTS FOR: the installer mints `oc_admin` on the first
+    # converge and the install branch never runs again.
     name: "an installer left free to mint its own database account",
     break: lambda { |root|
       edit_yaml(root, "services/nextcloud/compose.yml") do |document|
@@ -288,9 +242,7 @@ COMPOSE_STATIC_ROWS = [
     expects: "Nextcloud must push NC_dbpassword so the vault outranks config.php"
   },
   {
-    # Measured rather than reasoned: an NC_ override of an array-valued setting
-    # makes trusted_domains a scalar, and every request then answers 400 --
-    # /status.php included, for Host: 127.0.0.1 as much as for anything else.
+    # Measured: NC_ on an array setting makes trusted_domains a scalar; every request 400s.
     name: "an array-valued system setting pushed through the environment",
     break: lambda { |root|
       edit_yaml(root, "services/nextcloud/compose.yml") do |document|
@@ -300,12 +252,8 @@ COMPOSE_STATIC_ROWS = [
     expects: "Nextcloud must not push an array-valued system setting through NC_"
   },
   {
-    # The installer landmine's second half. Suppressing setup_create_db_user keeps
-    # the installer on the account it was handed; this is what makes that account
-    # the vault's own rather than whatever the postgres image would otherwise
-    # initialise. A cluster created as `postgres`@`postgres` is a stack holding a
-    # credential this vault never authored, unrotatable for the same reason the
-    # minted `oc_admin` is -- so both halves have to be asserted, not one.
+    # Second half of the installer landmine: a cluster created as postgres@postgres holds
+    # a credential the vault never authored, as unrotatable as a minted oc_admin.
     name: "a cluster initialised with an account the vault never authored",
     break: lambda { |root|
       edit_yaml(root, "services/nextcloud/compose.yml") do |document|
@@ -336,9 +284,7 @@ COMPOSE_STATIC_ROWS = [
   }
 ].freeze
 
-# The role's own half. Split from the compose rows above only so the two lists
-# stay readable; they are concatenated into one STATIC_ROWS below and the runner
-# does not distinguish them.
+# Concatenated with the compose rows into STATIC_ROWS.
 ROLE_STATIC_ROWS = [
   {
     name: "a stage the role stopped importing",
@@ -350,14 +296,8 @@ ROLE_STATIC_ROWS = [
     expects: "the Nextcloud role must import every stage it owns"
   },
   {
-    # A dynamic include puts the task file outside what
-    # tests/policy_mutation_support.rb copies into a sandbox and outside what
-    # verify.yml's `tags: [never]` can reach, and neither failure names itself.
-    #
-    # ADDED rather than substituted, and the self-test is what forced that:
-    # converting an existing import into an include also removes that stage from
-    # the imported list, so "the role must import every stage it owns" fired
-    # first and this row proved that assertion instead of the one it names.
+    # A dynamic include escapes the mutation sandbox and verify.yml's `tags: [never]`.
+    # Added, not substituted: converting an import would trip the import-every-stage row first.
     name: "a stage reached by a dynamic include",
     break: lambda { |root|
       edit_nextcloud_tasks(root, "main") do |document|
@@ -383,10 +323,8 @@ ROLE_STATIC_ROWS = [
     expects: "both Nextcloud reconciliations must run after the deployment"
   },
   {
-    # The ordering whose violation is silent. The administrator probe is an HTTP
-    # request, and a Host header the server does not trust answers 400, which the
-    # classifier reads as `unavailable` rather than as `rotated` -- so the repair
-    # declines to run on exactly the stack that needed it.
+    # Silent if violated: an untrusted Host answers 400, read as `unavailable`, so the
+    # admin repair never runs.
     name: "an administrator probed before the domains that let it answer",
     break: lambda { |root|
       edit_nextcloud_tasks(root, "main") do |document|
@@ -426,9 +364,7 @@ ROLE_STATIC_ROWS = [
     expects: "every Nextcloud deployment task must be gated on the operator switch"
   },
   {
-    # THE ROW CI WROTE. The verify assert shipped without this gate and reported
-    # an absent Nextcloud as a broken one, in the smoke and idempotence-check
-    # lanes, on a stack that was correctly switched off.
+    # The verify assert once reported a correctly switched-off stack as broken.
     name: "a task that reads a stack this run never started",
     break: lambda { |root|
       edit_nextcloud_tasks(root, "verify") do |document|
@@ -452,9 +388,7 @@ ROLE_STATIC_ROWS = [
     expects: "every Nextcloud occ invocation must run as the account that owns the installation"
   },
   {
-    # `occ config:system:set trusted_domains N` REPLACES index N, so a constant
-    # there overwrites an entry the server already trusts -- and the first one it
-    # would overwrite is the entry the installer put at 0.
+    # `config:system:set trusted_domains N` REPLACES index N, starting with the installer's 0.
     name: "a trusted domain repair that overwrites index zero",
     break: lambda { |root|
       edit_nextcloud_tasks(root, "reconcile_trusted_domains") do |document|
@@ -494,9 +428,7 @@ ROLE_STATIC_ROWS = [
     expects: "the rotated Nextcloud administrator must be reset through the environment"
   },
   {
-    # occ user:resetpassword always succeeds and always re-hashes, which
-    # invalidates every session the account holds. Unconditional, that logs every
-    # client out on every five-minute poller tick.
+    # resetpassword always re-hashes, logging every client out on every poller tick.
     name: "an administrator reset on every converge rather than on a refusal",
     break: lambda { |root|
       edit_nextcloud_tasks(root, "reconcile_admin") do |document|
@@ -510,12 +442,8 @@ ROLE_STATIC_ROWS = [
     expects: "the Nextcloud administrator must be repaired only when the server refuses the vault"
   },
   {
-    # The redaction rule beside it cannot see this task: it selects on tasks that
-    # spell a `vault_nextcloud_` name, and this one reads the password out of the
-    # rendered container environment instead. So the guard is separate and this
-    # row is what proves it still runs -- an unredacted failure of that exec
-    # prints the whole container environment into the play's output, and from
-    # there into whatever CI or the poller kept.
+    # The vault_nextcloud_ redaction rule cannot see this task (it reads the rendered env);
+    # unredacted, a failed exec prints the whole container environment.
     name: "an administrator repair that would print the container environment",
     break: lambda { |root|
       edit_nextcloud_tasks(root, "reconcile_admin") do |document|
@@ -625,10 +553,7 @@ ROLE_STATIC_ROWS = [
     expects: "the Nextcloud restart must be a task rather than a deferred handler"
   },
   {
-    # #492's defect class, planted rather than assumed. This role writes no Go
-    # template today, so this row is the only thing that demonstrates the scanner
-    # can still see one -- which is why the guard is carried despite having no
-    # subject in the shipped tree.
+    # #492's defect class: no Go template today, so this row proves the scanner still sees one.
     name: "a raw tag inside a Jinja expression",
     break: lambda { |root|
       edit_nextcloud_tasks(root, "report") do |document|
@@ -638,9 +563,7 @@ ROLE_STATIC_ROWS = [
     expects: "no Nextcloud Jinja expression may contain a raw tag, which Jinja will not process"
   },
   {
-    # A bare `docker inspect` prints .Config.Env, which for this stack is three
-    # passwords in full. Vacuous against the shipped role, which inspects
-    # nothing, and this row is what proves it stops being vacuous.
+    # A bare `docker inspect` prints .Config.Env (three passwords); vacuous until planted.
     name: "an inspection wide enough to print the container environment",
     break: lambda { |root|
       edit_nextcloud_tasks(root, "report") do |document|
@@ -665,9 +588,7 @@ ROLE_STATIC_ROWS = [
     expects: "must disable the photo app Immich already serves"
   },
   {
-    # The off-set's other direction. `text` is collaborative editing, which #500
-    # names as one of the three features this platform adopted Nextcloud for, so
-    # it is the entry a later prune would most plausibly reach for.
+    # `text` (collaborative editing) is one reason Nextcloud was adopted (#500).
     name: "an app policy that disabled the collaborative editor it was adopted for",
     break: lambda { |root|
       edit_yaml(root, "roles/nextcloud/defaults/main.yml") do |document|
@@ -688,9 +609,7 @@ ROLE_STATIC_ROWS = [
     expects: "must run after the administrator probe and before the report"
   },
   {
-    # docker_compose_v2_exec sets check_rc only for `detach`, so a census that
-    # failed would otherwise read as an empty app set and report a converged
-    # deployment on a container it never reached.
+    # docker_compose_v2_exec sets check_rc only for `detach`; a failed census reads as empty.
     name: "an application census that reads a failed exit as an empty app set",
     break: lambda { |root|
       edit_nextcloud_tasks(root, "reconcile_apps") do |document|
@@ -700,9 +619,7 @@ ROLE_STATIC_ROWS = [
     expects: "census must refuse a nonzero exit"
   },
   {
-    # Without it, a name that can never be disabled -- one of the fourteen in
-    # core/shipped.json's alwaysEnabled -- exits 2 on every five-minute poller
-    # tick behind a clean recap.
+    # An alwaysEnabled app name would otherwise exit 2 every poller tick behind a clean recap.
     name: "an application disable that reports success on any exit code",
     break: lambda { |root|
       edit_nextcloud_tasks(root, "reconcile_apps") do |document|
@@ -724,9 +641,7 @@ ROLE_STATIC_ROWS = [
     expects: "must loop over what is still enabled"
   },
   {
-    # The stage's silent no-op. The loop reads the name with `| default([])`, so
-    # a reconciliation that binds it nowhere runs zero times for ever and every
-    # app this platform disables stays enabled behind a clean recap.
+    # The loop reads the name with `| default([])`, so binding nothing runs zero times silently.
     name: "an application policy that binds nothing for its own loop to read",
     break: lambda { |root|
       edit_nextcloud_tasks(root, "reconcile_apps") do |document|
@@ -736,10 +651,8 @@ ROLE_STATIC_ROWS = [
     expects: "must bind the set its disable loop reads"
   },
   {
-    # The same shape one step in: the name is bound, from the declared list
-    # rather than the effective one, which orphans nextcloud_additional_disabled_apps
-    # while the defaults, the argument_specs and the check-mode debug all still
-    # describe that escape hatch as live.
+    # Bound from the declared list, not the effective one: orphans
+    # nextcloud_additional_disabled_apps.
     name: "an application policy that resolves the declared list rather than the effective one",
     break: lambda { |root|
       edit_nextcloud_tasks(root, "reconcile_apps") do |document|
@@ -752,9 +665,7 @@ ROLE_STATIC_ROWS = [
     expects: "must be the effective list intersected with the live census"
   },
   {
-    # `occ app:disable` exits 0 on an app that is already off, so without the
-    # discriminator every such run reports changed and the idempotence lane is
-    # what notices rather than this contract.
+    # `occ app:disable` exits 0 on an app already off, so it needs the changed_when discriminator.
     name: "an application disable that reports a change on an app that was already off",
     break: lambda { |root|
       edit_nextcloud_tasks(root, "reconcile_apps") do |document|
@@ -764,10 +675,8 @@ ROLE_STATIC_ROWS = [
     expects: "must not report a change on an app that was already off"
   },
   {
-    # The other half of the placement, and it moves the stage PAST the report
-    # rather than to the front: the conjunct above still has to hold, or this row
-    # is caught by that one instead of by its own. An app switched back off is a
-    # change the deployment report has to carry.
+    # Moves the stage past the report, not to the front, so this row and not the one
+    # above catches it.
     name: "an app policy that runs after the report that has to carry its change",
     break: lambda { |root|
       edit_nextcloud_tasks(root, "main") do |document|
@@ -780,10 +689,7 @@ ROLE_STATIC_ROWS = [
     expects: "must run after the administrator probe and before the report"
   },
   {
-    # The report's changed-expression, which until now was asserted by nothing:
-    # any one of its six terms could be deleted and every property in the static
-    # program still held. The term this row removes is one of the two that had
-    # been unguarded since they were written.
+    # Nothing else pins the report's changed-expression terms.
     name: "a deployment report that drops a result which can report a change",
     break: lambda { |root|
       mutate_text(root, "roles/nextcloud/tasks/report.yml",
@@ -792,10 +698,7 @@ ROLE_STATIC_ROWS = [
     expects: "must name every result that can report a change"
   },
   {
-    # The other direction, which is what a hand-written list rots into rather
-    # than what a careless edit produces: a term naming a register the role
-    # stopped writing is not an error, it is `(gone | default({})) is changed`
-    # evaluating to false for ever.
+    # A stale register name evaluates to false for ever rather than erroring.
     name: "a deployment report that names a result the role no longer registers",
     break: lambda { |root|
       mutate_text(root, "roles/nextcloud/tasks/report.yml",
@@ -806,9 +709,7 @@ ROLE_STATIC_ROWS = [
     expects: "must not name a result this role no longer registers"
   },
   {
-    # The two entries defaults/main.yml calls principle rather than taste. Both
-    # could be dropped with a green gate while that file said the taxonomy
-    # existed so a later reader "should not have to re-derive" them.
+    # The two entries defaults/main.yml calls principle rather than taste.
     name: "an application policy that stops disabling the two apps that phone home",
     break: lambda { |root|
       edit_yaml(root, "roles/nextcloud/defaults/main.yml") do |document|
@@ -839,10 +740,7 @@ def static_failures(program, rows = STATIC_ROWS)
 end
 
 # --- runtime layer ---------------------------------------------------------
-#
-# The runtime half takes a mode and reads everything else from the environment,
-# so the sandbox is environment plus PATH stubs plus one HTTP fixture, and each
-# row moves exactly one of them.
+# Each row moves exactly one of: environment, PATH stubs, HTTP fixture.
 
 ADMIN_USERNAME = "nextcloud-contract-admin"
 ADMIN_PASSWORD = "nextcloud-contract-admin-password"
@@ -853,8 +751,7 @@ CRON_CONTAINER = "fixture-nextcloud-cron"
 DATABASE_CONTAINER = "fixture-nextcloud-db"
 CACHE_CONTAINER = "fixture-nextcloud-cache"
 
-# What /status.php answers on a healthy installation, field for field. The
-# contract reads four of these and a row moves one at a time.
+# What /status.php answers on a healthy installation; a row moves one field.
 def status_document(installed: true, maintenance: false, needs_db_upgrade: false)
   {
     "installed" => installed,
@@ -880,16 +777,12 @@ RUNTIME_DEFAULTS = {
   vault_ok: true,
   vault_document: nil,
   occ_ok: true,
-  # The account Nextcloud reports connecting as. `oc_admin` is the installer
-  # having minted its own, which is the landmine this whole stack is shaped
-  # around, and it is a row rather than a hypothetical.
+  # `oc_admin` would be the installer having minted its own account.
   live_dbuser: DB_USERNAME,
   live_dbname: DB_NAME,
   trusted_domains: "127.0.0.1\nlocalhost\n",
-  # `cron` is the settled state; nil is the one a fresh install is really in,
-  # because oc_appconfig holds no `core|backgroundjobs_mode` row until cron.php
-  # writes one. The stub models nil as GetConfig.php does -- exit 1 with nothing
-  # on either stream unless --default-value was passed.
+  # nil models a fresh install (no mode row until cron.php runs); the stub then exits 1
+  # silently, as GetConfig.php does, unless --default-value is passed.
   backgroundjobs_mode: "cron",
   # An age rather than a timestamp, because a frozen timestamp in a fixture ages
   # with the file. nil is an installation that records no core|installedat.
@@ -901,9 +794,7 @@ RUNTIME_DEFAULTS = {
   occ_error_text: "",
   occ_error_stream: "stderr",
   app_list: { "enabled" => { "files" => "2.0.0", "dav" => "1.32.0" }, "disabled" => {} }.freeze,
-  # When non-nil the stub prints this verbatim in place of the JSON document,
-  # which is the only way to model an occ that exited 0 having written something
-  # that is not a census -- a deprecation notice on its own, a PHP warning.
+  # When non-nil, printed verbatim instead of JSON: an occ that exited 0 with a warning.
   app_list_text: nil,
   status_code: 200,
   status_body: nil,
@@ -911,16 +802,8 @@ RUNTIME_DEFAULTS = {
   wrong_admin_code: 401
 }.freeze
 
-# Every budget the runtime half reads, set low because no row here is entitled
-# to wait: the fixture answers immediately and a row whose outcome is a refusal
-# has nothing to wait for.
-#
-# The deadlines are ceilings on how long the docker STUB may take to answer, and
-# the stub answers immediately, so a larger ceiling costs nothing when nothing is
-# slow. They were raised from 10 to 30 for what was read as process-spawn
-# latency inside the gate's worker pool; #888 measured it as macOS's first-exec
-# queue for newly written executables, which no ceiling bounds, and moved that
-# wait out of every row instead -- build_runtime_stubs below records it.
+# Low budgets: the stub answers at once, so no row is entitled to wait. macOS's
+# first-exec queue (#888) is paid in build_runtime_stubs, not here.
 RUNTIME_BUDGETS = {
   "PLATFORM_NEXTCLOUD_READY_TIMEOUT_SECONDS" => "30",
   "PLATFORM_NEXTCLOUD_DOCKER_TIMEOUT_SECONDS" => "30",
@@ -928,11 +811,8 @@ RUNTIME_BUDGETS = {
   "PLATFORM_NEXTCLOUD_HTTP_OPEN_TIMEOUT_SECONDS" => "5",
   "PLATFORM_NEXTCLOUD_HTTP_READ_TIMEOUT_SECONDS" => "5",
   "PLATFORM_NEXTCLOUD_POLL_INTERVAL_SECONDS" => "1",
-  # Not a timeout and nothing waits on it: it is the age at which a missing
-  # background job mode stops being excused. Pinned here rather than left at the
-  # deployment's own 900 so that the two rows either side of it -- an
-  # installation minutes old and one that has had its chance -- state their own
-  # verdict, and raising the shipped default can never silently flip one.
+  # Not a timeout: the age past which a missing background job mode fails. Pinned so the
+  # rows either side do not flip if the shipped default (900) moves.
   "PLATFORM_NEXTCLOUD_CRON_GRACE_SECONDS" => "60"
 }.freeze
 
@@ -945,11 +825,8 @@ def vault_document
   }
 end
 
-# One stub for `docker`, dispatching on argv the way the real command does. It
-# reads a JSON fixture rather than being regenerated per case, so a row states
-# its outcome as data. It finds that fixture from the path it was executed by,
-# $0 -- a row's bin/docker symlink -- never from where the file really lives,
-# which is the one copy RUNTIME_STUB_DIR holds for every row.
+# One shared docker stub; it finds its JSON fixture via $0 (the row's bin symlink),
+# so each row states its outcome as data.
 def docker_stub_source
   <<~RUBY
     #!#{RbConfig.ruby}
@@ -1023,23 +900,8 @@ def docker_stub_source
   RUBY
 end
 
-# The two stubs every runtime row puts on PATH, written once per process and
-# linked into each row's bin rather than written into it (#888).
-#
-# On macOS the first exec of a newly written executable waits on a check the
-# system runs one file at a time, host-wide. Measured on the 12-core Mac this
-# gate runs on: about 0.3s per new file idle, and with 32 threads doing nothing
-# but exec'ing fresh scripts each exec waited a median 16s while the process
-# spent 0.7s of CPU in 55s of wall time -- a queue, not work. Running the
-# interpreter with the script as an argument, or exec'ing a file that has
-# already run once (through a symlink or a hardlink too), cost 0.01s under the
-# same load. Written per row, every row's first docker call sat in that queue
-# inside the runtime half's own DOCKER budget, and under the full local gate,
-# whose checks write stubs by the hundred, the queue outlasted it: "the
-# application container inspection did not finish within 30s" for rows whose
-# stub answers at once. So the files are made once and exec'd once here, untimed
-# and before any pool starts, and the rows only link to them. Linux runners have
-# no such check.
+# Stubs are written and exec'd once, untimed, then symlinked into each row (#888): macOS
+# queues the first exec of a new executable host-wide, which outlasted the DOCKER budget.
 def build_runtime_stubs
   directory = Dir.mktmpdir("nas-platform-nextcloud-stubs.")
   at_exit { FileUtils.rm_rf(directory) }
@@ -1106,10 +968,7 @@ def runtime_responder(options)
     if method == "GET" && path == "/status.php"
       code = options.fetch(:status_code)
       body = options.fetch(:status_body) || JSON.generate(status_document)
-      # A 500 with a zero-byte body is what a real Nextcloud answers when the
-      # cluster is gone: status.php boots the server and the boot queries
-      # oc_appconfig, so the failure is an uncaught exception rather than a
-      # rendered error.
+      # A real Nextcloud with the cluster gone answers 500 with an empty body.
       [code, code == 200 ? body : ""]
     elsif method == "GET" && path == "/ocs/v2.php/cloud/user"
       authorization = headers.to_h.transform_keys(&:downcase)["authorization"].to_s
@@ -1130,10 +989,8 @@ RUNTIME_ROWS = [
     expects: "could not be inspected"
   },
   {
-    # `exited healthy` rather than `exited unhealthy`, because Docker keeps the
-    # last health verdict after a stop and only this state isolates the running
-    # check: with an unhealthy fixture the health assertion below catches the row
-    # too, and the self-test then cannot tell the two apart.
+    # `exited healthy`: Docker keeps the last health verdict, and only this isolates the
+    # running check from the health one.
     name: "an application that is not running",
     given: { states: { APPLICATION_CONTAINER => "exited healthy" } },
     expects: "is exited, not running"
@@ -1144,9 +1001,7 @@ RUNTIME_ROWS = [
     expects: "is unhealthy, not healthy"
   },
   {
-    # The fourth container, which Seafile's three-container census has no
-    # counterpart for. Its health check proves the shared volume and the database
-    # link at once, so it is the container that fails first if either breaks.
+    # The cron sidecar's health check covers the shared volume and database link.
     name: "a cron sidecar Docker calls unhealthy",
     given: { states: { CRON_CONTAINER => "running unhealthy" } },
     expects: "is unhealthy, not healthy"
@@ -1162,17 +1017,8 @@ RUNTIME_ROWS = [
     expects: "the encrypted vault carries no vault_nextcloud_admin_password"
   },
   {
-    # A port check passes in this state and this does not, which is the property
-    # #500 asked for in so many words.
-    #
-    # The one row that overrides a budget, and the only one entitled to: its
-    # expected outcome IS the readiness deadline expiring, so the deployment's
-    # own 30 seconds buy nothing here except 30 seconds of sleep. Every other row
-    # reaches its verdict on the first request and does not wait at all. Left at
-    # the shared budget this single row was 30.9s of the check's 36.3s and took
-    # its CPU-to-elapsed ratio to 33% -- a check that waits becomes the floor for
-    # its whole shard, which is what docs/ci-performance-history.md is about
-    # and what #331 cost the seerr self-test 368 seconds to learn.
+    # The only row overriding a budget: its expected outcome IS the readiness deadline
+    # expiring, and at the shared 30s it became the shard's floor (#331).
     name: "a status endpoint answering 500 with an empty body",
     given: { status_code: 500 },
     environment: { "PLATFORM_NEXTCLOUD_READY_TIMEOUT_SECONDS" => "3" },
@@ -1199,9 +1045,7 @@ RUNTIME_ROWS = [
     expects: "reports a database upgrade it has not finished"
   },
   {
-    # THE LANDMINE, and this is the only place it can be settled. The environment
-    # variable being present in the compose file is not the installer having
-    # honoured it, and the install branch runs once and never again.
+    # THE LANDMINE: only runtime can prove the installer honoured the compose variable.
     name: "an installer that minted its own database account",
     given: { live_dbuser: "oc_admin" },
     expects: "not as the vault's own account"
@@ -1234,36 +1078,26 @@ RUNTIME_ROWS = [
     expects: "authorised a password the vault never authored"
   },
   {
-    # A recorded mode that is not `cron` is somebody having chosen a runner that
-    # is not the sidecar -- nothing writes `ajax` by accident, it is the value in
-    # code that applies while the row is absent -- so this stays a refusal.
+    # Nothing writes `ajax` by accident, so a non-cron recorded mode stays a refusal.
     name: "a cron sidecar that has never executed cron.php",
     given: { backgroundjobs_mode: "ajax" },
     expects: 'still runs background jobs in "ajax" mode'
   },
   {
-    # THE STATE THE LANE IS ACTUALLY IN, and the reason this contract failed its
-    # first CI run. oc_appconfig holds no background job mode until cron.php
-    # runs, the sidecar runs it on a */5 schedule, and the lane reaches this
-    # contract about a minute after the install finished. It has to pass, and
-    # what keeps it from being a hole is the row below it and the crontab row
-    # after that.
+    # The state the lane is actually in: no mode is recorded until cron.php first runs
+    # (*/5). The next two rows keep this tolerance from being a hole.
     name: "an installation whose cron schedule has not fired yet",
     given: { backgroundjobs_mode: nil },
     expects: nil
   },
   {
-    # The other side of the grace. Past it the schedule has had its chance, so
-    # the absence is the failure the fourth container exists to prevent -- which
-    # is the state the NAS would be in, where an installation is days old.
+    # Past the grace the missing mode is a failure, as on the NAS where installs are days old.
     name: "an installation old enough that its cron sidecar must have fired",
     given: { backgroundjobs_mode: nil, installed_age_seconds: 600 },
     expects: "has never executed cron.php"
   },
   {
-    # What makes the tolerated branch an assertion rather than a shrug: crond
-    # takes no argument naming a job, so a sidecar whose crontab schedules
-    # nothing is up, healthy, and will never run a background job.
+    # crond takes no job argument, so an empty crontab is healthy yet never runs a job.
     name: "a cron sidecar whose crontab schedules nothing",
     given: { backgroundjobs_mode: nil, crontab: "# nothing here\n" },
     expects: "schedules no cron.php"
@@ -1283,20 +1117,14 @@ RUNTIME_ROWS = [
     expects: "records no core|installedat"
   },
   {
-    # THE SHIPPED DEFECT, pinned as a whole sentence. `occ config:app:get` exits
-    # 1 with both streams empty for a key that has never been written, and the
-    # message that reached CI was "the background job mode census failed: " --
-    # everything after the colon was the empty stderr. A row matching the
-    # fragment before the colon accepts that sentence, which is why this one
-    # names the clause the diagnosis has to add.
+    # The shipped defect: occ config:app:get exits 1 silently on an unwritten key, so the
+    # whole sentence, including the added clause, is pinned.
     name: "an occ that cannot run at all",
     given: { occ_ok: false },
     expects: "the database account census failed (exit 1, no output on stdout or stderr)"
   },
   {
-    # A command that puts its complaint on stdout and exits non-zero. Reading
-    # stderr alone reports this as silence, which is a diagnosis of the wrong
-    # failure rather than no diagnosis at all.
+    # A complaint on stdout: reading stderr alone would misreport it as silence.
     name: "an occ that complains on the wrong stream",
     given: { occ_ok: false, occ_error_text: "PHP Fatal error: allowed memory size exhausted",
              occ_error_stream: "stdout" },
@@ -1309,27 +1137,20 @@ RUNTIME_ROWS = [
     expects: "stderr: Error response from daemon: No such container: #{APPLICATION_CONTAINER}"
   },
   {
-    # The one application policy this contract can assert without a variable
-    # context: Immich is this platform's photo service, so Nextcloud serving
-    # photos too is the overlap #500's scope rules out.
+    # Immich is the photo service, so Nextcloud serving photos overlaps #500's scope.
     name: "a server that still enables the photo app Immich replaces",
     given: { app_list: { "enabled" => { "files" => "2.0.0", "photos" => "7.0.0" },
                          "disabled" => {} } },
     expects: "still enables photos"
   },
   {
-    # A census reporting nothing enabled is a census that failed. No
-    # installation can be in that state: core/shipped.json's alwaysEnabled holds
-    # fourteen apps that cannot be turned off, so an empty `enabled` is occ
-    # having gone wrong rather than a policy having gone right.
+    # core/shipped.json has fourteen always-enabled apps, so an empty census means occ failed.
     name: "an application census that reports nothing enabled",
     given: { app_list: { "enabled" => {}, "disabled" => {} } },
     expects: "no enabled application at all"
   },
   {
-    # occ exiting 0 having written something that is not a document. Rescued to
-    # an empty list this reads as "no photos enabled" and passes, which is the
-    # vacuity this row exists to keep closed.
+    # Rescued to an empty list this would read as "no photos enabled" and pass.
     name: "an application census that is not JSON",
     given: { app_list_text: "PHP Deprecated: Implicit conversion in Installer.php" },
     expects: "not JSON"
@@ -1373,12 +1194,8 @@ def runtime_failures(program, rows = RUNTIME_ROWS)
 end
 
 # --- wrapper layer ---------------------------------------------------------
-#
-# tests/contracts/nextcloud.sh resolves both programs from its own checkout
-# rather than from the tree it inspects, so a copy of the three files into a
-# throwaway tests/contracts/ is a whole working contract. That is what lets a row
-# point PLATFORM_CONTRACT_REPO_DIR at a broken fixture and still exercise the
-# real wrapper.
+# The wrapper resolves programs from its own checkout, so a copy in a throwaway
+# tests/contracts/ can point PLATFORM_CONTRACT_REPO_DIR at a broken fixture.
 
 def with_contract_copy(static: File.read(STATIC_PROGRAM), runtime: File.read(RUNTIME_PROGRAM),
                        wrapper: File.read(CONTRACT), &block)
@@ -1390,18 +1207,13 @@ RUNTIME_REFUSAL_STUB = <<~'STUB'
   exit 0
 STUB
 
-# Echoes what the wrapper handed the runtime half. The mode has to arrive: the
-# runtime program dispatches on it and defaults to `run`, so a wrapper that
-# stopped passing it would be exercising a default rather than a request.
+# The runtime program defaults to `run`, so the wrapper must pass the mode explicitly.
 MODE_ECHO_STUB = <<~'STUB'
   warn "runtime stub argv: #{ARGV.inspect}"
   exit 0
 STUB
 
-# Reports what each program saw on stdin and what the caller still has, which is
-# the only way the redirect is observable: neither real program reads stdin, so
-# the redirect is what keeps that true rather than something that changes an
-# outcome today.
+# Neither real program reads stdin; the redirect keeps it so, observable only here.
 def stdin_failures(wrapper_source: File.read(CONTRACT))
   with_contract_copy(static: STDIN_PROBE, wrapper: wrapper_source) do |contract|
     stdin_probe_failures(contract, %w[static], { "PLATFORM_CONTRACT_REPO_DIR" => ROOT },
@@ -1428,10 +1240,7 @@ def runtime_stdin_failures(wrapper_source: File.read(CONTRACT))
   end
 end
 
-# The run-mode environment contract. Each name is refused with the WRAPPER'S OWN
-# message, and that is what is asserted -- never the shell's own wording, which
-# differs between bash ("parameter null or not set") and dash ("parameter not set
-# or null"), and never the line number, which any edit to that file moves.
+# Assert the wrapper's own message, never the shell's (bash and dash word it differently).
 REQUIRED_RUN_ENV = %w[
   PLATFORM_CONTRACT_VAULT_FILE
   PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
@@ -1459,9 +1268,7 @@ def run_env_failures(wrapper_source: File.read(CONTRACT))
                   "#{output.strip.inspect}" unless output.include?("#{name} is required")
     end
 
-    # The Mac fallback branch, which nothing else in the suite reaches:
-    # tests/mac/run.sh exports PLATFORM_MAC_VAULT_FILE, and the `:=` pair above
-    # the `:?` pair is what lets it stand in for the contract names.
+    # The Mac fallback: tests/mac/run.sh exports PLATFORM_MAC_VAULT_* for the `:=` pair.
     stdout, stderr, status = Open3.capture3(
       full.merge("PLATFORM_CONTRACT_VAULT_FILE" => nil,
                  "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => nil,
@@ -1507,9 +1314,7 @@ end
 def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
-    # restart-persistence is in this list on purpose: it is a mode the Seafile
-    # contract has and this one deliberately does not, so a reader reaching for
-    # it must be refused rather than silently given `run`.
+    # restart-persistence is a Seafile mode this contract deliberately lacks.
     %w[verify drift restart-persistence --platform notify].each do |mode|
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, mode
@@ -1547,13 +1352,9 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures
 end
 
-# The two-roots rule, which is the property that keeps this contract from reading
-# its own assertions out of the tree it judges: the PROGRAMS come from the
-# checkout, the inspected tree comes from PLATFORM_CONTRACT_REPO_DIR. The sibling
-# programs are deleted from the inspected tree rather than the whole
-# tests/contracts directory, because the wrapper itself is read out of that tree
-# on purpose -- the static half compares that tree's contract default port with
-# that tree's role default.
+# Two roots: programs come from the checkout, the inspected tree from
+# PLATFORM_CONTRACT_REPO_DIR. Only sibling programs are deleted: the static half reads
+# the inspected tree's wrapper for its default port.
 def two_roots_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   with_contract_copy(wrapper: wrapper_source) do |contract|
@@ -1572,10 +1373,7 @@ def two_roots_failures(wrapper_source: File.read(CONTRACT))
         stdout.include?(SUCCESS_LINE)
     end
 
-    # The other direction. The inspected tree's own flatten_tasks is what the
-    # static program must use, so a tree whose policy_support.rb refuses to load
-    # has to take the contract down with it. Reading the checkout's copy instead
-    # would pass here, silently.
+    # The other direction: the inspected tree's policy_support.rb must be the one loaded.
     Dir.mktmpdir("nas-platform-nextcloud-support.") do |raw|
       inspected = File.realpath(raw)
       build_fixture_repository(inspected)
@@ -1680,10 +1478,7 @@ PROGRAM_MUTATIONS = [
     rows: ["an app policy that runs after the report that has to carry its change"]
   },
   {
-    # Both halves of the report's derivation, planted separately, because they
-    # are two defects and a single set comparison would report whichever fired
-    # first. Removing either restores the state the review found: the whole
-    # expression was pinned by nothing.
+    # Planted separately: one set comparison would report whichever half fired first.
     label: "the requirement that the report names every result that can move",
     program: :static,
     from: "(movers - named).empty?",
@@ -1733,9 +1528,7 @@ PROGRAM_MUTATIONS = [
     rows: ["a cluster bound one level below where postgres 18 puts it"]
   },
   {
-    # The one that cannot be repaired by a later converge, so the guard that
-    # refuses it is the only thing standing between this platform and an
-    # unrotatable stack.
+    # Not repairable by a later converge; this guard alone prevents an unrotatable stack.
     label: "the refusal to let the installer mint its own database account",
     program: :static,
     from: 'application_environment["NC_setup_create_db_user"].to_s == "false"',
@@ -1743,17 +1536,8 @@ PROGRAM_MUTATIONS = [
     rows: ["an installer left free to mint its own database account"]
   },
   {
-    # This mutation and "the redaction of the administrator repair" below both
-    # leave `:detects` at its default, which is deliberate. `:detects` names
-    # which of `judge`'s two verdicts the mutant must produce, not which
-    # assertion caught the break, and only one of those two is the strict
-    # reading: "accepted what it must refuse" holds when removing the assertion
-    # left the fixture break unrefused by anything at all, which is the question
-    # a mutation is asking. Naming the assertion's own message instead selects
-    # the OTHER verdict, because the wrong-reason line is the one that quotes
-    # `:expects` -- it would pass exactly when a sibling fired first and fail
-    # when the guard was the sole detector. Both rows were confirmed against the
-    # default.
+    # `:detects` stays at the default on purpose: it names judge's verdict, not the
+    # assertion, and the strict question is whether the break went unrefused by anything.
     label: "the cluster's own database and owner",
     program: :static,
     from: 'database_environment["POSTGRES_DB"].to_s.include?("NEXTCLOUD_DB_NAME") &&',
@@ -1805,10 +1589,7 @@ PROGRAM_MUTATIONS = [
     rows: ["an administrator reset on every converge rather than on a refusal"]
   },
   {
-    # The credential guard, and the one with no second line of defence: the
-    # `vault_nextcloud_` sweep beside it cannot see this task, so removing this
-    # is removing the only thing that keeps a failed exec from printing the
-    # rendered container environment.
+    # No second line of defence: the vault_nextcloud_ sweep cannot see this task.
     label: "the redaction of the administrator repair",
     program: :static,
     from: 'reset && reset["no_log"] == true',
@@ -1897,12 +1678,8 @@ PROGRAM_MUTATIONS = [
     rows: ["a cron sidecar that has never executed cron.php"]
   },
   {
-    # The grace, in the direction that matters on the NAS: an installation that
-    # has had every chance to run cron.php and has not. This mutation and the one
-    # after it plant the same comparison in opposite directions, and `plant`
-    # counts each `from` separately: both strings must stay unique in the
-    # program, so a second `age > CRON_GRACE_SECONDS` anywhere would abort the
-    # whole self-test on the main thread rather than fail one row.
+    # This and the next mutation plant the same comparison inversely; each `from` must
+    # stay unique in the program or `plant` aborts the whole self-test.
     label: "the age past which a missing background job mode is a failure",
     program: :runtime,
     from: ") if age > CRON_GRACE_SECONDS",
@@ -1910,11 +1687,8 @@ PROGRAM_MUTATIONS = [
     rows: ["an installation old enough that its cron sidecar must have fired"]
   },
   {
-    # The same line inverted, and it is what stops the tolerated branch from
-    # being decoration: with every installation past the grace, the row that must
-    # pass on a fresh converge stops passing. `detects` says so, because judge
-    # reports a success row that refused as "expected success" and not as the
-    # refusal wording.
+    # Inverted: every installation past the grace, so the fresh-converge row fails as
+    # "expected success".
     label: "the grace a fresh installation is entitled to",
     program: :runtime,
     from: "age > CRON_GRACE_SECONDS",
@@ -1930,9 +1704,7 @@ PROGRAM_MUTATIONS = [
     rows: ["a server that still enables the photo app Immich replaces"]
   },
   {
-    # What stops the row above being decoration. An assertion that refused every
-    # app set would satisfy it; this one only survives if the converged fixture
-    # is still accepted, so the two together pin both directions.
+    # Pins the other direction: the converged fixture must still be accepted.
     label: "the tolerance of an app set this platform does not object to",
     program: :runtime,
     from: "overlapping.empty?",
@@ -1948,10 +1720,7 @@ PROGRAM_MUTATIONS = [
     rows: ["an application census that reports nothing enabled"]
   },
   {
-    # Caught as a wrong reason rather than as an acceptance: with the rescue put
-    # back to an empty list the program still refuses, it just refuses with the
-    # empty-census sentence instead of the one naming the real fault. That is the
-    # #352 shape -- a diagnosis of the wrong failure is not a diagnosis.
+    # Caught as a wrong reason: an empty-list rescue still refuses, with the wrong sentence (#352).
     label: "reading an unparseable application census as JSON rather than as an empty list",
     program: :runtime,
     from: "fail_contract(UNPARSEABLE_CENSUS)",
@@ -1967,10 +1736,7 @@ PROGRAM_MUTATIONS = [
     rows: ["a cron sidecar whose crontab schedules nothing"]
   },
   {
-    # Removing this refusal does not make the program accept the fixture -- it
-    # makes Float(nil) raise, and the rescue below then names the wrong thing. A
-    # backtrace or a misdirected sentence is the #352 shape, so the row catches
-    # it as a wrong reason rather than as an acceptance.
+    # Without it Float(nil) raises and the rescue names the wrong thing (#352 shape).
     label: "the refusal of an installation that records no install time",
     program: :runtime,
     from: ") if recorded.nil?",
@@ -1979,10 +1745,8 @@ PROGRAM_MUTATIONS = [
     detects: "refused for the wrong reason"
   },
   {
-    # THE FIX ITSELF. Without --default-value, a key that has never been written
-    # and a broken occ are the same exit code with the same empty output, and the
-    # state every fresh converge is in becomes a refusal -- which is exactly what
-    # the first CI run of this lane did.
+    # The fix itself: without --default-value an unwritten key and a broken occ look the
+    # same, and every fresh converge refuses.
     label: "reading an app config key through a default rather than an exit code",
     program: :runtime,
     from: 'occ("config:app:get", "core", key, "--default-value=#{UNSET_APP_CONFIG}", label: label)',
@@ -1991,12 +1755,7 @@ PROGRAM_MUTATIONS = [
     detects: "expected success"
   },
   {
-    # The three clauses of the diagnosis, each proved by the row that pins the
-    # one it adds. All three are caught as a wrong reason rather than as an
-    # acceptance, because the program still refuses -- it just goes back to
-    # refusing without saying why, which is the defect being fixed. The most
-    # travelled clause is this first one, and leaving it unplanted would have
-    # left the branch every ordinary docker failure takes unproven.
+    # Each diagnosis clause is proved by the row pinning it, caught as a wrong reason.
     label: "reading the complaint a command left on stderr",
     program: :runtime,
     from: "if (line = first_line(stderr))",
@@ -2070,14 +1829,8 @@ WRAPPER_MUTATIONS = [
 if ARGV.include?("--self-test")
   mismatches = []
 
-  # Every plant is prepared on the main thread, before the pool. `plant` and
-  # `rows_named` abort with a sentence naming what they could not find, and an
-  # abort inside a worker raises SystemExit there: `run_pool_case` rescues only
-  # StandardError, so `Thread#join` re-raises it and the process exits with that
-  # sentence on stderr and no report assembled. A case that raises anything else
-  # is recorded as that case's own failure and the other cases still report --
-  # #514 -- so the reason plants belong before the pool is that an abort is the
-  # check saying it cannot continue, not that the pool mangles the message.
+  # Plants are prepared on the main thread: `plant`/`rows_named` abort, and SystemExit in a
+  # worker is re-raised by join with no report assembled (#514).
   program_cases = PROGRAM_MUTATIONS.map do |mutation|
     canonical = mutation.fetch(:program) == :static ? STATIC_PROGRAM : RUNTIME_PROGRAM
     rows = mutation.fetch(:program) == :static ? STATIC_ROWS : RUNTIME_ROWS

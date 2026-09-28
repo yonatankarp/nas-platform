@@ -2,8 +2,7 @@
 # Nothing beyond the store and its write-ahead log unless the caller names it.
 pre_upgrade_backup_extra_patterns: []
 
-# The controller checkout deployment_bundle copies the release from, read only
-# under --check, when `current` still names the release this run replaces.
+# Read under --check, when `current` still names the release this run replaces.
 pre_upgrade_backup_candidate_root: "{{ playbook_dir }}"
 
 # The pg_dump entry's destination inside the database container: beside the
@@ -12,7 +11,6 @@ pre_upgrade_backup_dump_dir: /var/lib/postgresql/pre-upgrade-backup
 pre_upgrade_backup_dump_file: database.sql.gz
 
 # The pg_dump entry's code archive (#884): the host path of a data root that is
-# also the application's code, and the host path of the dump's directory to
-# archive it into. Empty is no archive.
+# also the code, and where to archive it. Empty is no archive.
 pre_upgrade_backup_code_root: ""
 pre_upgrade_backup_code_archive_dir: ""

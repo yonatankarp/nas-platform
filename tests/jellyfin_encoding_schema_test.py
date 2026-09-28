@@ -1,25 +1,9 @@
 #!/usr/bin/env python3
 """Contract tests for the Jellyfin encoding schema filter.
 
-Every rejection here corresponds to one of the forty-five field-type conditions
-`roles/jellyfin/tasks/deploy.yml` repeated for the effective policy and for each of
-the two pinned profiles, before they moved into
-`filter_plugins/jellyfin_encoding_schema.py`.
-
-`test_the_declaration_cannot_replace_this_filter` is the one that decides whether
-the filter has to exist at all. `meta/argument_specs.yml` declares
-`jellyfin_encoding_policy` with typed suboptions, and it is tempting to conclude
-the conditions are therefore redundant. They are not:
-`ArgumentSpecValidator` coerces `1` to `True` and reports nothing, and the
-value-equality tamper-pin that follows in the same assert cannot see the
-difference either, because Python compares `1 == True` as true. That test asserts
-the coercion directly, so a future reader does not have to take the claim on
-trust — and `tests/media_probes_jellyfin_settings.rb` plants exactly that
-regression end to end.
-
-The table is checked against `roles/jellyfin/defaults/main.yml` rather than
-restated, so a profile that gains a key the filter does not know about fails here
-instead of being written to Jellyfin unvalidated.
+Also proves the filter cannot be replaced by argument_specs: ArgumentSpecValidator
+coerces `1` to `True` silently. The table is checked against
+`roles/jellyfin/defaults/main.yml`, so an unknown profile key fails here.
 """
 
 import copy
@@ -188,13 +172,7 @@ class JellyfinEncodingSchemaTest(unittest.TestCase):
         self.assertNotIn(sentinel, " ".join(found))
 
     def test_an_unknown_field_kind_is_refused_rather_than_unchecked(self):
-        """A kind the dispatch does not implement validated nothing, silently.
-
-        The kinds are module-level string literals, so CPython interning made the
-        `is` comparisons work and the missing `else` never bit — but a table entry
-        naming an unimplemented kind passed every value through unread, which is
-        the shape this repository keeps closing (#648).
-        """
+        """A kind the dispatch does not implement must be refused, not pass unread (#648)."""
         from ansible.errors import AnsibleFilterError
         import jellyfin_encoding_schema as schema
 

@@ -1,23 +1,8 @@
 #!/usr/bin/env python3
 """Contract tests for the shared managed-user ambiguity decision.
 
-`filter_plugins/managed_user_identity.py` replaces two Jinja conditions that
-Komga, Audiobookshelf, Jellyfin, Beszel and Paperless each spelled out, and that
-Immich reached by construction. Three properties decide whether the extraction
-was safe, and each has a test named for it:
-
-* **The collision check is the point.** `matches | length <= 1` alone would let
-  a repair land on the wrong record at a service that folds case, because the
-  exact-match selector returns one user while two exist. The second condition
-  refuses that, and `test_refuses_a_case_folded_collision` is the regression
-  test for anyone tempted to drop it as redundant.
-* **Immich's normalised index is a no-op here.** Immich already matches on the
-  folded email, so its match list *is* the folded bucket. If this module were
-  ever changed to compare exact values, Immich would start failing on the exact
-  input it exists to accept — `test_accepts_a_normalized_match_list` pins that.
-* **Nothing identifying is returned.** The calling tasks run under `no_log` and
-  print this list from `fail_msg`, so a value that leaked here would leak a
-  managed user's email address into a deployment log.
+filter_plugins/managed_user_identity.py must refuse a case-folded collision,
+accept Immich's already-folded match list, and return nothing identifying.
 """
 
 from pathlib import Path
@@ -146,14 +131,7 @@ class ManagedUserAmbiguityTest(unittest.TestCase):
                          "a count derived from an unreadable listing was used")
 
     def test_folds_identities_the_way_the_vault_schema_already_does(self):
-        """The vault refuses a pair this module would then have to refuse too.
-
-        `vault_managed_user_schema` folds managed identities with the same
-        `strip().lower()`, against the same Jinja `trim | lower` chain. If the
-        two ever disagreed the vault would accept two identities that collide
-        here, and the ambiguity would surface on the NAS rather than at entry.
-        Non-ASCII cases are the only ones an ASCII fixture cannot see.
-        """
+        """Folds identities exactly as vault_managed_user_schema does, non-ASCII included."""
         for value in ("MÜNCHEN@example.com", "İstanbul@example.com",
                       " Ünïcode.Person@example.com\t", "STRASSE@example.com"):
             with self.subTest(value=value):

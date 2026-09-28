@@ -2,27 +2,8 @@
 services:
   vaultwarden:
     container_name: ${PLATFORM_PROJECT_NAME:?}-vaultwarden
-    # The Mac lane runs several isolated copies of the platform side by side, so
-    # the production host port is not available to it and the host side comes
-    # from the rendered environment rather than from a literal.
-    #
-    # THE ALLOCATION EXISTS NOW, and until #547's second chunk it did not: this
-    # override republished the production 8086 it was written to replace, which
-    # was inert only because the Mac lane never turned the service on -- an
-    # expired guard reading as a live one, the class of thing this repository
-    # keeps finding. The chain that fills VAULTWARDEN_HOST_PORT is
-    # MAC_SERVICE_PORT_ORDER in tests/mac/lib.sh, which tests/mac/run.sh
-    # allocates a free port for and exports as PLATFORM_VAULTWARDEN_PORT, which
-    # inventory/group_vars/mac_hosts/main.yml reads back into vaultwarden_port,
-    # which roles/vaultwarden/templates/env.j2 renders here.
-    # tests/deployment_gate_coverage_test.rb is what made that mandatory the
-    # moment the platform default flipped.
-    #
-    # The loopback prefix is carried over from the canonical file rather than
-    # dropped with the port number. A Mac sandbox is disposable and its ports
-    # are ephemeral, but the stack it stands up is a real Vaultwarden with
-    # registration open, and an operator's laptop is usually on a network with
-    # other people on it. The lane reaches it on 127.0.0.1 like every other
-    # service, so nothing is lost by keeping it there.
+    # The Mac lane runs several platform copies, so the host port comes from the
+    # environment: MAC_SERVICE_PORT_ORDER in tests/mac/lib.sh -> PLATFORM_VAULTWARDEN_PORT
+    # -> vaultwarden_port -> env.j2. Loopback kept: registration is open.
     ports: !override
       - "127.0.0.1:${VAULTWARDEN_HOST_PORT:?}:8086"

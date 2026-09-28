@@ -14,14 +14,8 @@ ACQUISITION_PROJECTS = Set[
 ].freeze
 ACQUISITION_JOB_SERVICES = Set["configarr"].freeze
 
-# This program takes no arguments. It used to take --project NAME, which the
-# seven tests/contracts/*-foundation.sh wrappers passed after deriving the name
-# from their own basename; #639 deleted them, and with them the only branch that
-# argument selected -- verifying the wrapper's bytes, mode and staged Git mode,
-# plus a per-project catalog pin the whole-catalog comparison in
-# catalog_contract_problems already implies. Refusing an argument rather than
-# ignoring one is the point: a caller still passing --project is a caller that
-# expects a check this program no longer performs, and it should hear so.
+# Refuses arguments: a caller still passing --project expects a check that no
+# longer exists (#639).
 unless ARGV.empty?
   abort "usage: ruby tests/media_acquisition_foundation_test.rb (this program takes no arguments)"
 end
@@ -44,15 +38,7 @@ def service(service_class, host_ports = [], compose_profile: nil)
   value
 end
 
-# A CPU ceiling has one home: tests/expected/<project>.yml. tests/policy_test.rb
-# pins every Compose `cpus` to it, measures it against
-# platform_container_cpu_budget, and now also requires the deployed catalog to
-# restate it exactly -- so the literals this map used to carry were a further
-# place to keep equal rather than a second opinion. Changing one ceiling meant
-# editing them too, and getting that wrong failed here without saying which copy
-# was meant. Reading the pinned file keeps this file's assertion
-# (config/media-acquisition.yml matches the pinned contract in full, field for
-# field) and drops only the duplicated numbers.
+# CPU ceilings are read from their one home, tests/expected/<project>.yml.
 PINNED_CONTAINER_CPUS = ACQUISITION_PROJECTS.to_h do |project|
   ceilings = begin
     YAML.safe_load_file(File.join(ROOT, "tests", "expected", "#{project}.yml"))["container_cpus"]
@@ -62,9 +48,7 @@ PINNED_CONTAINER_CPUS = ACQUISITION_PROJECTS.to_h do |project|
   [project, ceilings.is_a?(Hash) ? ceilings : {}]
 end.freeze
 
-# Derivation failures are reported by name. Left as a bare nil they would surface
-# as "the catalog differs from the pinned contract", which names neither the
-# container nor the file that failed to supply its ceiling.
+# Derivation failures are reported by name rather than as a bare nil.
 PINNED_CPU_PROBLEMS = []
 
 def pinned_cpus(project, container)
@@ -77,8 +61,6 @@ def pinned_cpus(project, container)
   ceiling
 end
 
-# Names the derivation once per project instead of once per container, since the
-# container name the ceiling belongs to is already this map's key.
 def project_services(project, services)
   services.to_h do |container, definition|
     [container, definition.merge("cpus" => pinned_cpus(project, container))]
@@ -186,29 +168,12 @@ EXPECTED_IMPLEMENTED_PORTS = [
   ["paperless-ngx", "webserver", "0.0.0.0", 8000, 8000, "tcp"],
   ["pinchflat", "pinchflat", "0.0.0.0", 8945, 8945, "tcp"],
   ["nextcloud", "nextcloud", "0.0.0.0", 8084, 80, "tcp"],
-  # THE ONLY LOOPBACK PUBLICATION IN THIS TABLE, AND THE REVIEW THIS CHECK
-  # EXISTS FOR CAUGHT IT. Every other row here is 0.0.0.0 and every one of those
-  # services demands a credential; Vaultwarden hands out ACCOUNTS to anyone who
-  # can reach it, because SIGNUPS_ALLOWED is true by decision and the perimeter
-  # that decision rests on is the tailnet. #547's second chunk shipped it on
-  # 0.0.0.0 while three files claimed the page was reachable only from the
-  # tailnet -- measured false: `docker port` reported 0.0.0.0 and [::], and a
-  # POST to /identity/accounts/register from a LAN address created the account.
-  # The bind address is v4 loopback only; the v6 wildcard was half the exposure.
-  #
-  # The container side is 8086 rather than the image's own ExposedPorts 80
-  # because the container runs as the platform identity and cannot bind a
-  # privileged port. ROCKET_PORT moves the listener;
-  # services/vaultwarden/compose.yml carries the argument. 8086 is the lowest
-  # free host port on this platform when #547 chose it: 8080 Dozzle, 8081 the
-  # Dozzle alert relay, 8082 qbittorrent, 8083 claimed by the AdGuard Home stack
-  # of #548 and free again since #577 removed it, 8084 Nextcloud, 8085 SABnzbd.
+  # The only loopback row: Vaultwarden's signups are open, so the tailnet (via
+  # 127.0.0.1, v4 only) is its whole perimeter. 8086 inside because the
+  # unprivileged container cannot bind 80.
   ["vaultwarden", "vaultwarden", "127.0.0.1", 8086, 8086, "tcp"],
-  # Karakeep's bind address is interpolated -- ${KARAKEEP_PUBLISH_ADDRESS:?} --
-  # and parse_port reads it as the wildcard, which is what every converge but
-  # the administrator bootstrap renders. The bootstrap renders 127.0.0.1 for one
-  # request; services/karakeep/compose.yml carries the argument. 8087 is the
-  # next free host port after Vaultwarden's 8086.
+  # Karakeep's interpolated bind address reads as the wildcard; only its
+  # administrator bootstrap renders 127.0.0.1.
   ["karakeep", "karakeep", "0.0.0.0", 8087, 3000, "tcp"]
 ].freeze
 
@@ -282,12 +247,8 @@ def planned_tree_paths(projects)
   end.flatten
 end
 
-# The planned set is an argument rather than a constant read, because the
-# catalog is allowed to be empty of planned projects and is: Phase 4 promoted
-# the last one. The guard itself is unchanged -- a project the pinned contract
-# calls planned must have no role or service tree on disk -- but its own proof
-# below can now hand it a project that will never be on the roster, instead of
-# borrowing whichever real one happened to still be planned.
+# A planned project must have no role or service tree on disk. The planned set
+# is an argument so the proof can use a synthetic project; the catalog has none.
 def planned_tree_problems(existing_paths, projects = EXPECTED_PROJECTS)
   expected_paths = planned_tree_paths(projects)
   (existing_paths & expected_paths).map do |path|
@@ -364,10 +325,8 @@ def parse_port(publication)
   end
 
   protocol = publication.include?("/") ? publication.split("/", 2).last : "tcp"
-  # An interpolated bind address is read as the wildcard: it is the widest thing
-  # it can render to, so a collision check that assumed anything narrower could
-  # pass two publications that do collide. Its colons are Compose's `:?`, not
-  # address separators.
+  # An interpolated bind address is read as the widest it can render to, the
+  # wildcard. Its colons are Compose's `:?`, not address separators.
   address_and_ports = publication.sub(%r{/[^/]+\z}, "").sub(/\A\$\{[A-Z0-9_]+:\?\}:/, "0.0.0.0:")
   if (match = address_and_ports.match(/\A\[([^\]]+)\]:(\d+):(\d+)\z/))
     bind_address, host_port, container_port = match.captures
@@ -459,9 +418,7 @@ if catalog
   existing_planned_paths = planned_paths.select { |path| path_entry_exists?(File.join(ROOT, path)) }
   failures.concat(planned_tree_problems(existing_planned_paths))
 
-  # Both directions, against a synthetic project, because a guard that rejects
-  # everything is as broken as one that rejects nothing and neither shows up in
-  # an empty catalog.
+  # Both directions, against a synthetic project.
   synthetic_planned = {
     "example-planned" => { "role" => "example_planned", "status" => "planned" }
   }
@@ -572,22 +529,13 @@ acquisition_storage.each do |entry|
     entry["owner"] == "{{ nas_uid }}" && entry["group"] == "{{ nas_gid }}"
 end
 
-# "Omit owner/group under the media root" is a property of the media root, not of
-# the acquisition foundation: the NAS owns those files whichever service writes
-# them. This used to run over the acquisition subset only, which left the six
-# media-root entries no acquisition project claims -- Immich's library and its
-# database backups, the three Paperless document trees, Beszel's agent state --
-# free to claim an ownership the platform must not impose. The mode floor and the
-# NAS-identity branch above stay on the subset deliberately: entries outside it
-# legitimately omit `mode`, and the docker-root half of them legitimately omits
-# owner and group too, so widening those would fail an unmutated tree.
+# "Omit owner/group under the media root" applies to every media-root entry, not
+# only the acquisition subset; the checks above stay on the subset deliberately.
 media_root_storage = all_storage.select do |entry|
   entry.fetch("path").start_with?("{{ nas_media_root }}/")
 end
-# Twenty-five today, nineteen of them pinned exactly by EXPECTED_STORAGE above.
-# The floor is set below the six that pinning does not cover so that removing one
-# stays a normal edit, while a prefix that stops matching -- the way this filter
-# would go quiet -- drops straight through it.
+# Floor below the entries EXPECTED_STORAGE does not pin, so a filter that goes
+# quiet drops through it.
 check_floor(failures, media_root_storage.length, 24, "media-root storage entries")
 media_root_storage.each do |entry|
   failures << "media root path #{entry.fetch('path')} must not claim ownership" if
@@ -600,18 +548,8 @@ end
     end
 end
 
-# The foundation was inert while it was being built: no host enabled a
-# transport, so the paths and control network existed with nothing running on
-# them. That is still true of every transport nobody has taken through its
-# handoff, and of the disposable Mac proof, which must converge the same
-# unactivated platform every run or it stops proving anything.
-#
-# It stopped being true of Usenet on the NAS when Phase 1 was accepted there.
-# Holding the flag false after that bought nothing and cost a great deal: the
-# activation had to live outside source control, which the deployment poller
-# cannot read, so enabling acquisition meant leaving the NAS with no automatic
-# deployment at all. The guard now covers the transports that are still inert
-# rather than the file that names them.
+# Transports stay inert until taken through their handoff; only Usenet on the
+# NAS has been. The Mac proof converges the unactivated platform every run.
 MEDIA_TRANSPORT_ACTIVATION = {
   "nas_hosts" => { "media_usenet_enabled" => true, "media_torrent_enabled" => false },
   "mac_hosts" => { "media_usenet_enabled" => false, "media_torrent_enabled" => false }
@@ -915,11 +853,7 @@ end
     copy.dig("projects", "arr", "services", "radarr", "host_ports") <<
       ui_port(9999, published_by: "radarr").first
   end,
-  # The ceilings are no longer literals here, so this states what the derivation
-  # must not have cost: a catalog `cpus` that disagrees with the pinned ceiling is
-  # still rejected. Its value is in range and its shape is right -- only the
-  # number is wrong -- so the mutation cannot be caught by anything but the
-  # comparison it is aimed at.
+  # A catalog `cpus` that disagrees with the pinned ceiling is still rejected.
   "container CPU ceiling" => proc do |copy|
     copy.dig("projects", "arr", "services", "radarr")["cpus"] = 2.0
   end,

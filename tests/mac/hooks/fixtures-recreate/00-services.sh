@@ -1,10 +1,5 @@
 #!/bin/sh
-# Container recreation for every deployed service, in the order the eight
-# NN-service.sh hooks this replaces ran in. Each of those hooks was the same
-# fifteen lines: force-recreate the service's containers from the deployed
-# Compose bundle, then reassert the service's contract against the fresh
-# containers. Only the bundle directory, the Compose project suffix, the Compose
-# service names and the reassertion phase differed, so those four are the table.
+# Recreate every deployed service from the deployed bundle, then reassert its contract.
 set -eu
 set +x
 umask 077
@@ -15,8 +10,6 @@ mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 
 mac_recreated=
 
-# service, deployed bundle directory, Compose project suffix, Compose service
-# names, and the contract phase that reasserts the service afterwards.
 mac_recreate_and_reassert() {
   mac_recreate_service=$1
   mac_recreate_directory=$2
@@ -62,29 +55,9 @@ mac_recreate_and_reassert kapowarr kapowarr kapowarr kapowarr run
 mac_recreate_and_reassert bindery bindery bindery bindery run
 mac_recreate_and_reassert trailarr trailarr trailarr trailarr run
 mac_recreate_and_reassert seerr seerr seerr seerr run
-# All three, and the order is Compose's problem rather than this table's: the
-# stack declares the server depending on a healthy db and cache, and `up -d
-# --force-recreate --wait` honours that. Recreating the server alone would prove
-# less than the other rows do -- the claim here is that a stack rebuilt from the
-# deployed bundle still authenticates against databases whose data outlived their
-# containers.
-# All four, for the reason above and one of its own: the application and the cron
-# sidecar share the /var/www/html volume, so recreating either alone would leave
-# the claim that the shared mount is re-established from the deployed bundle
-# untested.
-#
-# What notices an empty volume is the census the run phase opens with, and it
-# notices through container health rather than through anything the contract
-# asks Nextcloud about itself. Both probes read the mount: the cron sidecar's is
-# `test -f /var/www/html/occ`, and the application's greps /status.php for
-# `"installed":true`, which the server cannot print without an installation tree
-# to boot. A volume that came back empty leaves both unhealthy and the census
-# refuses before a single assertion runs.
-#
-# Not the background job mode, which is the reading a reader reaches for first
-# and the one thing here that would NOT notice: backgroundjobs_mode lives in
-# oc_appconfig, which is Postgres, and Postgres is a separate volume that this
-# recreate leaves alone. It would still read `cron` over an empty installation.
+# Whole stacks, so the claim covers data outliving containers. Nextcloud's census
+# notices an empty /var/www/html through both health probes; backgroundjobs_mode
+# would not, since it lives in Postgres on a separate volume.
 mac_recreate_and_reassert nextcloud nextcloud nextcloud 'nextcloud cron db cache' run
 
 mac_assert_service_coverage fixtures-recreate 00-services.sh "$mac_recreated" \

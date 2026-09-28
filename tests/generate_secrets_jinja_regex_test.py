@@ -18,14 +18,9 @@ API_KEYS = [
     "downloaders_sabnzbd_api_key",
 ]
 
-# Bazarr's settings form is POSTed exactly these two, and Bazarr casts every
-# submitted value with int() unless the last dash-segment of its key is one of
-# config.py's str_keys -- `apikey` is not. A key of only decimal digits is
-# therefore an int by the time dynaconf validates the schema, fails
-# `is_type_of str`, and the request is answered 406 for as long as the key is
-# deployed. The other three keys never reach that cast, and the play must not
-# refuse them for a shape Bazarr never sees, so the split is asserted in both
-# directions rather than left to whichever conditions happen to be written.
+# Bazarr casts submitted values with int() unless the key's last segment is a
+# str_key (`apikey` is not), so an all-digit key fails its schema with a 406.
+# The other keys never reach that cast, so the split is asserted both ways.
 BAZARR_SUBMITTED_KEYS = ["arr_radarr_api_key", "arr_sonarr_api_key"]
 ALL_DIGIT_KEY = "1" * 32
 
@@ -73,9 +68,7 @@ def main() -> None:
                 f"{key} must carry {expected} letter guard(s), not {len(searches)}"
             )
 
-            # The whole guard set for this key is what the play actually asserts,
-            # so the all-digit verdict is read off all of it rather than off the
-            # condition this test happens to have selected.
+            # Read the verdict off the play's whole guard set for this key.
             accepted = all(
                 guard(**{key: ALL_DIGIT_KEY}) for guard in matches + searches
             )

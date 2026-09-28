@@ -1,10 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Verifies the prune installer's observable outcome: private directories, an
-# exact configuration contract, a protected publisher, and an installed prune
-# that runs. The cron task is checked structurally rather than executed, so
-# running this suite never writes a crontab on a developer machine.
+# The prune installer's observable outcome. The cron task is checked
+# structurally, so this suite never writes a developer's crontab.
 
 require "fileutils"
 require "json"
@@ -18,13 +16,10 @@ include TestScaffold
 
 ROLE_TASKS = File.join(ROOT, "roles/image_prune/tasks/main.yml")
 PRUNE_SOURCE = File.join(ROOT, "scripts/image_prune.py")
-# One sentinel per Pushover credential, distinct, each carrying a double quote and
-# a backslash, so a rendered config is proved to escape them and to hold only its
-# own application's token.
+# Distinct sentinels with a quote and a backslash prove escaping and per-app tokens.
 PUSHOVER_ALERTS_TOKEN = 'sentinel-alerts-"token\\one'
 PUSHOVER_DEPLOYMENTS_TOKEN = 'sentinel-deployments-"token\\two'
-# Supplied although the prune reads no Deployments token, so a config found
-# carrying it is caught: that application is the release message's alone.
+# Supplied though the prune reads it not, so a config carrying it is caught.
 PUSHOVER_CONTAINERS_TOKEN = 'sentinel-containers-"token\\four'
 PUSHOVER_USER_KEY = 'sentinel-user-"key\\three'
 PUSHOVER_CREDENTIALS = {
@@ -34,10 +29,7 @@ PUSHOVER_CREDENTIALS = {
   "vault_pushover_user_key" => PUSHOVER_USER_KEY
 }.freeze
 
-# Deliberately restated rather than derived from the script: this list is the
-# drift screen. A field added to image_prune.py's Config without a matching key
-# in the template makes every scheduled prune fail to start, a week later, on
-# the NAS.
+# Restated on purpose: a Config field with no template key breaks every prune.
 CONFIG_KEYS = %w[
   curl_path dangling_retention_hours deployment_lock
   deployment_lock_wait_seconds docker_path log_retention_days log_root
@@ -62,8 +54,7 @@ tasks = YAML.safe_load_file(ROLE_TASKS)
 
 # --- structural contract -----------------------------------------------------
 
-# #558 removed ntfy, so the role renders no ntfy-prune.curl any more. The file a
-# previous installation left in the config root is the operator's to delete.
+# #558 removed ntfy; a leftover ntfy-prune.curl is the operator's to delete.
 check(failures, tasks.none? { |task| task.dig("ansible.builtin.template", "src").to_s.include?("ntfy") } &&
                 !File.exist?(File.join(ROOT, "roles/image_prune/templates/ntfy.curl.j2")),
       "the role must render no ntfy-prune.curl: #558 removed the service it published to")
@@ -80,8 +71,7 @@ cron = cron_tasks.fetch(0, {}).fetch("ansible.builtin.cron", {})
 check(failures, cron.fetch("job", "").end_with?("--prune"),
       "the cron entry must invoke the launcher with --prune")
 check(failures, cron["state"] == "present", "the cron entry must be declared present")
-# Weekly, not "whenever cron feels like it": an entry that omits any of the three
-# fields inherits `*`, which is how a weekly prune silently becomes hourly.
+# An omitted field inherits `*`, silently turning weekly into hourly.
 %w[minute hour weekday].each do |field|
   check(failures, cron.fetch(field, "*").to_s.strip != "*",
         "the cron entry must pin its #{field} rather than defaulting to every one")
@@ -103,13 +93,8 @@ check(failures, !probe_index.nil?, "the role must probe crontab usability")
 check(failures, probe_index.nil? || first_mutation.nil? || probe_index < first_mutation,
       "the crontab probe must run before the role creates anything")
 
-# The prune is only safe because it holds the deployment lock while Docker runs:
-# between a deployment pulling an image and starting its container, that image
-# is referenced by nothing, and Docker's `until` filter does not exclude it
-# because it compares upstream creation time, not pull time. A role that
-# installed a prune with no lock to take would remove that guarantee silently,
-# so the probe and the assertion that consumes it are both required, before the
-# schedule goes in.
+# The prune is safe only while it holds the deployment lock: a freshly pulled
+# image is unreferenced until its container starts.
 lock_probe = tasks.find do |task|
   task.dig("ansible.builtin.stat", "path").to_s.include?("image_prune_deployment_lock")
 end
@@ -136,8 +121,7 @@ check(failures, retention.is_a?(Integer) && retention >= 24,
 check(failures, dangling.is_a?(Integer) && dangling <= retention,
       "the dangling window must not exceed the unused window: " \
       "#{dangling.inspect} > #{retention.inspect}")
-# The script refuses a configuration below its own floor. A default under it
-# would install a schedule that fails on its first run.
+# The script refuses a retention below its floor.
 floor = File.read(PRUNE_SOURCE)[/^MINIMUM_RETENTION_HOURS = (\d+)$/, 1].to_i
 check(failures, floor.positive? && retention >= floor,
       "the default window must satisfy the script's floor of #{floor}h")
@@ -148,8 +132,6 @@ check(failures, lock_default.include?("production_auto_deploy_state_root"),
 check(failures, lock_default.strip.end_with?("/deployment.lock"),
       "the lock must be the file the poller actually takes")
 
-# The Pushover configs, read as directives: exactly one token, read by name and
-# escaped, the user key, and the url; and the defaults' list routes Alerts first.
 pushover_directives = File.read(File.join(ROOT, "roles/image_prune/templates/pushover.curl.j2"))
                           .lines.filter_map do |line|
   key, separator, value = line.strip.partition(" = ")
@@ -169,9 +151,7 @@ check(failures,
       "image_prune_pushover_notifiers must be the Alerts then the Containers config at the " \
       "prune's own paths, found #{notifiers.inspect}")
 
-# The schedule is installed by the playbook the poller replays on every
-# deployment. Installed anywhere else it would drift the moment someone edited
-# the role, which is the failure this repository exists to prevent.
+# Installed by the playbook the poller replays, so it never drifts.
 installer = YAML.safe_load_file(File.join(ROOT, "install-production-auto-deploy.yml"))
 installed_roles = Array(installer.fetch(0, {})["roles"]).map do |entry|
   entry.is_a?(Hash) ? entry["role"] : entry
@@ -219,8 +199,7 @@ Dir.mktmpdir("image-prune-role") do |root|
   }
   arguments = [
     ansible, "-i", inventory, play,
-    # The cron tag is skipped so the suite never writes a developer's crontab;
-    # declare external scheduling so the matching precondition is skipped too.
+    # Skip the cron tag and declare external scheduling so its precondition skips too.
     "--skip-tags", "image_prune_cron",
     "-e", "image_prune_home=#{home}",
     "-e", "image_prune_external_scheduler=true",
@@ -271,8 +250,7 @@ Dir.mktmpdir("image-prune-role") do |root|
             "other application's token")
     end
 
-    # The prune runs with a narrow PATH from cron, so the installer must record
-    # where the tools really are rather than assuming /usr/bin.
+    # Cron runs with a narrow PATH, so real tool paths are recorded.
     %w[docker_path curl_path].each do |key|
       check(failures, config[key].to_s.start_with?("/") && File.executable?(config[key].to_s),
             "#{key} must be an absolute path to an executable, got #{config[key].inspect}")
@@ -312,9 +290,7 @@ Dir.mktmpdir("image-prune-role") do |root|
     check(failures, !File.exist?(File.join(config_root, "ntfy-prune.curl")),
           "the role must not render ntfy-prune.curl since #558 removed ntfy")
 
-    # --status reads the installed configuration through the installed script,
-    # takes no lock and touches no image, so a fresh installation can prove
-    # itself without pruning anything.
+    # --status takes no lock and prunes nothing, so a fresh install proves itself.
     status_output, status_result = Open3.capture2e(
       { "PATH" => ENV.fetch("PATH", "") }, launcher, "--status"
     )
@@ -327,11 +303,8 @@ Dir.mktmpdir("image-prune-role") do |root|
     check(failures, !status_output.include?("nothing can be published"),
           "the installed prune must find both Pushover configs its configuration names: #{status_output}")
 
-    # Reviewing an installed host is the case --check exists for, and the one
-    # the operator guide requires before every production run. It is also where
-    # a read-only probe skipped under check mode shows up: the assertion that
-    # consumes its result fails on a value that was never registered, so the
-    # review reports a template error rather than what the run would do.
+    # --check on an installed host, which also catches a read-only probe skipped
+    # under check mode.
     review_output, review_status = Open3.capture2e(
       environment, *arguments, "--check", "--diff"
     )
@@ -343,10 +316,8 @@ Dir.mktmpdir("image-prune-role") do |root|
           "#{review_output.lines.last(3).join}")
   end
 
-  # And the refusal a fallback used to swallow: with no Pushover
-  # credential declared the role must stop and name each variable rather than
-  # schedule a prune that cannot publish. Check mode is enough, because the
-  # argument spec is validated before the role's first task.
+  # With no Pushover credential declared the role must refuse, naming each
+  # variable; the argument spec is validated before the first task.
   undeclared = []
   index = 0
   while index < arguments.length
@@ -358,15 +329,8 @@ Dir.mktmpdir("image-prune-role") do |root|
     undeclared << arguments[index]
     index += 1
   end
-  # "missing required arguments" is ansible-core's own diagnostic (2.21.3, pinned
-  # in controller-requirements.txt). Matching its wording is what makes this sharp
-  # rather than satisfiable by any incidental check-mode failure; a core bump that
-  # rephrases it breaks this assertion, and that is the reason why.
-  #
-  # Read the names out of that clause rather than out of the whole output: the
-  # refusal also dumps argument_spec_data, which names every option the role
-  # declares, so a whole-output substring is satisfied by an option that is
-  # present and optional -- which is the defect (#402).
+  # Match ansible-core's own "missing required arguments" clause, not the whole
+  # output, which also dumps every declared option (#402).
   refusal_output, refusal_status = Open3.capture2e(environment, *undeclared, "--check")
   missing_arguments =
     refusal_output[/missing required arguments: ([a-z_, ]+)/, 1].to_s.split(",").map(&:strip)

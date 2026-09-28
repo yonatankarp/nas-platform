@@ -1,36 +1,10 @@
 #!/usr/bin/env ruby
-# The static half of the Immich service contract: every property it can decide
-# from the repository alone, with nothing deployed.
+# Static half of the Immich service contract, decided from the repository alone.
 #
 # usage: ruby -ryaml immich-static.rb REPOSITORY PLATFORM
 #
-# PLATFORM is mac, nas or integration, and selects which capability contract
-# applies. Silent apart from one success line and exit 0 when the repository
-# holds; one `Immich contract failed: ...` line on stderr and exit 1 when it does
-# not. Callers grep those lines, so they are the interface --
-# tests/immich_contract_test.rb asserts them by their exact text.
-#
-# The `-ryaml` preload is not decoration. Until #147 this was a `<<'RUBY'`
-# heredoc inside tests/contracts/immich.sh invoked as `ruby -ryaml - "$repo_dir"
-# "$platform"`, and the body below never requires yaml itself. #250 blessed
-# carrying the preload verbatim into the sibling form rather than rewriting the
-# body, so the invocation keeps it and the body stays as it was. Run bare, this
-# program raises NameError on YAML.
-#
-# Two roots, deliberately separate. The tree this program inspects arrives as
-# ARGV[0]; the checkout it was loaded from is wherever its caller found it. They
-# are usually the same and must not be assumed to be: a caller may point
-# PLATFORM_CONTRACT_REPO_DIR at a fixture repository, and every path read below
-# is resolved from ARGV[0] so that it inspects that fixture rather than itself.
-#
-# `sh -n` reads a quoted heredoc as opaque text, so before #147 nothing but an
-# integration run with a converged Immich ever looked at these 936 lines. The
-# body is what that heredoc rendered, with exactly one change: the
-# `contract_source` read below named tests/contracts/immich.sh, which is where
-# the runtime half used to live. It now names tests/contracts/immich-runtime.rb,
-# because that is where it lives. Leaving it alone would not have failed loudly;
-# it would have gone on reading a file that no longer contains what it is
-# looking for, and refused every repository forever.
+# PLATFORM is mac, nas or integration. The body never requires yaml, hence -ryaml.
+# Every path is resolved from ARGV[0], which may be a fixture repository.
 root, platform = ARGV
 compose_path = File.join(root, "services", "immich", "compose.yml")
 compose = YAML.safe_load_file(compose_path, aliases: true)
@@ -40,15 +14,8 @@ def refuse(message)
   abort "Immich contract failed: #{message}"
 end
 
-# What a role does is its parsed task list, not the file's bytes. A task name, a
-# module, or a variable that survives only inside a comment is not something the
-# role executes, and every role assertion below that reads text is negative: it
-# says the role does not reach into PostgreSQL. Read from source text those were
-# satisfied by the comments explaining why it does not.
-#
-# role_strings yields the strings one at a time rather than joining them, because
-# a pattern matched against a joined blob spans two unrelated tasks and reports a
-# violation that neither of them contains.
+# Reads the parsed task list, so a comment cannot satisfy these negative checks.
+# Strings are yielded one at a time so a pattern cannot span two tasks.
 def role_strings(node)
   case node
   when Hash then node.flat_map { |key, value| [key.to_s] + role_strings(value) }
@@ -58,8 +25,6 @@ def role_strings(node)
   end
 end
 
-# The complete pinned stack. Immich is one application spread across four
-# containers, so a partial migration is a broken migration.
 EXPECTED_CONTAINERS = %w[
   immich-server immich-machine-learning redis database
 ].freeze
@@ -67,9 +32,7 @@ EXPECTED_CONTAINERS = %w[
 refuse("stack composition differs: #{containers.keys.sort.join(', ')}") unless
   containers.keys.sort == EXPECTED_CONTAINERS.sort
 
-# The server and the machine learning worker ship as one release and must never
-# drift apart. Asserting that relationship survives an image update; asserting
-# either version would not.
+# Server and ML worker ship as one release: assert the relation, not a version.
 coupled_tags = %w[immich-server immich-machine-learning].map do |name|
   containers.fetch(name).fetch("image")[%r{:([^:@/]+)@sha256:}, 1]
 end
@@ -86,17 +49,11 @@ end
 server = containers.fetch("immich-server")
 refuse("NAS port differs") unless server.fetch("ports") == ["2283:2283"]
 
-# Only the application is reachable. The database, the cache and the machine
-# learning helper are reached over the Compose network and must never publish a
-# host port, on any platform.
 %w[immich-machine-learning redis database].each do |name|
   refuse("#{name} must not publish a host port") if containers.fetch(name).key?("ports")
 end
 
-# The nested bind layout of the source deployment. /data holds the originals on
-# the media volume, while the regenerable and profile trees are redirected onto
-# the Docker root. Both roots are parameterized so the storage inventory
-# cross-check in tests/policy_test.rb applies to every Docker-root path.
+# /data holds originals on the media volume; the regenerable trees go to the Docker root.
 refuse("storage contract differs") unless server.fetch("volumes") == [
   "${NAS_MEDIA_ROOT:?}/Immich:/data",
   "${NAS_DOCKER_ROOT:?}/immich/data/thumbs:/data/thumbs",
@@ -114,8 +71,6 @@ refuse("database storage differs") unless
     "${NAS_MEDIA_ROOT:?}/Immich-backups/database:/immich-backups:ro"
   ]
 
-# The application must not start against an uninitialized database or cache;
-# both are declared healthy-gated in the source definition.
 refuse("startup ordering differs") unless server.fetch("depends_on") == {
   "redis" => { "condition" => "service_healthy" },
   "database" => { "condition" => "service_healthy" }
@@ -132,14 +87,10 @@ refuse("database shared memory differs") unless database.fetch("shm_size") == "1
 refuse("database checksums are not requested") unless
   database.fetch("environment").fetch("POSTGRES_INITDB_ARGS") == "--data-checksums"
 
-# The NAS-only capability contract. Hardware transcoding is the production
-# capability and must never be weakened to make another platform work.
 refuse("NAS render device mapping is absent") unless
   server.fetch("devices") == ["/dev/dri:/dev/dri"]
 
-# Every platform that lacks /dev/dri must remove the device explicitly. Compose
-# appends sequences, so a bare empty list would silently keep the NAS device:
-# the !override tag is what actually replaces it.
+# Compose appends sequences, so only `!override` actually removes the NAS device.
 override_path = File.join(root, "services", "immich", "compose.#{platform}.yml")
 if platform == "nas"
   refuse("the NAS runs the production definition unmodified") if File.exist?(override_path)
@@ -152,10 +103,7 @@ else
   refuse("#{platform} override may not add services: #{surplus_services.join(', ')}") unless
     surplus_services.empty?
   override_server = override_containers.fetch("immich-server")
-  # Deliberately source text, both here and for ports below. safe_load erases the
-  # tag, so `devices: !override []` and `devices: []` parse to the same empty
-  # list — and the difference between them is exactly the bug this guards. Only
-  # the source says which one was written.
+  # Source text: safe_load erases the tag, so `!override []` and `[]` parse alike.
   refuse("#{platform} override must reset devices with an explicit tag") unless
     override_text.match?(/^\s+devices: !override(\s|$)/)
   refuse("#{platform} override must reset devices to empty") unless
@@ -165,8 +113,7 @@ else
     refuse("#{platform} override may not redefine #{surplus.join(', ')} on #{name}") unless
       surplus.empty?
     refuse("#{platform} override must not redefine the #{name} image") if spec.key?("image")
-    # Renaming a Compose service would break machineLearning.urls, which Immich
-    # stores as http://immich-machine-learning:3003. Only container_name moves.
+    # Immich stores machineLearning.urls by service name, so only container_name moves.
     refuse("#{platform} override must not publish a host port on #{name}") if
       spec.key?("ports") && name != "immich-server"
   end
@@ -208,27 +155,15 @@ refuse("production inventory must not select the test-only compact profile") unl
   defaults.fetch("immich_managed_user_preference_profile_by_email").empty? &&
   defaults.fetch("immich_managed_user_preference_overrides").empty? &&
   defaults.fetch("immich_managed_user_preference_profiles").keys == ["standard"]
-# The one line #147 changed rather than moved. This reads the runtime half's
-# source out of the tree under inspection -- not out of this program's own
-# checkout -- and requires the supported-unowned-preference sentinel logic to be
-# live in it. Until the extraction the runtime half was a heredoc inside
-# tests/contracts/immich.sh, so that was the file to read; it is
-# tests/contracts/immich-runtime.rb now.
+# Read from the tree under inspection, not this program's own checkout.
 contract_source = File.read(File.join(root, "tests", "contracts", "immich-runtime.rb"))
 refuse("runtime contract permits a dormant supported preference sentinel") unless
   contract_source.include?(
     "designated partial profile has no supported unowned preference sentinel"
   ) && contract_source.include?("supported unowned managed preference")
 
-# The managed-user lifecycle is roles/managed_users reached through Immich's
-# shim (#647), with Immich's preference tasks in files the shared role runs
-# through its hooks and one the shim includes after it. What the role executes
-# is therefore that expansion, in execution order: the shim's tasks around the
-# shared role's, each hook include replaced by the tasks of the file its
-# defaults name -- resolved from roles/managed_users/tasks, as include_tasks
-# resolves it -- and each shim include by the file it names. A file that is not
-# there contributes nothing, so the checks below that need its tasks refuse by
-# name rather than reading a reference as though it were the tasks.
+# The lifecycle is roles/managed_users through Immich's shim (#647); checks read
+# that expansion in execution order, and a missing file contributes nothing.
 immich_tasks_dir = File.join(root, "roles", "immich", "tasks")
 shared_tasks_dir = File.join(root, "roles", "managed_users", "tasks")
 read_tasks = lambda do |path|
@@ -370,15 +305,7 @@ role_tasks = YAML.safe_load_file(
   File.join(root, "roles", "immich", "tasks", "main.yml"),
   aliases: true
 )
-# What the role does is its parsed task list, not the file's bytes. A task name,
-# a module, or a variable that survives only inside a comment is not something
-# the role executes, and this file's remaining role assertions are all negative:
-# they say the role no longer reaches into PostgreSQL. Read from source text they
-# were satisfied by the comment that explains why it does not.
-#
-# role_strings yields the strings one at a time rather than joining them, because
-# a pattern matched against a joined blob spans two unrelated tasks and reports a
-# violation neither of them contains.
+# Parsed tasks, not bytes: see role_strings above.
 def role_strings(node)
   case node
   when Hash then node.flat_map { |key, value| [key.to_s] + role_strings(value) }
@@ -627,8 +554,6 @@ refuse("configured-password check marker differs") unless
     "label" => "immich-configured-password-plan"
   }
 
-# This focused lifecycle handles vault identities and a bearer token throughout.
-# Keep every data-bearing task redacted; only the constant plan marker is safe.
 configured_password_tasks.each do |task|
   next if task.equal?(plan_marker)
 
@@ -1010,8 +935,6 @@ role_values = role_strings(role_tasks)
 refuse("role still references immich_postgres_container") if
   role_values.any? { |value| value.include?("immich_postgres_container") }
 
-# Immich owns its schema through its own migrations. A role that reaches into
-# PostgreSQL to fix application state is editing an opaque database.
 refuse("role must not mutate the application schema") if
   role_values.any? { |value| value.match?(/\b(?:INSERT|UPDATE|DELETE|ALTER|DROP)\s+(?:INTO|FROM|TABLE)?/i) }
 puts "Immich static contract passed (#{platform})"

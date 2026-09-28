@@ -3,23 +3,14 @@ set -eu
 
 repo_dir=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd -P)
 integration=$repo_dir/tests/integration.sh
-# The play, contract and verification launchers are a file of their own. They
-# are ordinary shell there rather than escaped text inside the controller
-# argument, so the assertions below read them without backslashes -- the same
-# guarantees, made where the code they police actually lives.
+# Launchers live in their own file so these assertions read plain shell.
 controller_library=$repo_dir/tests/integration_controller_lib.sh
 [ -r "$controller_library" ] || {
   printf '%s\n' 'integration controller library is missing' >&2
   exit 1
 }
-# The controller program itself is a file too, for the same reason. What it
-# *does* is proved by running it: tests/integration_controller_execution_test.sh
-# drives it against stubbed ansible-playbook, docker, contracts and helpers and
-# asserts on the argv and environment those stubs observe, with a planted defect
-# per property. This file reads tests/integration.sh for what the launcher does
-# -- the sandbox, the mounts, the environment it hands across -- and reads the
-# controller only for the few properties execution cannot reach, each of which
-# says below why it stayed text.
+# Controller behaviour is proved by tests/integration_controller_execution_test.sh;
+# this file reads the controller only for properties execution cannot reach.
 controller_program=$repo_dir/tests/integration_controller.sh
 [ -r "$controller_program" ] || {
   printf '%s\n' 'integration controller program is missing' >&2
@@ -307,12 +298,8 @@ for suite_name in foundation arr downloaders bindery kapowarr pinchflat trailarr
 success' "$suite_name"
 done
 
-# The upgrade lane is the one suite whose plan is not `converge success`, and
-# it is asserted here in full rather than through assert_lifecycle, whose
-# active-service guard refuses a `seed` event -- correctly, for every other
-# suite, where a seed in an observation would mean the observation had run
-# something. Here the seed IS the plan. Emitting it is still a pure read: the
-# Docker log assertion below is the same one assert_lifecycle makes.
+# The upgrade lane's plan is a `seed`, which assert_lifecycle's guard refuses, so
+# it is asserted in full here.
 rm -f "$docker_log"
 upgrade_plan=$(run_integration --observe-lifecycle --suite upgrade)
 [ "$upgrade_plan" = 'converge
@@ -331,9 +318,7 @@ success' ] || {
   exit 1
 }
 
-# And the table accepts it. A plan the runner emits and the consumer refuses is
-# a lane that cannot start, so the two are asserted against each other rather
-# than each against a literal.
+# The consumer must accept what the runner emits.
 upgrade_validated=$(run_integration --consume-lifecycle --suite upgrade) || {
   printf '%s\n' 'the lifecycle table refused the upgrade plan' >&2
   exit 1
@@ -405,23 +390,15 @@ assert_output \
 assert_output \
   'suite=seerr tags=host_prep,deployment_bundle,arr,jellyfin,seerr playbook=site.yml scenarios=true' \
   --describe-suite seerr
-# The acquisition catalog is fully implemented, so the shared foundation's own
-# runtime proof lives in the last project's lane rather than in a lane of its
-# own. That dispatch -- the reader prerequisites converge and the foundation
-# verification, in that order, falling through to the project's own arm rather than exiting -- is executed by
-# tests/integration_controller_execution_test.sh (case_seerr), with a plant per
-# step. The guard below stays where it is: what it reads is
-# tests/integration_controller_lib.sh, and it carries its own planted-defect
-# check already.
+# The foundation's runtime proof runs in the last acquisition lane; its dispatch is
+# executed by tests/integration_controller_execution_test.sh (case_seerr).
 acquisition_runtime_contract_holds() {
   source_path=$1
   library_path=$2
   reader_converge=$(sed -n '/converge_media_acquisition_reader_prerequisites() {/,/^}$/p' "$library_path")
   foundation_verify=$(sed -n '/run_media_acquisition_foundation_verify() {/,/^}$/p' "$library_path")
-  # The foundation verification now delegates to the one shared launcher, so the
-  # play it runs is read there. The single fact that launcher forces lives in a
-  # case arm; the foundation tag must not be named by it, or the lane would
-  # assert against a truth it supplied itself instead of the inventory's.
+  # The foundation tag must not be named by the launcher, or the lane asserts a
+  # truth it supplied itself.
   verification_launcher=$(sed -n '/^run_verification() {/,/^}$/p' "$library_path")
   forced_fact_arm=$(printf '%s\n' "$verification_launcher" |
     grep -B 1 -F -- '-e media_usenet_enabled=true' | head -n 1 | tr -d ' ')
@@ -483,8 +460,6 @@ assert_output 'suite=idempotence-check tags=host_prep,deployment_bundle playbook
 assert_output 'suite=idempotence-check tags= playbook=site.yml scenarios=true' \
   --describe-suite idempotence-check
 
-# The same parser identifies legacy playbook-first invocations as full without
-# touching Docker. Extra Ansible arguments remain available to the runner.
 actual=$(PATH="$fake_bin:$PATH" DOCKER_LOG=$docker_log \
   INTEGRATION_DESCRIBE_ONLY=1 "$integration")
 [ "$actual" = 'suite=full tags= playbook=site.yml scenarios=true' ]
@@ -495,8 +470,6 @@ actual=$(PATH="$fake_bin:$PATH" DOCKER_LOG=$docker_log \
   INTEGRATION_DESCRIBE_ONLY=1 "$integration" --suite dozzle)
 [ "$actual" = 'suite=dozzle tags=host_prep,deployment_bundle,beszel,dozzle playbook=site.yml scenarios=true' ]
 
-# Dispatch crosses the Docker boundary as quoted argv/environment rather than
-# being interpolated into the runner program.
 grep -qF -- '-e INTEGRATION_SUITE="$suite"' "$integration"
 grep -qF -- '-e INTEGRATION_TAGS="$suite_tags"' "$integration"
 grep -qF 'chmod 0700 "$sandbox"' "$integration" || {
@@ -506,19 +479,10 @@ grep -qF 'chmod 0700 "$sandbox"' "$integration" || {
 grep -qF -- 'sh /repo/tests/integration_controller.sh "$playbook" "$@"' \
   "$integration"
 grep -qF -- '"$playbook" "$@"' "$controller_library"
-# Every branch of run_selected_play is asserted by running it, so none of them is
-# read out of the source text here any more. The tagged branch is case_idempotence_check
-# in tests/integration_controller_execution_test.sh; the other two were unreachable
-# while `[ -n $INTEGRATION_TAGS ]` went unquoted -- `[ -n ]` on an empty value is a
-# one-argument test on a non-empty string, true either way (SC2070) -- and the
-# quoting fix made both of them reachable from case_empty_tags, whose phase 2 takes
-# the no-argument branch and whose phase 3 takes the `run_play "$@"` fallback. A
-# grep that matched and a branch nothing executed both passed on a healthy tree,
-# which is the whole reason that file exists.
+# Every branch of run_selected_play is executed in
+# tests/integration_controller_execution_test.sh, not read here.
 
-# The controller and every acquisition resource share one strict namespace
-# derived from the disposable directory. Exercise the production derivation so
-# case normalization and exact-length rejection cannot drift from the harness.
+# Exercise the production namespace derivation so it cannot drift from the harness.
 sed -n '/^derive_integration_project_namespace() {/,/^}$/p' \
   "$integration" > "$namespace_helper"
 [ -s "$namespace_helper" ] || {
@@ -567,9 +531,7 @@ for scoped_project_variable in \
     exit 1
   }
 done
-# Every pre-existing service derives its Compose project from the platform
-# namespace, so the disposable lane must set it: a stack deployed under its
-# production project is not owned by sandbox cleanup and survives the run.
+# A stack under its production project is not owned by sandbox cleanup.
 printf '%s\n' "$run_play_namespace" |
   grep -qF -- '-e platform_project_name="$integration_project_namespace"' || {
   printf '%s\n' 'integration plays do not deploy under the disposable namespace' >&2
@@ -584,14 +546,8 @@ if grep -n -- '-e platform_project_name=' \
   exit 1
 fi
 
-# Enabled acquisition suites must prove idempotence with a second normal play,
-# not infer it from check mode. Exercise the production recap parser directly so
-# task output cannot satisfy the gate and malformed or partial recaps fail closed.
-# The recap parser is ordinary shell in a file of its own, so the lane sources
-# the production function itself. It used to be rebuilt here from the escaped
-# text of the controller argument by a hand-written unescaper, because a plain
-# unescape produced a *correct-looking* function from broken source and hid an
-# awk syntax error that only appeared when a suite actually ran.
+# Idempotence needs a real second play, not check mode; source the production
+# recap parser so malformed recaps fail closed.
 sed -n '/^enabled_idempotence_recap_is_clean() {/,/^}$/p' \
   "$controller_library" > "$idempotence_helper"
 [ -s "$idempotence_helper" ] || {
@@ -653,26 +609,15 @@ assert_idempotence_recap_rejected 'duplicate target recap' \
 assert_idempotence_recap_rejected 'task-output false match before failed recap' \
   'TASK [debug] ********************************************************************\nok: [nas] => {"msg":"changed=0 unreachable=0 failed=0"}\nPLAY RECAP *********************************************************************\nnas : ok=3 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\n'
 
-# Which order the enabled lanes run their idempotence converge and their check
-# mode in is a property of what they *do*, and the source-order read that used
-# to stand here could not tell a reordered pair from a deleted one. Both are
-# planted in tests/integration_controller_execution_test.sh -- case_arr and
-# case_downloaders each swap the two lines and require the observed order of the
-# plays to catch it.
-# What has to hold is that the pin EXISTS and is in a form Renovate's custom
-# manager can bump, not what its value is today. This read the literal 2.34.2
-# until #652, in a file no `managerFilePatterns` covers -- so the next requests
-# bump would have moved tests/integration.sh, left this copy behind and redded
-# the gate on Renovate's own pull request. The pattern below is that manager's
-# `matchStrings` regex with anchors: a value it could not bump fails here rather
-# than silently stopping being bumped.
+# Idempotence/check ordering is planted in tests/integration_controller_execution_test.sh.
+# The pin must stay in the form Renovate's custom manager can bump: this is its
+# `matchStrings` regex, anchored (#652).
 grep -qE '^requests_version=[0-9]+\.[0-9]+\.[0-9]+$' "$integration" || {
   printf '%s\n' 'integration controller does not pin docker_container_info runtime support' >&2
   exit 1
 }
 
-# Service fixtures consumed through nested Docker bind mounts must exist on the
-# daemon host before the controller container establishes its sandbox mount.
+# Nested bind-mount sources must exist on the daemon host before the sandbox mount.
 paperless_preseed_line=$(grep -nF '"$repo_dir/tests/contracts/paperless.sh" seed-fixture-only' \
   "$integration" | cut -d: -f1)
 controller_line=$(grep -nF 'docker run --rm' "$integration" | head -1 | cut -d: -f1)
@@ -737,25 +682,14 @@ if immich_negative_order_holds "$immich_order_mutant"; then
   exit 1
 fi
 
-# Komga's and Jellyfin's independent scenario dispatch -- a fixture seed for
-# every lane that reaches the service and the owning contract only for the lane
-# named after it -- is executed by tests/integration_controller_execution_test.sh
-# (case_komga, case_jellyfin), which also plants a suite_is that matches only
-# the full lane. Immich's arm stays a text assertion: reaching it means
-# emulating a Redis round trip, seven negative restore fixtures and container
-# identity across `docker inspect`, which is a Docker daemon rather than a stub,
-# and the immich integration lane is what proves that arm for real.
+# Komga/Jellyfin dispatch is executed in tests/integration_controller_execution_test.sh;
+# Immich's arm stays text because it needs a real Docker daemon.
 grep -qF 'suite_is immich' "$controller_program" || {
   printf '%s\n' 'immich has no independent scenario dispatch' >&2
   exit 1
 }
-# The committed deployment vault is intentionally encrypted with an operator
-# password unavailable to CI. Every suite must use an isolated controller copy,
-# replace only that copy with its generated ephemeral vault, and export the
-# matching password before any Ansible invocation. The controller's half of that
-# is executed rather than read: the execution test asserts the checkout's
-# vault.yml carries the generated bytes and that every observed play saw
-# ANSIBLE_VAULT_PASSWORD_FILE pointing at the generated password file.
+# The committed vault is unreadable in CI: each suite swaps in an ephemeral vault in
+# an isolated controller copy (the controller half is executed, not read).
 grep -qF -- 'controller_mount=$sandbox/repo' "$integration"
 grep -qF -- '-e @"$fixture_vars_file"' "$controller_library" || {
   printf '%s\n' 'integration deployment does not consume the protected Immich fixture policy' >&2
@@ -788,9 +722,7 @@ assert_rejected 'integration suite options must precede the playbook' \
 assert_rejected 'unexpected integration suite argument: --check' \
   --suite smoke custom.yml --check
 
-# The upgrade lane's two inputs. Refusing rather than clamping is the point:
-# there is no nearest valid image reference, and the value reaches a docker pull
-# argument and a literal substitution inside the sandbox's compose.yml.
+# Refused, not clamped: the value reaches docker pull and a compose.yml substitution.
 assert_rejected \
   'the upgrade suite requires INTEGRATION_UPGRADE_SERVICE and INTEGRATION_UPGRADE_BASE_IMAGE' \
   --suite upgrade --tags host_prep,deployment_bundle,kapowarr site.yml
@@ -814,18 +746,12 @@ INTEGRATION_UPGRADE_SERVICE=Kapowarr INTEGRATION_UPGRADE_BASE_IMAGE=$upgrade_val
 INTEGRATION_UPGRADE_SERVICE=nosuchservice INTEGRATION_UPGRADE_BASE_IMAGE=$upgrade_valid_image \
   assert_rejected 'unknown integration upgrade service: nosuchservice' \
     --suite upgrade --tags host_prep,deployment_bundle,kapowarr site.yml
-# A subject with no seed-and-verify program is refused rather than run. A lane
-# that converges, migrates and asserts nothing is green while proving less than
-# the fresh-install lanes it exists to complement, and that is the shape this
-# repository keeps closing.
+# A subject with no seed-and-verify program is refused rather than run.
 INTEGRATION_UPGRADE_SERVICE=komga INTEGRATION_UPGRADE_BASE_IMAGE=$upgrade_valid_image \
   assert_rejected 'integration upgrade service komga has no seed-and-verify program' \
     --suite upgrade --tags host_prep,deployment_bundle,komga site.yml
-# The assignments above are prefixes on a function call, so POSIX keeps them set
-# in the caller after it returns -- the same trap assert_retry_after_sleep below
-# records. Leaving them set refuses every later case in this file, because the
-# shape checks apply wherever a value is set rather than only to the upgrade
-# suite.
+# Prefix assignments on a function call persist in POSIX sh; unset them or every
+# later case is refused.
 unset INTEGRATION_UPGRADE_SERVICE INTEGRATION_UPGRADE_BASE_IMAGE
 
 [ ! -e "$docker_log" ] || {
@@ -833,19 +759,8 @@ unset INTEGRATION_UPGRADE_SERVICE INTEGRATION_UPGRADE_BASE_IMAGE
   exit 1
 }
 
-# Image pre-pull and its retry.
-#
-# The plays pull digest-pinned images through community.docker.docker_compose_v2,
-# which reports a registry refusal as a module failure that aborts the converge:
-# PR #84's smoke and idempotence-check legs died that way on
-# "toomanyrequests: retry-after: 218.093us, allowed: 44000/minute" and passed on a
-# re-run of the same commits. The harness therefore pulls the images itself first,
-# with a bounded retry, and once a digest-pinned layer set is local the play's own
-# `docker compose up` reaches no registry at all.
-#
-# That retry is proven here by driving the real script against a stub docker whose
-# registry refuses a chosen number of times per image. Pull-only mode needs no
-# sandbox, so each case costs about a second.
+# Image pre-pull and its retry, driven against a stub docker whose registry refuses
+# a chosen number of times per image (#84).
 
 prepull_fail() {
   printf 'prepull: %s\n' "$1" >&2
@@ -967,9 +882,7 @@ fi
   prepull_fail 'both collision endpoints must explicitly refuse implicit pulls'
 grep -qF 'MEDIA_CONTROL_COLLISION_IMAGE="$collision_image"' "$integration" ||
   prepull_fail 'the owning integration lane does not pass its pre-pulled fixture image'
-# That the owning lane actually runs the live collision test is executed rather
-# than read: case_arr in tests/integration_controller_execution_test.sh observes
-# the contract invoked with `live`, and plants its removal.
+# That the owning lane runs the live collision test is executed in case_arr.
 
 compose_images() {
   sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$repo_dir/services/$1/compose.yml"
@@ -981,15 +894,7 @@ toolchain_prefix=$(sed -n \
 [ -n "$toolchain_prefix" ] ||
   prepull_fail 'could not read the controller toolchain repository'
 
-# The controller no longer costs a Docker Hub pull: it comes from the published
-# toolchain image, and the base python image is pulled only by the lanes that
-# converge it as a service in its own right. Measured across the seventeen CI
-# lanes that is 66 Docker Hub pulls per full matrix before and 52 after.
-#
-# The toolchain tag is a digest over the harness's own pins, so it is matched by
-# shape rather than restated here -- restating it would mean this test computed
-# the digest a second way and pinned that instead. Everything else in the log
-# must be exactly the services the suite converges.
+# The toolchain tag is a digest over the harness's pins, so match it by shape.
 assert_toolchain_pull_set() {
   toolchain_expected_services=$1
   toolchain_actual=$(sort -u "$pull_log")
@@ -1070,9 +975,7 @@ assert_sleep_log() {
     prepull_fail "expected sleeps [$expected], saw [$actual]"
 }
 
-# The assignments are a prefix on a function call, so POSIX keeps them set in the
-# caller after it returns. Unsetting them here is what stops a later case from
-# silently inheriting the last scenario's registry hint.
+# Prefix assignments persist in POSIX sh; unset so later cases don't inherit them.
 assert_retry_after_sleep() {
   retry_after_case=$1
   expected_sleep=$2
@@ -1084,9 +987,6 @@ assert_retry_after_sleep() {
   unset PREPULL_RETRY_AFTER PREPULL_RANDOM_VALUE PREPULL_DELAY
 }
 
-# A suite pulls the controller image plus the images of the services its tags
-# converge, and nothing else. Pulling the whole tree for a one-service suite would
-# cost gigabytes of runner disk for images the run never starts.
 run_prepull 0 4 --suite beszel
 [ "$prepull_status" -eq 0 ] || prepull_fail "an answering registry failed the pre-pull ($prepull_status)"
 assert_toolchain_pull_set "$({ compose_images beszel; } | sort -u)"
@@ -1097,11 +997,8 @@ if grep -q 'immich' "$pull_log"; then
   prepull_fail 'the beszel suite pulled images it never converges'
 fi
 
-# The upgrade lane converges TWO versions of one service, and only the head one
-# is written in a compose.yml the enumeration can read. Without the base here,
-# its pull happens inside community.docker.docker_compose_v2 on the first
-# converge instead -- which is exactly the registry refusal this whole ladder
-# exists to absorb, on the one pull the lane cannot retry.
+# The upgrade base image is in no compose.yml, so it must be pre-pulled explicitly
+# or its pull happens un-retried inside the first converge.
 upgrade_base_fixture='docker.io/mrcas/kapowarr:v1.3.1@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
 INTEGRATION_UPGRADE_SERVICE=kapowarr \
   INTEGRATION_UPGRADE_BASE_IMAGE=$upgrade_base_fixture \
@@ -1112,13 +1009,7 @@ unset INTEGRATION_UPGRADE_SERVICE INTEGRATION_UPGRADE_BASE_IMAGE
 assert_toolchain_pull_set "$({ compose_images kapowarr
                                printf '%s\n' "$upgrade_base_fixture"; } | sort -u)"
 
-# ... and NO other lane pulls it, however the inputs reach them. The workflow has
-# one integration step, so both upgrade inputs sit on the step environment of
-# every matrix leg; a pre-pull gated on the value being set rather than on the
-# suite made the beszel lane fetch the Kapowarr base image. Two wasted pulls on a
-# routed bump, twenty-five on a fall-open, against an allowance a full matrix
-# already spends a third of -- and a rate-limited pull reds the leg it happens
-# on, which would be a lane with nothing to do with the upgrade.
+# ... and no other lane pulls it, even though the inputs sit on every matrix leg.
 INTEGRATION_UPGRADE_SERVICE=kapowarr \
   INTEGRATION_UPGRADE_BASE_IMAGE=$upgrade_base_fixture \
   run_prepull 0 4 --suite beszel
@@ -1130,16 +1021,8 @@ if grep -qxF "$upgrade_base_fixture" "$pull_log"; then
 fi
 assert_toolchain_pull_set "$({ compose_images beszel; } | sort -u)"
 
-# The pre-pull fetches image_pull_width images at once, and the input is what
-# says how many. Serial it was 272 seconds of the smoke lane's 1151 -- 33 images,
-# one at a time -- so the property is worth an assertion of its own rather than a
-# comment claiming it. Both directions, because a peak of four proves nothing
-# unless a width of one can still be observed as one: a rendezvous that never
-# blocked would report the number in flight as one whatever the harness did.
-#
-# The paperless suite is five service images, so a width of four is one full
-# batch and one straggler, and the straggler is what makes the peak the batch
-# rather than the whole enumeration.
+# Both directions: a peak of four proves nothing unless a width of one is observed
+# as one. Five paperless images at width four leave one straggler.
 run_prepull_concurrency() {
   rm -rf "$concurrency_dir"
   mkdir -p "$concurrency_dir"
@@ -1166,8 +1049,6 @@ run_prepull_concurrency 1 2
   prepull_fail "a width of 1 still held $concurrency_peak image(s) in flight"
 assert_toolchain_pull_set "$({ compose_images paperless-ngx; } | sort -u)"
 
-# A malformed or oversized width is floored and capped like every other budget
-# here, rather than becoming an unbounded fan-out at a registry.
 PREPULL_WIDTH=999999999999999999999999999999999999 \
   PREPULL_CONCURRENCY_DIR=$concurrency_dir \
   PREPULL_CONCURRENCY_EXPECT=8 \
@@ -1180,24 +1061,17 @@ PREPULL_WIDTH=999999999999999999999999999999999999 \
 unset PREPULL_WIDTH PREPULL_CONCURRENCY_DIR PREPULL_CONCURRENCY_EXPECT \
   PREPULL_CONCURRENCY_LOG
 
-# Everything the concurrent loop does when a pull refuses, proved inside the loop
-# rather than in the serial controller resolution above it -- which is where every
-# other refusal case here fails, and therefore where none of this had ever run.
-# The refusal is aimed at a prefix so the controller image still resolves and the
-# enumeration is actually reached.
+# Refusals inside the concurrent loop; aimed at a prefix so the controller image
+# still resolves.
 beszel_refuse_prefix=ghcr.io/henrygd/beszel/
 compose_images beszel | grep -q "^$beszel_refuse_prefix" ||
   prepull_fail "no beszel image starts with $beszel_refuse_prefix any more"
-# The paperless suite is five images, which sort as tika, gotenberg, postgres and
-# valkey ahead of the application itself, so a refusal aimed at tika lands in the
-# first batch of four and paperless-ngx is the straggler.
+# Paperless images sort tika first, so tika lands in batch one and paperless-ngx
+# is the straggler.
 paperless_refuse_prefix=docker.io/apache/tika:
 compose_images paperless-ngx | grep -q "^$paperless_refuse_prefix" ||
   prepull_fail "no paperless image starts with $paperless_refuse_prefix any more"
 
-# A service image the registry refuses past its budget fails the suite, and the
-# diagnostic reaches the log through the per-image capture rather than being
-# swallowed with the child that produced it.
 PREPULL_REFUSE_PREFIX=$paperless_refuse_prefix run_prepull 9 2 --suite paperless
 [ "$prepull_status" -ne 0 ] ||
   prepull_fail 'a refused service image produced a successful pre-pull'
@@ -1205,18 +1079,14 @@ grep -qF 'toomanyrequests: retry-after:' "$prepull_output" ||
   prepull_fail "the concurrent pre-pull swallowed its child's diagnostic"
 grep -qF 'could not pull docker.io/apache/tika:' "$prepull_output" ||
   prepull_fail "the concurrent pre-pull did not name the image it gave up on"
-# Bounded overshoot, not none: the batch carrying the refusal finishes, and no
-# later batch is launched. Five service images at a width of four is one full
-# batch and one straggler, so the straggler must never be pulled.
+# Bounded overshoot: the refusing batch finishes, no later batch launches.
 if grep -q 'paperless-ngx/paperless-ngx' "$pull_log"; then
   prepull_fail 'the pre-pull launched a batch after one carrying a refusal'
 fi
 unset PREPULL_REFUSE_PREFIX
 
-# A child killed mid-backoff records no status, and no status is a refusal rather
-# than a silence. It is also the only thing that runs the subshell's own traps:
-# the pull diagnostic belongs to the child, so the parent's trap has nothing of
-# the child's to find and the file survives unless the child removes it itself.
+# A child killed mid-backoff records no status (a refusal) and must remove its own
+# diagnostic file; the parent's trap cannot.
 mkdir -p "$interrupt_tmp"
 : > "$pull_log"
 : > "$sleep_log"
@@ -1247,22 +1117,12 @@ fi
 find "$interrupt_tmp" -depth -mindepth 1 -delete 2>/dev/null || true
 rmdir "$interrupt_tmp"
 
-# An enumeration that dies partway must fail the pre-pull rather than pre-pull a
-# truncated list. `for candidate in $(suite_pull_images | sort -u)` took its
-# status from sort, and #!/bin/sh has no pipefail: a missing
-# services/<dir>/compose.yml aborted the enumeration's subshell under set -e,
-# sort still succeeded on whatever had been listed, and every image after the gap
-# was left to be pulled inside docker_compose_v2 -- the registry refusal this
-# whole ladder exists to absorb. The fixture removes trailarr's compose.yml, which
-# the trailarr suite enumerates after arr's, so a truncation is observable.
+# A truncated enumeration must fail the pre-pull (#!/bin/sh has no pipefail, so
+# `$(... | sort -u)` hid it). trailarr's compose.yml is removed to observe it.
 mkdir -p "$truncated_repo/tests/ci" "$truncated_tmp"
 cp "$integration" "$truncated_repo/tests/integration.sh"
-# The runner reads its suite table from tests/ci/suites.conf. The fixture is
-# truncated in services/, not in its suite table: without this copy the run
-# refuses for a missing table and never reaches the enumeration this asserts.
+# Copy the suite table, or the run refuses before reaching the enumeration.
 cp "$repo_dir/tests/ci/suites.conf" "$truncated_repo/tests/ci/suites.conf"
-# The controller image's tag is a digest over these two, so the fixture carries
-# them for the same reason it carries the suite table.
 cp "$repo_dir/tests/integration.Dockerfile" "$truncated_repo/tests/integration.Dockerfile"
 cp "$repo_dir/requirements.yml" "$truncated_repo/requirements.yml"
 cp -R "$repo_dir/services" "$truncated_repo/services"
@@ -1295,65 +1155,46 @@ if find "$truncated_tmp" -name 'nas-platform-prepull.*' -print | grep -q .; then
   prepull_fail 'the refused pre-pull leaked its image enumeration file'
 fi
 
-# The paperless suite is the one whose tag and service directory differ, so it is
-# the case that proves the map rather than the naming coincidence.
+# Paperless's tag and service directory differ, so it proves the map.
 run_prepull 0 4 --suite paperless
 [ "$prepull_status" -eq 0 ] || prepull_fail "the paperless pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set \
   "$({ compose_images paperless-ngx; } | sort -u)"
 
-# Three unique images rather than four: the application and its cron sidecar pin
-# one identical image, which compose_images de-duplicates and
-# tests/contracts/nextcloud-static.rb requires.
+# Three, not four: the app and its cron sidecar share one image.
 run_prepull 0 4 --suite nextcloud
 [ "$prepull_status" -eq 0 ] || prepull_fail "the nextcloud pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set "$({ compose_images nextcloud; } | sort -u)"
 
-# One image: the password manager, which is a single container.
 run_prepull 0 4 --suite vaultwarden
 [ "$prepull_status" -eq 0 ] || prepull_fail "the vaultwarden pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set "$({ compose_images vaultwarden; } | sort -u)"
 
-# Three images: Karakeep's application, chrome and Meilisearch.
 run_prepull 0 4 --suite karakeep
 [ "$prepull_status" -eq 0 ] || prepull_fail "the karakeep pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set "$({ compose_images karakeep; } | sort -u)"
 
-# An untagged smoke run converges everything, so every service directory in the
-# tree must be reachable from the harness map. A directory the map forgot shows up
-# here as a missing pull.
+# Untagged smoke converges everything, so every service directory must be mapped.
 run_prepull 0 4 --suite smoke
 [ "$prepull_status" -eq 0 ] || prepull_fail "the untagged smoke pre-pull failed ($prepull_status)"
 all_service_images=$(for compose in "$repo_dir"/services/*/compose.yml; do
                        sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$compose"
                      done)
 assert_toolchain_pull_set "$(printf '%s\n' "$all_service_images" | sort -u)"
-# Dozzle's alert relay runs on the base python image as a service of its own, so
-# the lanes that converge it still pull it -- from Docker Hub, as a service. That
-# is why three of the seventeen lanes save nothing.
+# Dozzle's alert relay runs on the base python image, so its lanes still pull it.
 grep -qxF "$runner_image" "$pull_log" ||
   prepull_fail "the untagged smoke pre-pull skipped the alert relay image"
 
-# CI narrows smoke to the changed service, and the pre-pull has to narrow with it.
 run_prepull 0 4 --suite smoke --tags host_prep,deployment_bundle,immich
 [ "$prepull_status" -eq 0 ] || prepull_fail "the tagged smoke pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set "$({ compose_images immich; } | sort -u)"
 
-# Everything from here to the acquisition suites below is about the retry ladder
-# itself -- its backoff arithmetic, its ceilings and its budget -- rather than
-# about which image a lane needs. INTEGRATION_TOOLCHAIN=off pins it against the
-# base image the fallback path pulls, which is the path a developer's first run
-# and a fork's CI take, so the ladder is exercised where it still matters and the
-# cases stay readable as arithmetic.
+# From here on the cases test the retry ladder itself, against the base image the
+# fallback path pulls.
 PREPULL_TOOLCHAIN=off
 
-# The default budget has to outlast a real ghcr.io refusal window (#762). Four
-# times between 2026-09-11 and 2026-09-17 an immich image was refused six times
-# in a row with exactly this text and the six-attempt default gave up, while
-# other images in the same batch got through on attempt 4 or 5. An empty
-# attempts argument leaves INTEGRATION_IMAGE_PULL_ATTEMPTS empty, so the
-# script's own default is what runs here: every other case sets that
-# variable, so none of them would notice a change to the default.
+# The default budget must outlast a real ghcr.io refusal window (#762); an empty
+# attempts argument exercises the script's own default.
 immich_server_prefix=ghcr.io/immich-app/immich-server:
 compose_images immich | grep -q "^$immich_server_prefix" ||
   prepull_fail "no immich image starts with $immich_server_prefix any more"
@@ -1365,7 +1206,6 @@ PREPULL_REFUSE_PREFIX=$immich_server_prefix PREPULL_RETRY_AFTER=333.368µs \
 grep -qF 'toomanyrequests: retry-after: 333.368µs, allowed: 44000/minute' "$prepull_output" ||
   prepull_fail 'the #762 case never drove the observed refusal'
 assert_pull_count "$immich_server_image" 7
-# Still bounded: past the ceiling the default gives up and says so.
 PREPULL_REFUSE_PREFIX=$immich_server_prefix PREPULL_RETRY_AFTER=333.368µs \
   run_prepull 99 '' --suite immich
 [ "$prepull_status" -ne 0 ] || prepull_fail 'the default budget never gives up'
@@ -1373,9 +1213,6 @@ grep -qF "could not pull $immich_server_image in 10 attempt(s)" "$prepull_output
   prepull_fail "the default budget is not ten attempts: $(grep 'could not pull' "$prepull_output")"
 unset PREPULL_REFUSE_PREFIX PREPULL_RETRY_AFTER
 
-# A registry that refuses twice and then answers must still produce a successful
-# pre-pull, with the pull retried rather than the suite failed. foundation
-# converges no service, so this costs one image and two backoffs.
 run_prepull 2 4 --suite foundation
 [ "$prepull_status" -eq 0 ] || prepull_fail "two refusals failed the pre-pull ($prepull_status)"
 assert_pull_count "$runner_image" 3
@@ -1396,23 +1233,18 @@ assert_retry_after_sleep 1.5s 3
 assert_retry_after_sleep 45 46
 assert_retry_after_sleep invalid 2
 
-# A hint the registry reports in minutes is honoured only up to the ceiling the
-# local ladder obeys. Sleeping "retry-after: 5m" literally would spend about
-# thirty-one minutes of the suite job's sixty on one image and then be killed
-# without a diagnostic, which is worse than reporting the refusal.
+# A retry-after hint is honoured only up to the local ceiling.
 assert_retry_after_sleep 1.5m 61
 assert_retry_after_sleep 5m 61
 assert_retry_after_sleep 999999999999999999999999999999999999s 61
 
-# Raising the ceiling is how an operator opts into honouring a longer hint.
 PREPULL_RETRY_AFTER=5m PREPULL_RANDOM_VALUE=0 PREPULL_DELAY=1 \
   PREPULL_MAX_DELAY=120 run_prepull 1 2 --suite foundation
 [ "$prepull_status" -eq 0 ] || prepull_fail "raised ceiling failed ($prepull_status)"
 assert_sleep_log 121
 unset PREPULL_RETRY_AFTER PREPULL_RANDOM_VALUE PREPULL_DELAY PREPULL_MAX_DELAY
 
-# The parser reads the hint however the daemon spells it. A stricter match would
-# leave the whole retry-after path dead without failing anything.
+# A stricter match would leave the retry-after path dead without failing anything.
 assert_retry_after_sleep_line() {
   PREPULL_RETRY_AFTER_LINE=$1 PREPULL_RANDOM_VALUE=0 PREPULL_DELAY=1 \
     run_prepull 1 2 --suite foundation
@@ -1483,9 +1315,7 @@ assert_pull_count "$runner_image" 6
 
 unset PREPULL_TOOLCHAIN
 
-# Audiobookshelf is in this set because the lane converges it: Bindery's role
-# reconciles the post-import scan handoff against a running Audiobookshelf, so
-# the lane that proves the handoff has to start one.
+# Bindery's role reconciles a scan handoff against a running Audiobookshelf.
 run_prepull 0 4 --suite bindery
 [ "$prepull_status" -eq 0 ] || prepull_fail "bindery pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set \
@@ -1497,9 +1327,7 @@ run_prepull 0 4 --suite trailarr
 assert_toolchain_pull_set \
   "$({ compose_images arr; compose_images trailarr; } | sort -u)"
 
-# Audiobookshelf is in this set and not in the lane's tags on purpose: the lane
-# converges the shared foundation's reader prerequisites as well as its own
-# service, and audiobookshelf is the second reader the foundation verifies.
+# Audiobookshelf is the foundation's second verified reader.
 run_prepull 0 4 --suite seerr
 [ "$prepull_status" -eq 0 ] || prepull_fail "seerr pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set \
@@ -1525,14 +1353,8 @@ run_prepull 0 4 --suite downloaders
 assert_toolchain_pull_set \
   "$({ compose_images arr; compose_images downloaders; } | sort -u)"
 
-# A registry that refuses more times than the budget allows must fail, and must
-# not go on pulling the rest: under a rate limit the remaining pulls would only
-# extend the outage, and the diagnosis belongs at the first refusal.
-#
-# Three refusals against a two-attempt budget rather than a registry that never
-# answers, deliberately: a retry that lost its bound would answer on the fourth
-# attempt and fail this assertion, where against a permanent refusal it would
-# instead spin until the job timeout and prove nothing.
+# Over-budget refusals fail and stop further pulls. Three refusals against two
+# attempts, so a retry that lost its bound would answer on the fourth and fail.
 PREPULL_TOOLCHAIN=off
 run_prepull 3 2 --suite beszel
 [ "$prepull_status" -ne 0 ] || prepull_fail 'refusals past the budget produced a successful pre-pull'
@@ -1568,8 +1390,6 @@ if find "$interrupt_tmp" -name 'nas-platform-pull-error.*' -print | grep -q .; t
 fi
 rmdir "$interrupt_tmp"
 
-# The retry cannot be configured away: a zero budget is floored, so one refusal is
-# still survived.
 run_prepull 1 0 --suite foundation
 [ "$prepull_status" -eq 0 ] ||
   prepull_fail "a zero attempt budget removed the retry instead of being floored ($prepull_status)"
@@ -1577,12 +1397,7 @@ assert_pull_count "$runner_image" 2
 
 unset PREPULL_TOOLCHAIN
 
-# The toolchain image is an optimization and never a precondition, so the three
-# ways it can be unavailable each have to land somewhere survivable.
-#
-# A registry that refuses it under pressure is transient: it gets the same ladder
-# every other image gets, and the run still reaches the published image rather
-# than rebuilding a toolchain it could have had.
+# The toolchain image is never a precondition: a transient refusal gets the ladder.
 PREPULL_DENY_PREFIX= run_prepull 2 4 --suite foundation
 [ "$prepull_status" -eq 0 ] ||
   prepull_fail "a rate-limited toolchain pull was not retried ($prepull_status)"
@@ -1593,10 +1408,7 @@ fi
 [ "$(wc -l < "$pull_log" | tr -d " ")" -eq 3 ] ||
   prepull_fail "the toolchain pull was not retried to its budget: $(cat "$pull_log")"
 
-# A registry that says the image is simply not there -- a developer's machine
-# with no credential, a fork, the first run after a pin moved -- is not
-# transient. Retrying it would spend the whole ladder in sleeps to rediscover a
-# 404, so it must fall through to the base image at the first refusal.
+# A not-found is not transient: fall back to the base image at the first refusal.
 PREPULL_DENY_PREFIX=$toolchain_prefix run_prepull 0 4 --suite foundation
 [ "$prepull_status" -eq 0 ] ||
   prepull_fail "an unpublished toolchain failed the pre-pull ($prepull_status)"
@@ -1609,15 +1421,10 @@ assert_sleep_log ""
 grep -qF 'no controller toolchain at' "$prepull_output" ||
   prepull_fail "the fallback to the base image was not reported: $(cat "$prepull_output")"
 
-# The assignments above are prefixes on a function call, so POSIX leaves them set
-# in the caller. Clearing the denial is what stops the next case from proving
-# itself through the previous case's fallback instead of its own.
 unset PREPULL_DENY_PREFIX
 
-# A toolchain built here rather than pulled has no registry digest, and the
-# collision fixture refuses a reference without one. That case must fall back to
-# the digest-pinned base image -- the one the local-build path has already pulled
-# -- rather than failing the arr lane on the digest guard.
+# A locally built toolchain has no repo digest, so fall back to the digest-pinned
+# base image.
 PREPULL_NO_REPO_DIGEST=true run_prepull 0 4 --suite foundation
 [ "$prepull_status" -eq 0 ] ||
   prepull_fail "a locally built toolchain failed the pre-pull ($prepull_status)"
@@ -1625,17 +1432,14 @@ grep -qxF "$runner_image" "$pull_log" ||
   prepull_fail 'a toolchain without a registry digest left the collision fixture unpinned'
 unset PREPULL_NO_REPO_DIGEST
 
-# And the operator's escape hatch has to reproduce exactly what the harness did
-# before the image existed: the base image, pulled from Docker Hub, and nothing
-# from ghcr.io at all.
+# INTEGRATION_TOOLCHAIN=off must reproduce the pre-toolchain behaviour exactly.
 PREPULL_TOOLCHAIN=off run_prepull 0 4 --suite beszel
 [ "$prepull_status" -eq 0 ] ||
   prepull_fail "the disabled toolchain failed the pre-pull ($prepull_status)"
 assert_pull_set \
   "$({ printf '%s\n' "$runner_image"; compose_images beszel; } | sort -u)"
 
-# Counterexample: the stub must be able to fail a pre-pull at all, otherwise every
-# assertion above is vacuous.
+# Counterexample: the stub must be able to fail a pre-pull, or the above is vacuous.
 run_prepull 3 2 --suite foundation
 [ "$prepull_status" -ne 0 ] || prepull_fail 'the stub registry cannot refuse'
 unset PREPULL_TOOLCHAIN

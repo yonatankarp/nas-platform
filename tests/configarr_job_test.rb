@@ -43,10 +43,7 @@ if failures.empty?
     check(failures, Array(instance["custom_formats"]).any?,
           "#{application} must assign custom formats")
   end
-  # Deliberately source text. !secret is a Configarr YAML tag that the loader
-  # above strips before parsing, exactly so the document is loadable, so the
-  # parsed config cannot say which values were tagged. That erasure is the whole
-  # subject of this check: a value that lost its tag reads as a plain string.
+  # Source text: the loader strips !secret, so only the source shows a lost tag.
   check(failures, source.scan(/!secret\s+[A-Z_]+/).sort ==
                   ["!secret RADARR_API_KEY", "!secret SONARR_API_KEY"],
         "Configarr must use only the two declared secret references")
@@ -110,10 +107,7 @@ if failures.empty?
   check(failures,
         configarr["image"].to_s.match?(/:[A-Za-z0-9][A-Za-z0-9_.-]*@sha256:[0-9a-f]{64}\z/),
         "Configarr image must carry a readable tag and sha256 digest")
-  # Read rather than restated: tests/expected/arr.yml is the one home of an arr
-  # CPU ceiling, and tests/policy_test.rb pins Compose to it and measures it
-  # against the container CPU budget. A literal here would be a copy to keep
-  # equal, not an independent check.
+  # Read, not restated: tests/expected/arr.yml is the one home of arr CPU ceilings.
   configarr_cpus = YAML.safe_load_file(File.join(ROOT, "tests", "expected", "arr.yml"))
                        .fetch("container_cpus").fetch("configarr")
   check(failures, configarr["cpuset"] == "${PLATFORM_CONTAINER_CPUSET:?}" &&

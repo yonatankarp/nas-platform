@@ -1,37 +1,8 @@
 ---
-# Per-item monitoring, as a converge rather than an operator ritual.
-#
-# The design this role was built from called per-item monitoring a manual
-# acceptance step, on the grounds that Trailarr's item ids are assigned when the
-# arr sync first sees a title and are not derivable from anything vault or
-# inventory knows. That argument is sound for monitoring a *selected* title and
-# does not apply to the platform's actual requirement, which is that every movie
-# and every series has a trailer. "All of them" is universally quantified, needs
-# no ids, and is a fixed point, so it belongs here.
-#
-# Three measured behaviours shape the file.
-#
-# POST /api/v1/media/batch_update takes {media_ids, action} and carries the whole
-# library in one request, so this is not a 460-iteration loop. Its `action` is
-# typed as a bare string with no enum and the four accepted values live only in
-# the endpoint's own description, so "monitor" is confirmed by observation rather
-# than by schema: sent against id 1, the item read back monitor true.
-#
-# The response is worthless as a success signal. It came back as literal `null`,
-# not the message the endpoint documents, and a sibling endpoint in this same
-# application reports failure as HTTP 200 with prose in the body -- which is why
-# tasks/main.yml refuses to call PUT /settings/update at all. So the write is
-# proved by reading the media list back, never by a status code.
-#
-# downloaded_at is not the exclusion key, though it looks like one. Every item
-# Trailarr counts satisfied still reads downloaded_at null, because on an adopted
-# library the trailer was already on disk and Trailarr never downloaded it. Set
-# membership in /api/v1/media/downloaded is the honest test, and it is a better
-# fixed point than any field on the item: whatever the application does to the
-# monitor flag after a successful download, a finished item lands in that
-# collection and stays excluded from then on.
-#
-# Redacted: the request carries the application API key.
+# Monitor every item without a trailer: "all of them" needs no ids, so it converges.
+# One batch_update carries the whole library; its response is worthless (null), so the
+# write is proved by reading back. Satisfied items are those in /media/downloaded, not
+# downloaded_at, which is null on an adopted library. Redacted: carries the API key.
 - name: Read the Trailarr media library
   ansible.builtin.uri:
     url: "{{ trailarr_api }}/media/all"
@@ -59,12 +30,8 @@
   check_mode: false
   no_log: true
 
-# Numeric ids and two counts. Nothing here is credential material, which is what
-# lets the report below say why the write fired -- the two reads above are
-# redacted wholesale and can say nothing at all.
-#
-# rejectattr with no test rejects the truthy, so this keeps exactly the items
-# whose monitor flag is false or null.
+# Ids and counts only, so the report can say why the write fired. rejectattr with no
+# test keeps items whose monitor is false or null.
 - name: Resolve the unmonitored Trailarr media
   ansible.builtin.set_fact:
     trailarr_media_to_monitor: >-
@@ -108,11 +75,7 @@
   changed_when: true
   no_log: true
 
-# The write above cannot be trusted to have done anything, so this is not
-# belt-and-braces: it is the only evidence the reconcile worked. A wrong action
-# string answers 200 and monitors nothing, and without this the role would report
-# changed on every run forever while the library stayed untouched.
-#
+# The only evidence the write worked: a wrong action answers 200 and changes nothing.
 # Redacted: same key.
 - name: Read the Trailarr media library after monitoring
   ansible.builtin.uri:

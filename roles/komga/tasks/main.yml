@@ -19,13 +19,7 @@
     dest: "{{ platform_runtime_dir }}/services/komga/.env"
     mode: "0600"
 
-# The block exists for one thing the rescue does with the failure: it hands the
-# deployment's own message to roles/container_health, which either explains it in
-# terms of the container state Docker reports or re-raises it unchanged.
-# Compose's `--wait` fails a crash-looping container with "container ... is
-# unhealthy", which says nothing about why. roles/bindery/tasks/main.yml carries
-# the long form of this argument; #509 built the mechanism and #537 wired the
-# remaining eleven single-`up` roles into it.
+# The rescue hands Compose's opaque "unhealthy" to roles/container_health (#509, #537).
 - name: Deploy Komga, catching a container that runs but never serves
   block:
     - name: Deploy Komga
@@ -47,16 +41,8 @@
           {{ ansible_failed_result.msg
              | default('the Komga deployment failed and reported no message') }}
 
-# Immediately after the deployment and before everything that trusts it. A
-# container in `Restarting` still appears in `docker container ls --quiet`, so
-# the CPU verification below would sail straight past one and the readiness probe
-# after it would fail on a timeout that names nothing (#510).
-#
-# Detect without refusing, one bounded force-recreate of only what Docker says is
-# stuck, then the verdict. roles/container_health/tasks/recover.yml is the one
-# copy of that sequence and carries the argument for each of its three properties;
-# the deployment above stays here because it is what declares the release this
-# repairs (#646).
+# Right after deploy: a `Restarting` container passes the CPU check and the probe
+# would time out naming nothing (#510, #646).
 - name: Recover Komga from a container that runs but never serves
   ansible.builtin.include_role:
     name: container_health
@@ -197,15 +183,8 @@
   when: not ansible_check_mode or komga_claim_status.json.isClaimed | bool
 
 
-# The desired model is derived from komga_libraries alone, so it is equally
-# available on the platform_verify_komga path, where every untagged task above is
-# skipped. Both halves are tagged for that reason, and the model is rebuilt from
-# empty rather than appended to so a second include cannot accumulate duplicates.
-#
-# Every accumulating loop below is redacted, and none of them can name a
-# credential: a failed iteration prints `item` in full whatever it loops over, so
-# the looped tasks carry redaction and every task that has to say what went
-# wrong is unlooped and unredacted instead.
+# Tagged so the verify path has the same model; rebuilt from empty to avoid duplicates.
+# Looped tasks are redacted (a failure prints `item`); diagnosing tasks are unlooped.
 - name: Reset normalized Komga library targets
   tags: [platform_verify_komga]
   ansible.builtin.set_fact:
@@ -226,9 +205,7 @@
     label: "{{ item.name | default('komga-library') }}"
   no_log: true
 
-# Vectorized rather than looped so the failing condition and the declared model
-# both reach the log. `is string` precedes every filter that would raise on a
-# non-string, because assert stops at its first false condition.
+# Vectorized so the failing condition reaches the log; `is string` goes first.
 - name: Require a valid Komga library target
   tags: [platform_verify_komga]
   ansible.builtin.assert:
@@ -275,24 +252,9 @@
       {{ komga_libraries_before.json
          if (not ansible_check_mode or komga_claim_status.json.isClaimed | bool) else [] }}
 
-# Every Komga root match below selects the same way, and the regex is not the
-# obvious one, so the reasoning lives here once.
-#
-# The predicate being reproduced is `root | regex_replace('/+$', '') == needle`,
-# evaluated per candidate by a loop that appended one match at a time. Three
-# parts of the pattern carry that predicate exactly, and each was chosen because
-# a differential against the old accumulator disagreed without it:
-#
-#   regex_escape  a root containing `.` must not behave as a wildcard.
-#   (?<!/)        a needle that itself ends in a slash matched nothing under the
-#                 accumulator, because the left side never ends in one. The
-#                 lookbehind keeps that closed.
-#   \A and \Z     Python's `$` also matches before a trailing newline, so `^..$`
-#                 accepted a root of "/data\n" that the accumulator rejected.
-#
-# The dropped `item is mapping` condition needs no replacement: a non-mapping
-# candidate has no `root` attribute, so `selectattr('root', 'defined')` discards
-# it exactly as the loop did.
+# Root matching reproduces `root | regex_replace('/+$', '') == needle`: regex_escape so
+# `.` is literal, (?<!/) so a needle ending in a slash matches nothing, and \A..\Z
+# because Python's `$` also matches before a trailing newline.
 - name: Reset Komga library candidates
   ansible.builtin.set_fact:
     komga_library_candidates: []
@@ -337,9 +299,7 @@
     label: komga-library-candidate
   no_log: true
 
-# The two refusals below are resolved into named lists first so the assert that
-# reports them stays unlooped, and so keeps both its diagnosis and the names of
-# the libraries the operator has to go and look at.
+# Resolved into lists first so the reporting assert stays unlooped.
 - name: Reset ambiguous Komga library candidates
   ansible.builtin.set_fact:
     komga_ambiguous_libraries: []
@@ -354,10 +314,7 @@
     label: "{{ item.name }}"
   no_log: true
 
-# A library carrying the desired name at a different root is exactly the state a
-# single /data library is in before it narrows to /data/Comics. Repointing it is
-# not something an unreviewed run may do, so it is collected here and refused
-# below unless the one-convergence input opens it.
+# A name match at a different root needs the one-convergence migration input.
 - name: Resolve pending Komga library root migrations
   ansible.builtin.set_fact:
     komga_library_root_migrations: "{{ komga_library_root_migrations + [item.name] }}"
@@ -383,9 +340,7 @@
       convergence with komga_library_root_migration_allowed=true, or resolve the conflict manually.
       No library was mutated.
 
-# Matched by root first, so a converged platform never depends on the migration
-# input. The name match is consulted only while that input is set, which is what
-# makes the root repair below reachable at all.
+# Root first, so a converged platform never depends on the migration input.
 - name: Reset the Komga library reconciliation plan
   ansible.builtin.set_fact:
     komga_library_plan: []
@@ -467,9 +422,7 @@
     komga_library_root_moves: >-
       {{ komga_library_repairs | selectattr('body.root', 'defined') | map(attribute='name') | list }}
 
-# How the role says that this input is not a setting. It is reported on every run
-# that carries it, including the run where it turns out to have nothing left to
-# do, so a flag left on is visible in the output rather than silent.
+# Reported every run it is set, so a flag left on is visible.
 - name: Report the one-convergence Komga library root migration input
   ansible.builtin.debug:
     msg: >-
@@ -486,12 +439,8 @@
     komga_managed_users_phase: reconcile
   when: not ansible_check_mode or komga_claim_status.json.isClaimed | bool
 
-# Repairs run before creations, and that order is load-bearing. Komga refuses a
-# library root that is a parent or a child of an existing library's root, so
-# creating Ebooks at /data/Ebooks while Comics is still rooted at /data is a 400
-# -- exactly the state the legacy single-library platform migrates out of. A
-# repair can only ever free such a conflict, never introduce one, so there is
-# nothing to lose by always repairing first.
+# Repairs before creations: Komga refuses a root nested in another library's root, and
+# a repair can only free such a conflict.
 - name: Report planned Komga library repair
   ansible.builtin.debug:
     msg: "KOMGA_PLAN_LIBRARY_REPAIR {{ komga_library_repairs | map(attribute='name') | list }}"
@@ -583,8 +532,7 @@
   when: not ansible_check_mode
   no_log: true
 
-# Jinja `or` short-circuits, so each condition guards the indexing in the ones
-# after it.
+# Jinja `or` short-circuits, so each condition guards the indexing after it.
 - name: Resolve drifted reconciled Komga libraries
   ansible.builtin.set_fact:
     komga_reconciled_drift: "{{ komga_reconciled_drift + [item.name] }}"
@@ -605,11 +553,7 @@
     label: "{{ item.name }}"
   no_log: true
 
-# Deliberately not redacted. Unlooped, so the result dict adds only the source text
-# of the failing condition, and the conditions read the library listing Komga
-# returned plus the owned names and roots, none of which is credential material.
-# The fail_msg names the libraries that did not converge and redaction would hide
-# both that and which of the four alternatives applied.
+# Not redacted: unlooped, no credential, and the message names what failed.
 - name: Require exact reconciled Komga library
   ansible.builtin.assert:
     that:
@@ -637,8 +581,7 @@
   check_mode: false
   no_log: true
 
-# Redacted: results[0] is /api/v2/users/me, which carries
-# vault_komga_admin_email.
+# Redacted: results[0] carries vault_komga_admin_email.
 - name: Resolve exact Komga verification state
   tags: [platform_verify_komga]
   ansible.builtin.set_fact:
@@ -646,10 +589,7 @@
     komga_verified_libraries: "{{ komga_verify_state.results[1].json }}"
   no_log: true
 
-# This path reaches the same normalized model as reconciliation because the two
-# tasks that build it are tagged. The (?<!/) lookbehind documented above is not
-# decoration even so: it is what makes a root carrying a trailing slash match
-# itself rather than nothing.
+# Tagged, so verification builds the same normalized model.
 - name: Reset exact Komga verification matches
   tags: [platform_verify_komga]
   ansible.builtin.set_fact:

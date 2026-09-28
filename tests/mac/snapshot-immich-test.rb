@@ -1,26 +1,12 @@
 #!/usr/bin/env ruby
-# Offline self-test for the Immich coordinated snapshot.
-#
-# It exercises the coordination logic with no deployment, no Docker and no
-# vault: a manifest that does not notice a changed byte is the failure mode
-# that turns a restore into silent data loss, so that is what gets tested.
-#
-# The manifest functions below are a deliberate copy of the two in
-# tests/mac/snapshot-immich.rb rather than a reference to them. That program
-# reads the vault and dispatches on ARGV at load time, so it cannot be
-# required without running; the duplication predates #315 and is left as it
-# was rather than repaired inside an extraction. The body is byte-identical
-# to the `<<'RUBY'` heredoc it ran from in tests/mac/snapshot-immich.sh,
-# which still runs it as `snapshot-immich.sh --self-test`.
+# Offline self-test for the Immich snapshot manifest. The functions are a copy of
+# snapshot-immich.rb's, which cannot be required: it reads the vault at load time.
 require "digest"
 require "fileutils"
 require "json"
 require "pathname"
 require "tmpdir"
 
-# The self-test exercises the coordination logic with no deployment: a manifest
-# that does not notice a changed byte is the failure mode that turns a restore
-# into silent data loss, so that is what gets tested offline.
 def manifest_for(directory, members)
   {
     "schema" => 1,

@@ -47,34 +47,20 @@ immich_managed_user_preference_profiles:
       enabled: false
       sidebarWeb: false
 
-# The hourly originals check (#907) fails when more than this percentage of its
-# random sample names an original missing from disk. Not zero: some rows are
-# known to be unrecoverable (647 on 2026-09-28), and at zero a sample would hit
-# one most hours and page on every flip. A recurrence of #907's scale, about 40%
-# of rows, trips it every run. Lower it as those rows are resolved.
+# Hourly originals check (#907): max % of sampled originals missing from disk.
+# Not zero because some rows are known unrecoverable; lower it as they are fixed.
 immich_originals_missing_ceiling_percent: 10
 
 nas_storage_immich:
-  # Immich. Ownership is deliberately unclaimed: the pinned images run as root
-  # and rewrite ownership of everything they touch, so declaring 1000:100 here
-  # would be a claim the first upload falsifies.
-  #
-  # The originals are irreplaceable photographs that Immich itself writes, which
-  # makes them critical service state rather than NAS-managed user media. The
-  # derivative trees are redirected off the media volume precisely because they
-  # are regenerable and must not be carried by photograph backups.
+  # Ownership unclaimed: the images run as root and rewrite it. Originals are
+  # irreplaceable (critical); derivatives live off the media volume (cache).
   - path: "{{ nas_media_root }}/Immich"
     mode: "0755"
     recovery: critical
   - path: "{{ nas_media_root }}/Immich-backups/database"
     mode: "0755"
     recovery: critical
-  # 0700 because initdb sets exactly that and PostgreSQL refuses to start on a
-  # data directory that is group- or world-readable. Declaring 0755 here made
-  # host_prep reset it on every converge, which broke idempotence outright and,
-  # on the NAS, would leave a cluster that refuses to start after its next
-  # restart. Docker Desktop does not propagate the host mode into the container,
-  # so only the NAS would have suffered the second half of that.
+  # 0700: PostgreSQL refuses to start on a group/world-readable data directory.
   - path: "{{ nas_docker_root }}/immich/postgres"
     mode: "0700"
     recovery: critical

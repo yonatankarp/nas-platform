@@ -1,29 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# What tests/contracts/<service>-upgrade.rb *does*, proved by running it.
-#
-# The upgrade lane (#773) is the one lane that does not start from an empty
-# store, and the whole of what it proves over the fresh-install lanes comes down
-# to two programs: a seed that writes through the service's own HTTP API while
-# the base pin is serving, and a verify that reads back after the head pin has
-# migrated the store. A lane whose verify cannot fail is a lane that converges
-# two versions and asserts nothing -- green, and faster than not having it.
-#
-# So the evidence here is a REFUSAL, not a passing run. Each service gets a
-# happy path and at least one planted loss, and the planted loss must be
-# refused. This repository's own history is why: case_pool_locals_test.rb passed
-# its own self-test while carrying two bugs, and the shard-partition guard's
-# first three plants landed on rows the checker does not read.
-#
-# The services are stubbed over a real socket rather than mocked, because what
-# these programs are is HTTP clients: the shapes they send and the fields they
-# read are the thing under test, and a mock would be written from the same
-# reading of the API that the program was. What a stub CANNOT do is tell us the
-# real Bindery and Kapowarr answer these routes this way -- that comes from
-# roles/bindery and roles/kapowarr, which send the same requests on every
-# converge, and from the two dossiers, and it is stated in each program's own
-# header. This file proves the programs' logic, not the API.
+# Runs tests/contracts/<service>-upgrade.rb seed and verify against stub services
+# over a real socket; every case is a planted loss the program must refuse (#773).
 
 require "json"
 require "open3"
@@ -33,14 +12,7 @@ require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
 
-# No arguments, and `--self-test` in particular is refused rather than ignored.
-# Accepting it silently would print this file's ordinary success line in answer
-# to a request for its planted-regression proof, which is the vacuous pass this
-# repository keeps closing, in miniature. There is no self-test to implement
-# here for a reason worth stating: every case below IS a planted loss -- the row
-# deleted, the row re-created under another id, the key that did not survive,
-# the rotation that changed nothing -- and each requires the program under test
-# to refuse. The plants are the body, not a mode.
+# No arguments: every case below already is a planted loss, so --self-test is refused.
 unless ARGV.empty?
   warn "usage: contract_upgrade_seed_test.rb (no arguments; its cases are already planted losses)"
   exit 2
@@ -52,35 +24,9 @@ def check(failures, condition, message)
   failures << message unless condition
 end
 
-# ---------------------------------------------------------------------------
-# The subject roster, stated here and closed in both directions.
-#
-# tests/ci/classify_changes.rb and tests/integration.sh both DERIVE which
-# services the upgrade lane can take as a subject, from which ones carry a
-# seed-and-verify program. A derivation is the right shape -- it makes adding a
-# service one new file rather than two list edits -- but it has the failure
-# every derivation has: a list that quietly empties satisfies every loop in
-# both readers and reports a pass, with the lane simply never dispatching
-# again. So the set is stated once, here, and asserted both ways.
-#
-# The three properties under it are what stop a subject from being ADDED into a
-# silently dead lane, which is a real hazard rather than a hypothetical one:
-# the basename of the program is used as three different names at once.
-#
-#   * services/<name>/compose.yml       -- what the classifier compares pins in
-#                                          and what the controller repins
-#   * tests/contracts/<name>.sh         -- what run_contract dispatches seed and
-#                                          verify through
-#   * a manifest service directory      -- what deployment_target_service takes
-#
-# Those coincide for every service here and for most of the platform, but NOT
-# for all of it: paperless-ngx's contract is tests/contracts/paperless.sh, so a
-# future paperless-upgrade.rb would name a compose path that does not exist and
-# the lane would resolve no subject and never dispatch -- green, and invisible.
-# Rather than plumb a name map through a POSIX shell launcher for a case that
-# does not exist yet, the divergence is made impossible: a program whose
-# basename is not all three of those names fails here, at the gate, before
-# anything is wired to it.
+# The subject roster, stated and closed both ways, because the classifier and
+# integration.sh derive it and an emptied derivation passes silently. Each
+# basename must also be a services/ dir, a contracts .sh and a manifest dir.
 EXPECTED_UPGRADE_SUBJECTS = %w[bindery kapowarr].freeze
 
 observed_subjects = Dir.glob(File.join(ROOT, "tests", "contracts", "*-upgrade.rb"))
@@ -92,14 +38,8 @@ check(failures, observed_subjects == EXPECTED_UPGRADE_SUBJECTS,
       "directory, so a subject added or lost without this line moving changes what the lane " \
       "can run with nothing to say so")
 
-# Read out of the suite table rather than imported from the classifier, like
-# every other list this repository holds against a reader: importing the
-# constant would make this agree with the classifier by construction, and what
-# is being asserted is that a subject HAS a lane with tags, not that the
-# classifier thinks so. This is the fourth of the four things
-# ClassifyChanges.upgrade_subject requires, and it was the one nothing checked:
-# dropping its `next unless` left a subject resolving to nil with no diagnostic
-# anywhere.
+# Read from the suite table, not imported from the classifier, so this is not
+# agreement by construction.
 tagged_suite_rows = File.readlines(File.join(ROOT, "tests", "ci", "suites.conf"), chomp: true)
                         .filter_map do |line|
   fields = line.sub(/#.*/, "").split
@@ -130,19 +70,13 @@ EXPECTED_UPGRADE_SUBJECTS.each do |subject|
         "site -- which is the idempotence lane's cost for a one-service proof")
 end
 
-# Reported and stopped here rather than accumulated, because every case below
-# runs one of these programs: an emptied roster otherwise surfaces as an
-# Errno::ENOENT backtrace from the first case, which is loud but says nothing
-# about the roster that emptied. Measured -- removing both programs did exactly
-# that before this exit was added.
+# Stop here: every case below runs one of these programs.
 unless failures.empty?
   failures.each { |message| warn "FAIL #{message}" }
   warn "#{failures.length} upgrade subject roster failure(s)"
   exit 1
 end
 
-# A one-connection-at-a-time HTTP/1.1 server. Enough for two programs that make
-# a handful of sequential requests, and small enough to read.
 class StubService
   attr_reader :port
 
@@ -189,9 +123,7 @@ class StubService
   end
 end
 
-# The programs read the vault through `ansible-vault view`, so the fixture is a
-# stub of that command rather than a patched constant: it is how they reach a
-# credential in production too.
+# The programs read the vault through `ansible-vault view`, so that command is stubbed.
 def install_vault_stub(root, plaintext)
   vault_file = File.join(root, "vault.yml")
   password_file = File.join(root, "vault-password")
@@ -218,8 +150,6 @@ def run_program(service, mode, root, port, extra = {})
     "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => password_file,
     "PLATFORM_BINDERY_PORT" => port.to_s,
     "PLATFORM_KAPOWARR_PORT" => port.to_s,
-    # The readiness gates default to 120 seconds each. Every stub here answers
-    # immediately or not at all, so a wait would only ever be a wait.
     "PLATFORM_BINDERY_READY_TIMEOUT" => "5",
     "PLATFORM_KAPOWARR_READY_TIMEOUT" => "5"
   }.merge(extra)
@@ -227,7 +157,6 @@ def run_program(service, mode, root, port, extra = {})
                  "ruby", File.join(ROOT, "tests", "contracts", "#{service}-upgrade.rb"), mode)
 end
 
-# One vault fixture per sandbox directory, created on first use.
 def install_vault_stub_cached(root)
   @vault_stubs ||= {}
   @vault_stubs[root] ||= install_vault_stub(root, <<~VAULT)
@@ -237,15 +166,9 @@ def install_vault_stub_cached(root)
   VAULT
 end
 
-# ---------------------------------------------------------------------------
-# Bindery: a canary user, written through the route roles/bindery uses to
-# declare its own administrator.
-# ---------------------------------------------------------------------------
+# Bindery: a canary user, written through the route roles/bindery uses.
 
-# `store` is the list of user rows the stub serves, and the cases below are the
-# ways a migration can lose one: the row vanishes, or it comes back under a
-# different database-assigned id because the store was rebuilt rather than
-# migrated.
+# `store` is the user rows the stub serves.
 def bindery_stub(store, next_id: [2])
   StubService.new do |method, path, body|
     case [method, path.split("?").first]
@@ -277,9 +200,7 @@ Dir.mktmpdir("upgrade-seed-bindery-") do |root|
     _out, _err, status = run_program("bindery", "verify", root, service.port)
     check(failures, status.success?, "bindery verify refused a store that kept the row")
 
-    # THE PLANT. A migration that runs and drops the row is the failure this
-    # lane exists for, and it is invisible to every other lane in the
-    # repository.
+    # THE PLANT: the migration dropped the row.
     store.reject! { |user| user["username"] == seeded["username"] }
     _out, lost_error, status = run_program("bindery", "verify", root, service.port)
     check(failures, !status.success?,
@@ -287,9 +208,7 @@ Dir.mktmpdir("upgrade-seed-bindery-") do |root|
     check(failures, lost_error.include?("did not survive the migration"),
           "bindery verify refused a lost row without naming it: #{lost_error}")
 
-    # The second loss, and the one a presence check alone would miss: the row is
-    # there, but it is a different row. Nothing in this platform re-creates this
-    # user, so a changed id means the store was rebuilt rather than migrated.
+    # Same username, different id: the store was rebuilt rather than migrated.
     store << { "id" => 99, "username" => seeded.fetch("username"), "role" => "admin" }
     _out, renumbered_error, status = run_program("bindery", "verify", root, service.port)
     check(failures, !status.success?,
@@ -301,15 +220,9 @@ Dir.mktmpdir("upgrade-seed-bindery-") do |root|
   end
 end
 
-# ---------------------------------------------------------------------------
-# Kapowarr: the application-generated API key, which the platform provably
-# cannot author and therefore cannot put back.
-# ---------------------------------------------------------------------------
+# Kapowarr: the application-generated API key, which the platform cannot author.
 
-# `key` is the value a login returns. `rotates` is what separates a Kapowarr
-# that honours POST /api/settings/api_key from one that does not -- the seed is
-# required to refuse the second, because a seed that recorded an unrotated key
-# would be recording a value it never wrote.
+# `rotates: false` is a Kapowarr ignoring POST /api/settings/api_key; the seed must refuse it.
 def kapowarr_stub(key, rotates: true)
   StubService.new do |method, path, body|
     route = path.split("?").first
@@ -344,8 +257,7 @@ Dir.mktmpdir("upgrade-seed-kapowarr-") do |root|
     _out, _err, status = run_program("kapowarr", "verify", root, service.port)
     check(failures, status.success?, "kapowarr verify refused a store that kept the key")
 
-    # THE PLANT: the head image opened a store it could not carry, so the value
-    # the base image wrote is gone and a login answers something else.
+    # THE PLANT: the stored key is gone after the head image opened the store.
     key[0] = "f" * 32
     _out, rebuilt_error, status = run_program("kapowarr", "verify", root, service.port)
     check(failures, !status.success?,
@@ -357,9 +269,6 @@ Dir.mktmpdir("upgrade-seed-kapowarr-") do |root|
   end
 end
 
-# The seed's own self-validation, which is what lets that program depend on no
-# response shape at all: a rotation route that answers 200 and changes nothing
-# must fail the seed rather than record a key it never wrote.
 Dir.mktmpdir("upgrade-seed-kapowarr-inert-") do |root|
   service = kapowarr_stub(["a" * 32], rotates: false)
   begin
@@ -375,9 +284,7 @@ Dir.mktmpdir("upgrade-seed-kapowarr-inert-") do |root|
   end
 end
 
-# Both programs refuse a mode they do not implement, and a verify with no seed
-# record: a verify that treated a missing record as nothing to check would be
-# the same green-proving-nothing lane in miniature.
+# Both programs refuse unknown modes and a verify with no seed record.
 Dir.mktmpdir("upgrade-seed-modes-") do |root|
   %w[bindery kapowarr].each do |service_name|
     _out, mode_error, status = run_program(service_name, "run", root, 1)

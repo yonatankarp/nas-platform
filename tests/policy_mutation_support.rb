@@ -1,26 +1,7 @@
 #!/usr/bin/env ruby
-# Shared harness for the policy mutation checks.
-#
-# Every mutation follows the same shape: build a sandbox from the fixture list,
-# break one thing in it, run the policy scripts, and require a named failure. The
-# sandbox construction, the fixture list and the expectation helpers live here so
-# the mutation files stay a list of what is broken and what must be reported.
-#
-# BASE_FIXTURE_PATHS is deliberately stated rather than derived from the repository:
-# a sandbox built from whatever happens to be on disk would stop proving that a
-# policy check reads the file it claims to read.
-#
-# The eighteen vault_<role>.yml files are here because tests/policy_vault_test.rb
-# stopped merely globbing them and started REQUIRING one per implemented service
-# (#636). Before that the glob found nothing in a sandbox and the loop ran zero
-# times, so their absence cost nothing; a requirement reads that same absence as
-# the violation it exists to catch. The symptom was the documented one and worth
-# recognising rather than rediscovering: five expect_success rows went red at
-# once, every one of them reporting `vault_arr.yml is missing` -- not one check
-# failing, but every row that expects a clean tree failing identically.
-#
-# Adding a service therefore adds a line here too. That is the price of stating
-# the list, and it is the same price docs/adding-a-service.md already charges.
+# Shared harness for the policy mutation checks: build a sandbox from the fixture list,
+# break one thing, run the policy scripts, require a named failure. BASE_FIXTURE_PATHS
+# is stated rather than derived, so a check is proven to read the file it claims to.
 
 require "fileutils"
 require "open3"
@@ -236,63 +217,13 @@ EXPECTED_FIXTURE_ROLES = {
   "vaultwarden" => "vaultwarden", "karakeep" => "karakeep"
 }.freeze
 
-# Which roles a sandbox therefore holds, and which it does not. Measured rather
-# than reasoned, because #556 was filed on a guess about this and the guess was
-# wrong in the direction that matters: 22 of the tree's 26 role directories are
-# present, so the roles/* globs in policy_test.rb, policy_deployment_test.rb and
-# policy_vault_test.rb iterate 22 subjects inside a sandbox and are not vacuous.
-# The four absent are container_cpu, container_health, image_downgrade_guard and
-# image_prune. One reason covers all four: none is a manifest service role, so
-# the derivation below reaches none of them, and BASE_FIXTURE_PATHS names none.
-# The first three are reached by include_role from the roles that use them,
-# which static_task_files deliberately does not follow, and image_prune is
-# excluded on purpose -- policy_deployment_test.rb's poller sweep depends on its
-# absence and says so beside the floor it sizes.
-#
-# What follows from that is narrower than "those roles are untested", and the
-# distinction is the whole point. The policy scripts run against the working
-# tree in CI's `static` job, where all 26 are present: a defect planted in
-# roles/image_downgrade_guard is caught there by policy_test.rb, measured on
-# three separate plants (a deleted argument_specs.yml, an emptied options map,
-# and a shell-out to Compose). The sandbox exists to prove a check *can* fail,
-# and every one of these globs is role-agnostic, so a mutation planted in any
-# present role proves the same check bites. Adding an absent role to the fixture
-# would enlarge 150-plus sandboxes and buy no detection that bindery does not
-# already buy -- so what guards these globs is a cardinality floor at each one,
-# not an entry here. tests/bindery_contract_test.rb is the one harness that
-# reads roles/image_downgrade_guard from a sandbox of its own, and it already
-# carries the path in its own FIXTURE_FILES.
-#
-# roles/pre_upgrade_backup is the shared role that BASE_FIXTURE_PATHS does name,
-# and for the opposite reason (#836): it is not a glob's incidental subject but
-# the only subject of policy_test.rb's pre-upgrade rule, which is floored at one,
-# and the rows that plant a broken rescue plant it there. Without it every
-# sandbox fails that floor at once.
+# 22 of 26 roles are present in a sandbox; the four shared ones reached only through
+# include_role (and image_prune, deliberately) are absent. The globs are role-agnostic,
+# so that loses no detection. roles/pre_upgrade_backup is named explicitly (#836).
 
-# The task files a role reaches through static import_tasks, main.yml included.
-# This follows exactly what PolicySupport.static_role_tasks follows, because that
-# is what assembles a role for the readers this fixture has to be able to satisfy,
-# and because Ansible resolves an import at parse time -- an imported file is part
-# of the role's body, not a separate thing the role calls.
-#
-# A dynamic include_tasks target is deliberately left out, and that exclusion is
-# load-bearing rather than an omission. Ansible resolves an include at runtime with
-# vars the caller passes, no reader assembles it into the role, and copying it
-# changes what the rows that replace a role's main.yml with a stub can see: with
-# managed_users.yml present, policy_test.rb's phase-gate check finds a gated file
-# whose caller the stub removed, and four expect_success rows fail on a mutation
-# they never made -- measured, not predicted, on a role #558 has since removed,
-# whose managed_users.yml declared three phases: the diagnostic was policy_test.rb
-# reporting that file's phases with "its callers pass none", the first of the
-# four rows' entries.
-#
-# Enumerated from the role rather than stated, which is the opposite of the rule
-# BASE_FIXTURE_PATHS states below, and deliberately so. That rule exists so a policy
-# check cannot be credited with reading a file the sandbox never had: the fixture
-# names the file, so the check has to find it. This is the other kind of path. A
-# role's stage files are not a check's subject, they are the subject's body, and
-# they have no fixed names -- a stated list would have to be extended by every
-# future split, which is the mistake that produced this bug.
+# Task files reached through static import_tasks, as PolicySupport.static_role_tasks
+# follows. Dynamic include_tasks targets are left out on purpose: copying them lets
+# stub-main rows see gated files whose callers the stub removed.
 def static_task_files(root, role_root, relative = nil, seen = [])
   relative ||= File.join(role_root, "tasks", "main.yml")
   return [] if seen.include?(relative)
@@ -312,28 +243,8 @@ def static_task_files(root, role_root, relative = nil, seen = [])
   end
 end
 
-# The sibling Ruby programs a contract invokes, which since #147 are where a
-# contract's body lives -- the wrapper is its entry point. Exactly the same class
-# of path as a role's statically imported stage files above, and absent for
-# exactly the same reason: the list was stated as `<name>.sh` when a contract was
-# one file, and stayed stated when it stopped being one.
-#
-# The failure this prevents is not a missing-file crash, which would be loud. It
-# is a reader whose subjects are assembled by a glob over tests/contracts/, which
-# inside a sandbox holding only wrappers quietly has nothing to read.
-# policy_integration_test.rb requires every contract that runs a play of its own
-# to derive its project from the exported sandbox namespace; audiobookshelf is
-# the only contract that runs one, and when #147 moved that play into
-# audiobookshelf-runtime.rb the glob went from one subject to none. That check
-# carries its own "polices nothing" tripwire and so failed loudly -- every
-# expect_success row at once, on an unmutated tree. A reader without such a
-# tripwire would simply have stopped policing.
-#
-# Enumerated from the contract rather than stated, the way static_task_files is,
-# and by the same rule tests/run_contracts.rb:203 uses to find them: a
-# tests/contracts/*.rb path named anywhere in the wrapper except a commented-out
-# line. A stated list would have to be extended by every future extraction, which
-# is the mistake being fixed here rather than repeated.
+# The tests/contracts/*.rb programs a wrapper names (#147), derived the way
+# tests/run_contracts.rb finds them; a glob over wrappers alone silently reads nothing.
 def contract_program_files(root, contract_relative)
   source = File.join(root, contract_relative)
   return [] unless File.file?(source)
@@ -365,35 +276,20 @@ def fixture_paths(root = ROOT)
     raise "unsafe manifest fixture identity" unless EXPECTED_FIXTURE_ROLES[name] == role
 
     paths << File.join("services", name, "compose.yml")
-    # The service's own group_vars file, derived here rather than listed in
-    # BASE_FIXTURE_PATHS: it is a per-service obligation, and adding a service
-    # already touches 59 files without a sixtieth list nobody edits.
+    # Derived, not listed in BASE_FIXTURE_PATHS: a per-service obligation.
     paths << File.join("inventory", "group_vars", "all", "service_#{role}.yml")
     role_root = File.join("roles", role)
     paths << File.join(role_root, "meta", "argument_specs.yml")
-    # main.yml and everything it statically imports, because that whole set is
-    # the role's body rather than its entry point. A role that is one stage per
-    # file reaches its stages through import_tasks, so a sandbox holding only
-    # main.yml hands every reader that assembles the role an index of imports
-    # instead of the role -- and that is silent rather than loud wherever the
-    # reader's property is an OR or a nil-guard. audiobookshelf has been one
-    # stage per file since #238, and inside this fixture role_has_verification?
-    # answered false for it ever since, with policy_test.rb's verification
-    # property carried by the contract half of its OR and nobody told.
+    # main.yml plus everything it statically imports: main.yml alone is only an index,
+    # which readers with an OR or nil-guard accept silently.
     paths.concat(static_task_files(root, role_root))
-    # A role states its Compose project either in defaults or, where the value is
-    # not overridable, in vars. policy_integration_test.rb renders both to prove
-    # every service derives its project from the platform namespace.
     %w[defaults vars].each do |variable_kind|
       role_variables = File.join(role_root, variable_kind, "main.yml")
       paths << role_variables if File.file?(File.join(root, role_variables))
     end
     env_template = File.join(role_root, "templates", "env.j2")
     paths << env_template if File.file?(File.join(root, env_template))
-    # policy_integration_test.rb reads the disposable-lane overrides of every
-    # service that has them, and requires the two lanes to agree on one container
-    # identity, so a sandbox without them fails every mutation with a Ruby stack
-    # trace instead of the failure under test.
+    # Read by policy_integration_test.rb; absent, every mutation fails with a stack trace.
     %w[integration mac].each do |override_kind|
       platform_override = File.join("services", name, "compose.#{override_kind}.yml")
       paths << platform_override if File.file?(File.join(root, platform_override))
@@ -401,10 +297,7 @@ def fixture_paths(root = ROOT)
   end
 
 
-  # policy_test.rb reads one pinned expectations file per rostered service, so the
-  # sandbox needs every one of them regardless of deployment status: a planned service
-  # is still on the roster, and a missing file would fail every mutation below for the
-  # wrong reason instead of the one under test.
+  # One expectations file per rostered service, planned ones included.
   manifest.fetch("services").each do |entry|
     name = entry.fetch("name")
     raise "unsafe expectation fixture identity" unless EXPECTED_FIXTURE_ROLES.key?(name)
@@ -426,15 +319,6 @@ def fixture_paths(root = ROOT)
     paths.concat(contract_program_files(root, expected_path))
   end
 
-  # The planned acquisition projects' tests/contracts/<project>-foundation.sh
-  # wrappers used to be added here, derived from the catalog and the manifest so
-  # a promotion did not need an edit. Two things ended it: every project is
-  # implemented, so the derivation has selected nothing for some time, and #639
-  # deleted the wrappers themselves. A derived list that selects nothing is the
-  # harder half to notice, which is why it is recorded here rather than simply
-  # removed -- if a `planned` project is ever added back, what it needs in the
-  # sandbox is whatever its contract reads, and BASE_FIXTURE_PATHS above is
-  # where that is stated.
   paths.uniq
 end
 
@@ -525,9 +409,8 @@ def check_fixture_index_hostile_environment(failures)
 end
 
 def check_direct_policy_hostile_environment(failures, retired_token)
-  # A mutation row that cannot use run_policy_scripts: the whole point is the
-  # hostile GIT_* environment it execs the script under, which that runner
-  # deliberately strips. So it counts itself -- see POLICY_AUDIT_COVERAGE.
+  # Cannot use run_policy_scripts, which strips the hostile GIT_* environment under test;
+  # so it counts itself (see POLICY_AUDIT_COVERAGE).
   record_direct_audit_bypass(:direct_policy_script)
   Dir.mktmpdir("nas-platform-direct-hostile-git-") do |parent|
     sandbox = File.join(parent, "sandbox")
@@ -638,22 +521,13 @@ def mutate_manifest(root)
   File.write(path, YAML.dump(manifest))
 end
 
-# YAML.dump writes the parsed document and nothing else, so a round-trip through
-# it deletes every comment the file had. That is invisible until a policy check
-# reads one -- tests/policy_vault_test.rb reads the header of each
-# service_<role>.yml, which names the vault file that service's secrets live in
-# (#650) -- and then the sandbox fails a check for a defect the mutation did not
-# plant and the repository does not have. Preserving the leading comment block
-# keeps the fixture looking like the tree it stands for; comments further down
-# are still lost, which no check reads today and this does not pretend to fix.
+# YAML.dump drops comments; keep the leading header block because
+# tests/policy_vault_test.rb reads it (#650).
 def dump_yaml_preserving_header(path, document)
   header = []
   File.foreach(path) do |line|
     stripped = line.strip
     next if stripped == "---" && header.empty?
-    # The header block only: the run of comment lines the file opens with, ending
-    # at the first blank line. Comments further down document the key they sit
-    # above, and hoisting them to the top would be worse than losing them.
     break unless stripped.start_with?("#")
 
     header << line
@@ -670,15 +544,8 @@ def mutate_yaml_file(root, relative_path)
   dump_yaml_preserving_header(path, document)
 end
 
-# Text mutation with the match count asserted, the guard
-# tests/contract_structure_mutation_test.rb has had since it was written and this
-# harness never learned. `sub` and `gsub` return the subject unchanged when
-# nothing matches -- no exception -- so a row whose subject text moved plants
-# nothing, the policy set correctly passes a tree with no defect in it, and the
-# row reports "policy unexpectedly passed" while looking like a real check. A
-# count that drifted upward is the other half: the row would mutate somewhere it
-# never meant to. `occurrences` is stated per call site rather than fixed at one
-# because a row may legitimately have to delete every occurrence of a line.
+# Text mutation with the match count asserted: sub/gsub silently plant nothing when the
+# subject text moved, and the row would falsely pass as a real check.
 def mutate_text(root, relative_path, pattern, replacement, occurrences: 1)
   path = File.join(root, relative_path)
   body = File.read(path)
@@ -693,10 +560,7 @@ def service(manifest, name)
   manifest.fetch("services").find { |entry| entry["name"] == name }
 end
 
-# Every policy script the suite is split across, keyed by the short name a
-# mutation row names it with. A row declares the scripts that actually detect its
-# defect (`detected_by:`) instead of running all eight, because seven of them
-# cannot produce the message it asserts and the harness builds a sandbox per row.
+# Rows declare the scripts that detect their defect (`detected_by:`) rather than all eight.
 POLICY_SCRIPTS_BY_NAME = {
   policy: "tests/policy_test.rb",
   platform: "tests/policy_platform_test.rb",
@@ -710,119 +574,27 @@ POLICY_SCRIPTS_BY_NAME = {
 
 POLICY_SCRIPTS = POLICY_SCRIPTS_BY_NAME.values.freeze
 
-# `--audit` re-derives every row's detecting set by running the whole policy set
-# against it, and reports each call site whose declared set disagrees. It is the
-# answer to the one thing narrowing cannot fail loudly on: a check added to a
-# script a row no longer runs stops covering that row, and nothing else would say
-# so. Deliberately not in CI -- it is exactly the eightfold cost narrowing removed.
-#
-# It reaches a row only through expect_failure, so what it guarantees is narrower
-# than "the manifest test came back clean": a row that runs a checker by any
-# other route declares no detecting set, has nothing to drift, and would say
-# nothing if a newly added check started covering it. That gap was invisible in
-# the output and legible only in the source, and "--audit came back clean" was
-# read as covering the whole file (#439), so the audit now reports the scope of
-# its own verdict -- see POLICY_AUDIT_COVERAGE.
+# `--audit` re-derives every row's detecting set and reports drift; not in CI (costly).
+# It sees only expect_failure rows, so it reports its own scope (#439).
 POLICY_AUDIT = ARGV.include?("--audit")
 
-# Keyed by call site rather than by label, because a call site inside a loop is
-# one declaration covering several mutations and only their union has to match
-# it. Labels cannot key this: several rows share one, and some are interpolated.
-#
-# The key assumes one declared set per call site, which is what every loop here
-# does -- it passes the same `detected_by` on each iteration. A loop that
-# computed a different set per iteration would record only the first, so give it
-# its own call site rather than teaching this to merge declarations.
+# Keyed by call site: a loop is one declaration covering several mutations. One declared
+# set per call site; give a loop with varying sets its own call site.
 POLICY_AUDIT_SITES = {}
 
-# The three figures tests/policy_manifest_test.rb used to state in prose: how
-# many mutations there are, how many declare a single script, and how many
-# declare the integration script. Every one of them is something this harness
-# already holds while it runs, so it counts them instead of letting a comment
-# claim them -- stated, they went stale twice, and the second time an
-# orchestrator quoted the wrong baseline widely enough that a correct
-# measurement read as a discrepancy (#435).
-#
-# Counted from `detected_by`, never from the resolved script list: `--audit`
-# widens that to all eight, and the census must read the same in both modes.
+# Counted by the run rather than stated in prose, which went stale (#435). Counted from
+# `detected_by`, so it reads the same under --audit.
 POLICY_MUTATION_CENSUS = { mutations: 0, single_script: 0, integration: 0, sites: {} }
 
-# The floor under the two figures above, and a lower bound rather than a claim
-# about what they currently are (#725).
-#
-# The census is a dynamic subject list, which is this repository's recurring way
-# for a guard to stop guarding: a refactor that stopped `expect_failure` rows
-# registering would re-derive fewer rows, find no drift among the ones it still
-# saw, print a clean verdict and finish *faster*. Every other subject list here
-# carries a floor for that reason -- EXPECTED_SELF_SIZING_CONTAINERS,
-# CREDENTIAL_FREE_SERVICES, the per-shard floors in
-# tests/gate_manifest_coverage_test.rb -- and this one carried none.
-#
-# It is a ratchet, not a pin: a run above these numbers passes, a run below them
-# fails and says what to write here. That is what makes it cheap in the direction
-# the file actually moves. Across the twenty-five commits that touched
-# tests/policy_manifest_test.rb between 2026-09-07 and 2026-09-16, the textual
-# count of `expect_failure(` in it went 179 -> 215: fourteen of the twenty-four
-# steps moved it up, ten left it alone and none moved it down. A pin would have
-# been edited fourteen times in nine days, which is the churn #652 deleted three
-# prose counts over, and a ratchet would have been edited never.
-#
-# That is a count of one token in one file, not a census: the census is what the
-# run holds, and the two agree on 215 call sites here only because every call
-# site in that file happens to be one textual call today. It is quoted as
-# evidence of the direction of travel and nothing else.
-#
-# This is not the prose baseline #435 retired, and the difference is that this
-# one is executed. A stated figure could disagree with the run for weeks -- that
-# is exactly how #435's wrong baseline read as a discrepancy against a correct
-# measurement. This one cannot: every run compares itself against it, so it is
-# either cleared or red. What it asserts is only that the list has not collapsed.
-#
-# Refreshing it is the two-place cost #469 accepted for the gate manifest, and
-# for the same reason: a prune that shrinks the census lands as a visible diff
-# here instead of as a quieter, faster pass.
+# A ratchet floor under the census (#725): a collapsed subject list would otherwise pass
+# faster. Above passes, below fails naming the value to write.
 POLICY_MUTATION_CENSUS_BASELINE = { mutations: 301, call_sites: 215 }.freeze
 
-# What `--audit` did not re-derive, so its verdict states its own scope.
-#
-# The unit is one assertion that mutates a fixture sandbox and asserts on what a
-# checker then says about it. Which checker does not matter -- the rows the audit
-# cannot see mostly run tests/media_acquisition_foundation_test.rb, which is not
-# one of the eight, and reading "runs policy" as "runs one of the eight" is how
-# #439's first count came out too narrow while still counting those rows.
-#
-# Excluded by that rule, and each for a reason that is not judgement: a checker
-# run against the real tree with nothing mutated (the foundation script's
-# strict-CLI row), the Ansible syntax check a mutation runs on itself to prove
-# its own fixture is well formed, and the three guards the harness keeps on its
-# own sandbox builder, which run no checker at all: fixture identity, index
-# containment, and the git-routing guard over initialize_fixture_index. The other
-# git-routing guard is not among them -- it appends the retired token to a tracked
-# README and asserts tests/policy_test.rb rejects it, which is a mutation row
-# however it is filed.
-#
-# `policy_runs` counts those runs where they are executed rather than where they
-# are declared, so a shape added later is in the total whether or not anyone
-# remembers to label it, and `bypass_shapes` is the labelled breakdown. What is
-# printed is the labelled sum, because it reads the same in both modes; the
-# subtraction `policy_runs - re-derived` is the tripwire, and it is correct only
-# under `--audit`, where every audited run records itself. The tripwire catches a
-# new caller of run_policy_scripts, which is where the counting happens. It
-# cannot catch a shape that executes a checker itself -- those call
-# record_direct_audit_bypass, and forgetting both calls is invisible.
-#
-# `bypass_sites` is the same figure POLICY_AUDIT_SITES holds for the audited
-# half, so the two halves of the printed line can be compared: mutations and call
-# sites on both sides, in one unit. It is keyed on the whole chain of line numbers
-# inside the program under test rather than on one of them, because a bypass
-# shape is often reached through a helper of its own -- every acquisition row
-# enters run_policy from the same line of the lambda, and a single lineno would
-# collapse nineteen rows into one. The chain distinguishes them, and it collapses
-# a loop to one site on its own, which is what the audited half does too.
+# What `--audit` did not re-derive, so its verdict states its own scope. Shapes that run
+# a checker themselves must call record_direct_audit_bypass; forgetting that is invisible.
+# bypass_sites is keyed on the whole frame chain so helper-routed rows stay distinct.
 POLICY_AUDIT_COVERAGE = { policy_runs: 0, bypass_shapes: Hash.new(0), bypass_sites: {} }
 
-# The program the mutation rows live in. Frames from anywhere else -- this file's
-# own helpers, and Ruby's -- are not call sites a reader can go and look at.
 POLICY_PROGRAM_PATH = File.expand_path($PROGRAM_NAME)
 
 def resolve_policy_scripts(names, label)
@@ -836,18 +608,8 @@ def resolve_policy_scripts(names, label)
   end
 end
 
-# Runs the named scripts against one mutated sandbox and reports each one's
-# output and exit status separately.
-#
-# The scripts run concurrently. Every one of them only reads the sandbox, and
-# each is a subprocess that releases the GVL, so this is the same parallelism
-# tests/validate-policy.sh applies to the checks themselves. Serially it was the
-# policy gate's floor: this harness builds a sandbox per mutation and there are
-# over a hundred of them, so a second spent here is spent a hundred times.
-#
-# Results are collected by index rather than appended as they finish, so the
-# output a caller matches against stays in the caller's order and a failure
-# report does not depend on which script happened to exit first.
+# Runs the named scripts concurrently (read-only sandboxes; subprocesses release the
+# GVL). Results are collected by index so reports keep the caller's order.
 def run_policy_scripts(scripts)
   POLICY_AUDIT_COVERAGE[:policy_runs] += 1
   Dir.mktmpdir("nas-platform-policy-") do |sandbox|
@@ -867,26 +629,15 @@ def execute_policy_scripts(scripts, sandbox)
   end.map(&:value)
 end
 
-# expect_failure rows, run CASE_POOL_WORKERS at a time (#727). The rows are
-# straight-line top-level calls rather than an enumerable, so they cannot go
-# through in_parallel_cases; instead each row's mutation block runs in the
-# calling thread, at the point in the file where it is written -- so a block
-# reads the locals it closes over exactly as the serial harness did -- and only
-# the policy scripts run later, in a thread holding one of CASE_POOL_WORKERS
-# slots. The slot is taken before the sandbox is built, so at most that many
-# sandboxes exist at once. Every counter is still written in the calling thread
-# except the audit's re-derivation, which is under POLICY_ROW_LOCK.
-#
-# A row's findings are inserted into its failure list at the position the list
-# had when the row was written, so the report reads in the serial order.
-# POLICY_JOBS=1 makes CASE_POOL_WORKERS one, which takes the serial path.
+# Rows run CASE_POOL_WORKERS at a time (#727): the mutation block runs in the calling
+# thread in file order; only the scripts are deferred. Findings keep serial order;
+# POLICY_JOBS=1 takes the serial path.
 POLICY_ROW_SLOTS = SizedQueue.new([CASE_POOL_WORKERS, 1].max)
 POLICY_ROW_LOCK = Mutex.new
 POLICY_PENDING_ROWS = []
 
-# A pooled row's scripts are still running while later rows are written, so a
-# write to process-wide state would reach them. Refused while any row is
-# pending, whatever the row's spelling: drain_policy_rows first.
+# Pooled rows are still running later, so process-wide writes are refused while any is
+# pending: drain_policy_rows first.
 module PolicyRowProcessState
   def self.refuse(what)
     return if POLICY_PENDING_ROWS.empty?
@@ -933,8 +684,6 @@ def defer_policy_row(failures, scripts, settle, &mutation)
   POLICY_PENDING_ROWS << [failures, failures.length, worker]
 end
 
-# Waits for every deferred row and files its findings. Idempotent, and called by
-# both reporters, so a harness that reports cannot report before its rows ran.
 def drain_policy_rows
   rows = POLICY_PENDING_ROWS.dup
   POLICY_PENDING_ROWS.clear
@@ -942,11 +691,8 @@ def drain_policy_rows
   settled.reverse_each { |failures, position, findings| failures.insert(position, *findings) }
 end
 
-# The route around the audit: it takes an explicit script list -- including
-# scripts outside the eight, which is what the acquisition rows run -- and
-# reports failures itself, so no `detected_by` is declared and nothing here is
-# re-derived. Every caller is one such assertion, this one included, which is why
-# the label is recorded here rather than at each of them.
+# The route around the audit: explicit script list, self-reported failures, no
+# `detected_by`. Recorded here rather than at each caller.
 def run_policy(scripts = POLICY_SCRIPTS, &mutation)
   record_audit_bypass(:run_policy)
   results = run_policy_scripts(scripts, &mutation)
@@ -955,9 +701,6 @@ def run_policy(scripts = POLICY_SCRIPTS, &mutation)
 end
 
 def run_compose_metadata_behavior
-  # Its checker is a behavioural Ansible suite rather than a policy script, which
-  # changes nothing about the shape: a mutated sandbox, an assertion on what the
-  # checker said, and no declared set for the audit to re-derive.
   record_direct_audit_bypass(:compose_metadata_behavior)
   Dir.mktmpdir("nas-platform-compose-metadata-") do |sandbox|
     copy_fixture(ROOT, sandbox)
@@ -971,15 +714,8 @@ def run_compose_metadata_behavior
   end
 end
 
-# `detected_by` is the set of policy scripts that actually reject this mutation,
-# and it is required rather than defaulted: a default would let the next row
-# added quietly go back to running all eight, with nothing reporting it.
-#
-# Getting it wrong in the narrowing direction is fail-closed -- drop the script
-# that owns the diagnostic and the row's own assertions fail by name. Getting it
-# wrong in the other direction, by listing fewer scripts than really detect the
-# defect, costs coverage that no assertion here can see, which is what `--audit`
-# exists to find.
+# Required, not defaulted, so a new row cannot silently run all eight. Too narrow fails
+# by name; too wide costs invisible coverage, which --audit finds.
 def expect_failure(failures, label, message, detected_by:)
   scripts = resolve_policy_scripts(detected_by, label)
   site = caller_locations(1, 1).first
@@ -999,8 +735,6 @@ def expect_failure(failures, label, message, detected_by:)
   defer_policy_row(failures, scripts, settle) { |root| yield root }
 end
 
-# A script detects a mutation if it rejects it, names it, or crashes on it --
-# all three are properties the row asserts, so all three keep a script listed.
 def detecting_script_names(message, results)
   results.filter_map do |script, output, ok|
     detected = !ok || output.include?(message) || output.match?(/\.rb:\d+:in [`']/)
@@ -1015,25 +749,8 @@ def record_mutation_census(declared, site)
   POLICY_MUTATION_CENSUS[:sites][site.lineno] = true
 end
 
-# Printed in full and floored on two of the four figures (#725). There is still
-# no correct value to pin here, only a current one, which is why what is asserted
-# is a lower bound and not the number itself. Mutations and call sites are both
-# reported, and both floored, because they differ -- a loop is one declaration
-# covering several mutations -- and conflating them is one of the two ways the
-# stated figures were got wrong by hand.
-#
-# The floor is taken as an argument so tests/policy_audit_coverage_test.rb can
-# drive it with synthetic figures, the way it drives every other counter here,
-# rather than against whatever the tree happens to hold on the day.
-#
-# The headroom is printed rather than bounded. A ratchet tolerates any rise, so
-# the baseline drifts below the real figure between refreshes and the span it
-# cannot see is exactly that gap; capping the gap would red a plain addition,
-# which is the one direction this file moves. Printing it puts the gap in front
-# of whoever reads the census.
-#
-# Printed before report/1 so it survives a failing run: a run that fails is
-# exactly when someone is reading these numbers.
+# Printed in full, floored on mutations and call sites (#725). The floor is an argument
+# so tests/policy_audit_coverage_test.rb can drive it; printed before report/1.
 def report_mutation_census(failures, baseline: POLICY_MUTATION_CENSUS_BASELINE)
   drain_policy_rows
   observed = { mutations: POLICY_MUTATION_CENSUS[:mutations],
@@ -1050,14 +767,8 @@ def report_mutation_census(failures, baseline: POLICY_MUTATION_CENSUS_BASELINE)
   check_mutation_census_floor(failures, observed, baseline)
 end
 
-# The collapse, reported as the two figures it is counted in. Both are checked
-# because a refactor can take either one on its own: rows can stop registering
-# while their call sites still run, and a whole file of call sites can go without
-# the mutation count following it down proportionally.
-#
-# The message states the value to write, because the legitimate drop and the
-# defect look identical from here -- only the diff that caused them says which it
-# was, and the person holding that diff is the one reading this line.
+# Both figures, since a refactor can collapse either alone. The message states the value
+# to write because only the causing diff says whether the drop is legitimate.
 def check_mutation_census_floor(failures, observed, baseline)
   { mutations: "expect_failure mutations", call_sites: "call sites" }.each do |figure, noun|
     next if observed.fetch(figure) >= baseline.fetch(figure)
@@ -1073,9 +784,6 @@ def record_audit_detection(label, message, declared, results, site)
   merge_audit_detection(register_audit_site(label, declared, site), message, results)
 end
 
-# Split for the pool (#727): the entry is created in the calling thread, so the
-# sites are keyed in file order and a loop keeps its first iteration's label;
-# only the detecting set is merged when a row's scripts finish, in any order.
 def register_audit_site(label, declared, site)
   entry = POLICY_AUDIT_SITES[site.lineno] ||= { declared: declared, actual: [], label: label, mutations: 0 }
   entry[:mutations] += 1
@@ -1086,9 +794,6 @@ def merge_audit_detection(entry, message, results)
   entry[:actual] |= detecting_script_names(message, results)
 end
 
-# One assertion the re-derivation cannot see, labelled by the shape that wrote
-# it. For the shapes that reach a sandbox through run_policy_scripts, whose run
-# is already counted there.
 def record_audit_bypass(shape)
   POLICY_AUDIT_COVERAGE[:bypass_shapes][shape] += 1
   chain = caller_locations.filter_map do |frame|
@@ -1097,16 +802,13 @@ def record_audit_bypass(shape)
   POLICY_AUDIT_COVERAGE[:bypass_sites][[shape, chain]] = true
 end
 
-# The same, for a shape that executes a checker itself. It has to count its own
-# run, because the place that counts every other one never sees it.
+# Counts its own run, which run_policy_scripts never sees.
 def record_direct_audit_bypass(shape)
   POLICY_AUDIT_COVERAGE[:policy_runs] += 1
   record_audit_bypass(shape)
 end
 
-# Both directions are silent without this. A script that starts detecting a row
-# is coverage the row has stopped running; one that stops detecting it is a stale
-# entry paying for a subprocess that proves nothing.
+# Both directions: newly detecting is lost coverage; no longer detecting is a stale entry.
 def audit_policy_detection(failures)
   drain_policy_rows
   return unless POLICY_AUDIT
@@ -1121,30 +823,8 @@ def audit_policy_detection(failures)
   report_audit_coverage(failures)
 end
 
-# The audit's scope, printed with its verdict. Both figures are counted by the
-# run: stating either is the defect this reports, one level down, and the number
-# outside the audit rots on the next row added.
-#
-# The floor here is on the re-derived side only. A dynamic subject list that
-# silently goes empty is how a guard here stops guarding while still passing, and
-# a file whose call sites run into the hundreds cannot legitimately fall to one.
-# Two is what it takes to catch that list emptying, and any real count clears it
-# by miles.
-#
-# It stayed at two when POLICY_MUTATION_CENSUS_BASELINE arrived (#725), and the
-# two are not the same guard. This one holds under `--audit` alone, on figures
-# the audit itself collects, and it is the one a synthetic run can drive to one
-# site. The census floor is a real count and it runs in both modes -- which is
-# what puts it on every pull request, where `--audit` does not run -- and under `--audit` it bounds
-# these figures too, because every row that records a census entry records an
-# audited one on the next line of expect_failure. So the ratchet covers the
-# re-derived half in the mode where a real tree is what is being counted, and
-# this floor covers what is left: a collapse seen by a run nobody ratcheted.
-#
-# There is deliberately no floor on the bypass count: routing a shape through
-# expect_failure would make zero the honest number, and the tripwire below
-# already reports the case a floor would -- when both sides go to zero together,
-# they agree.
+# The audit's scope, printed with its verdict. Floored at two re-derived sites so a
+# silently emptied list fails; no floor on bypasses (the tripwire covers that).
 def report_audit_coverage(failures)
   mutations = POLICY_AUDIT_SITES.sum { |_lineno, entry| entry.fetch(:mutations) }
   shapes = POLICY_AUDIT_COVERAGE[:bypass_shapes]
@@ -1164,12 +844,7 @@ def report_audit_coverage(failures)
               "are labelled; a shape outside the audit is not being reported"
 end
 
-# What a failing script said about its own failure, rather than whatever it
-# printed first. A script that raises -- which is how a policy check reads a file
-# the fixture never copied -- reports a backtrace, and that outranks everything
-# else because it is the failure the row cannot otherwise see. Below it are the
-# `FAIL <text>` lines PolicySupport.report writes, and only then the first line of
-# output, for a script that fails without either.
+# A backtrace outranks `FAIL` lines, which outrank the first line of output.
 POLICY_DIAGNOSTIC_LIMIT = 500
 
 def policy_failure_diagnostic(output)
@@ -1180,13 +855,8 @@ def policy_failure_diagnostic(output)
   diagnostic[0, POLICY_DIAGNOSTIC_LIMIT]
 end
 
-# Reports each failing script by name with its own diagnostic, rather than the
-# first line of all eight scripts' joined output. That joined line is whichever
-# script ran first -- tests/policy_test.rb, always -- so a failure anywhere in the
-# other seven was reported under that script's *success* banner: a missing
-# BASE_FIXTURE_PATHS entry surfaced as "policy: all properties hold". A check
-# whose failure is indistinguishable from success is the defect class this
-# harness exists to find, so it must not be the harness's own reporting.
+# Each failing script reported by name: the joined output once showed a missing fixture
+# under policy_test.rb's success banner.
 def expect_success(failures, label)
   record_audit_bypass(:expect_success)
   results = run_policy_scripts(POLICY_SCRIPTS) { |root| yield root }
@@ -1250,13 +920,8 @@ def implement_paperless(root)
   mutate_manifest(root) { |manifest| service(manifest, "paperless-ngx")["status"] = "implemented" }
   compose_dir = File.join(root, "services", "paperless-ngx")
   FileUtils.mkdir_p(compose_dir)
-  # The platform fragments every stack declares. Written as plain mappings rather
-  # than anchored and merged, because mutate_yaml_file round-trips this file
-  # through YAML.safe_load_file without aliases: true and an alias it actually
-  # used would raise. They are here because policy_test.rb requires the fragments
-  # to be present rather than only to agree when present -- a synthetic stack
-  # that omitted them would fail the rows built on it for a reason none of them
-  # is testing, which is exactly what a stated fixture is meant to make visible.
+  # Plain mappings, not anchors: mutate_yaml_file loads without aliases. policy_test.rb
+  # requires the fragments to be present.
   File.write(File.join(compose_dir, "compose.yml"), <<~YAML)
     ---
     x-logging:
@@ -1348,8 +1013,6 @@ def implement_paperless(root)
         url: http://127.0.0.1/paperless/
   YAML
 
-  # A service declares the storage it owns in its own file now, so the synthetic
-  # entry goes where paperless_ngx's real ones do rather than into a shared list.
   storage_path = File.join(root, "inventory", "group_vars", "all", "service_paperless_ngx.yml")
   storage = File.exist?(storage_path) ? YAML.safe_load_file(storage_path) : {}
   (storage["nas_storage_paperless_ngx"] ||= []) << {

@@ -8,11 +8,8 @@ require_relative "media_acquisition_reconciliation_support"
 
 failures = []
 
-# The core file's dedicated production probe establishes the fingerprint
-# algorithm for this gate run; if it regresses, that file fails. This file can
-# therefore seed equivalent private baselines instead of running another setup
-# playbook before every scenario, exactly as the single-file fixture did once
-# the probe had passed.
+# The core file's production probe proves the fingerprint algorithm, so this
+# file seeds baselines instead of running a setup playbook per scenario.
 FINGERPRINT_BASELINE_CACHE["enabled"] = true
 
 bazarr_state = { "bazarr" => deep_copy(BAZARR) }
@@ -111,14 +108,9 @@ exercise_secret_change(
   safe_request_body: ->(request) { canonical_bazarr_connection_body?(request, []) }
 )
 
-# Bazarr answers a settings POST its dynaconf schema refuses with 406 and
-# nothing else, so without the extraction a converge reads only "Status code was
-# 406 and not [204]" and names neither the setting nor the reason. The body
-# carries dynaconf's "{name} must {operation} {op_value} but it is {value}",
-# whose value half is the submitted credential -- for `sonarr.apikey` it is the
-# API key -- so the diagnosis has to name the setting while printing nothing
-# after " must ". `check_sanity` fails on any secret sentinel reaching the run's
-# output, which is what proves the second half of that here.
+# A 406 body names the setting and then the submitted value, which may be a
+# credential, so the diagnosis prints nothing after " must "; check_sanity
+# fails on any leaked secret sentinel.
 {
   "a dynaconf validation message" => [
     "sonarr.apikey must is_type_of <class 'str'> but it is #{SECRETS.fetch('sonarr')}",
@@ -165,11 +157,8 @@ provider_projection = lambda do |settings|
   bazarr_projection(settings, [BAZARR_PROVIDER])
 end
 
-# The provider requests are looped, and a looped task that fails prints its whole
-# `item` -- here a provider body carrying the provider password -- so their
-# rejections are collected into one unlooped assertion instead. This case refuses
-# only the provider form, leaving the already-converged connection request
-# untouched, so the provider assertion is the one that has to report.
+# A failing looped task prints its whole `item` (with the provider password),
+# so provider rejections are collected into one unlooped assertion.
 provider_rejection_state = deep_copy(provider_state)
 provider_rejection_state.dig("bazarr", "providers", "opensubtitlescom")["username"] = "legacy"
 provider_rejection_body =

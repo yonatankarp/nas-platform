@@ -1,15 +1,6 @@
 ---
-# Trailer profiles are the object that actually decides what gets a trailer and
-# how it is encoded, and an unguarded migration seeds exactly two of them on a
-# fresh database — with different folder behaviour, which is why they have to be
-# reconciled rather than accepted.
-#
-# GET and PUT are a full-object read and replace and are idempotent: two
-# identical PUTs leave identical state. POST has no dedupe, so this file never
-# creates one; it compares against the two seeded ids and replaces in place.
-# Cross-field validators reject mp4 with vp8/vp9 and force opus for webm, so the
-# container, video and audio formats move together in one request.
-#
+# The two seeded profiles are replaced in place by id (POST has no dedupe); the three
+# format fields move in one PUT because validators reject mixed states.
 # Redacted: the request carries the application API key.
 - name: Read the Trailarr trailer profiles
   ansible.builtin.uri:

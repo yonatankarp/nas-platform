@@ -1,10 +1,6 @@
 ---
-# Two batches rather than one, and the split is the ordering property rather
-# than a stylistic choice. Everything this file interpolates a manifest service
-# name into has to be proved safe first, so the manifest and the catalog are
-# validated, then parsed, then their path components asserted, and only then are
-# the derived paths validated. Collapsing all of it into a single task would
-# hand the validator paths built from a manifest nothing had yet vouched for.
+# Two batches on purpose: manifest names must be validated and asserted safe before
+# any path is built from them.
 - name: Validate the controller manifest and catalog before parsing either
   ansible.builtin.include_tasks: controller_input.yml
   vars:
@@ -19,10 +15,6 @@
       {{ (lookup('file', playbook_dir ~ '/services/manifest.yml') | from_yaml).services
          | selectattr('status', 'in', ['implemented', 'accepted']) | list }}
 
-# platform_compose_kind is asserted here alongside the service names, and for the
-# same reason: the batch below builds the override suffix from it, so it is a
-# path component this file interpolates. target.yml asserts the same shape, but
-# that is a different play's guard and cannot vouch for this one.
 - name: Validate manifest service path components before interpolation
   ansible.builtin.assert:
     that:
@@ -38,30 +30,9 @@
   loop_control:
     label: "{{ item.name | default('<invalid>') }}"
 
-# Every derived input, in one invocation and in exactly the order the per-input
-# inclusions ran in before: the canonical Compose file of every implemented
-# service, then every optional platform override, then the tracked Configarr
-# declaration when the Arr stack is deployed, then the two tracked runtime
-# helpers. The order decides which refusal an operator sees when more than one
-# input is bad, because the validator stops at the first, and
-# tests/integration_controller.sh pins that choice -- its override fixture is a
-# checkout whose platform override is a symlink out of the tree and which
-# carries no runtime helpers at all, so a list that reached the helpers first
-# would report a missing file instead of the escape.
-#
-# '0' and '1' are the allow_missing flags the single-path form has always taken,
-# paired onto each group with `product` so a group states its own optionality
-# once, beside the paths it applies to. Only the platform overrides may be
-# absent.
-#
-# Every path here is assembled by `product` and `join` -- plain string
-# concatenation -- rather than by anchoring a `regex_replace` at '^' and '$'.
-# The anchored form reads the same but puts playbook_dir in a regex REPLACEMENT
-# string, where a backslash is an escape and `\1` is a backreference, and puts
-# the suffix behind a '$' that Python also matches before a trailing newline.
-# Neither is reachable from a manifest name, which the assert above pins to
-# [a-z0-9-], but playbook_dir is the deployment's own root and is asserted
-# nowhere. Concatenation has no such reading of its inputs.
+# Order is load-bearing: the validator stops at the first refusal, and
+# tests/integration_controller.sh pins which one an operator sees. Paths are joined,
+# not regex_replace'd, so playbook_dir is never read as a regex replacement string.
 - name: Validate every derived controller input in one pass
   ansible.builtin.include_tasks: controller_input.yml
   vars:

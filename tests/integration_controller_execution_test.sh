@@ -1,46 +1,9 @@
 #!/bin/sh
-# What tests/integration_controller.sh *does*, proved by running it.
-#
-# Until this file existed the controller's dispatch was guarded by reading its
-# source text: `grep -qF 'run_play --tags "$INTEGRATION_TAGS" "$@"'` and a dozen
-# assertions like it in tests/integration_suite_test.sh. A grep that matched and
-# an execution test that never exercised the path both pass on a healthy tree,
-# and only one of them notices when the line stops being reached. So the
-# controller is executed here against stubbed `ansible-playbook`, `docker`,
-# contracts and helpers, and every property is asserted against the argv and
-# environment those stubs observed.
-#
-# TWO ROOTS, AND THIS FILE OWNS BOTH OF THEM EXPLICITLY.
-# The controller refuses to work out either root for itself: the checkout under
-# test arrives as CONTROLLER_REPO_DIR and the disposable target tree as
-# CONTROLLER_SANDBOX, and tests/policy_test.rb forbids any $0 / dirname /
-# BASH_SOURCE resolution in it. In production the checkout is bind-mounted at
-# /repo, and the controller's paths are literal /repo/... which is why running it
-# outside the container needs the one transformation this file performs: a
-# relocation of /repo onto a disposable checkout built here. The relocation is
-# counted, not trusted -- see relocate_program -- because a substitution that
-# silently matches nothing would leave a test that runs the wrong program and
-# reports a pass.
-#
-# EVIDENCE IS PLANTED-DEFECT DETECTION, NOT A PASSING RUN.
-# Every property below is paired with a plant: the controller line that produces
-# it is deleted or corrupted in a throwaway copy, and the same assertions are
-# required to fail. The plants run here, in the gate, rather than being reported
-# in a pull request body, because "the guard still detects" is otherwise
-# unverifiable by anyone but its author. Each plant asserts its own match count,
-# so a plant that quietly substitutes nothing fails instead of reporting a pass
-# that proves nothing.
-#
-# THE BUG THIS FILE ONCE PINNED IS FIXED, AND THE PIN IS NOW THE PROOF.
-# `run_selected_play` used to read `[ -n $INTEGRATION_TAGS ]`, unquoted: `[ -n ]`
-# is a one-argument test on the non-empty string `-n`, so it was true on an empty
-# value (SC2070). Extracting the controller from its `sh -c` argument is what made
-# that visible; this file pinned the resulting behaviour rather than the correct
-# one, and said it was waiting for the fix. The fix has landed, so `case_empty_tags`
-# below now asserts the sane behaviour -- no `--tags` reaches ansible-playbook in
-# any of the three phases -- and a plant reverts the quoting and requires the case
-# to fail. SC2070 is gone from the controller's shellcheck exclusion with it;
-# SC2068 and SC2086 are still pre-existing and still excluded.
+# What tests/integration_controller.sh does, proved by running it against stubbed
+# ansible-playbook, docker, contracts and helpers and asserting the observed argv.
+# Both roots are explicit (CONTROLLER_REPO_DIR, CONTROLLER_SANDBOX); /repo is
+# relocated onto a disposable checkout, with the count asserted. Every property is
+# paired with a planted defect that must make its case fail.
 set -eu
 
 repo_dir=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd -P)
@@ -48,9 +11,7 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-controller-exec.XXXXXX")
 work=$(CDPATH= cd -P "$work" && pwd -P)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
-# Deliberately not "$work/repo": the relocation rewrites every literal /repo in
-# the program, and a destination containing that substring makes a residual
-# occurrence unreadable in a diff.
+# Not "$work/repo": a residual /repo would be unreadable in a diff.
 checkout=$work/checkout
 sandbox=$work/sandbox
 stub_bin=$work/stub-bin
@@ -62,10 +23,7 @@ pristine_library=$work/library.pristine
 planted_program=$work/controller.planted
 planted_library=$work/library.planted
 
-# Read back rather than restated: Renovate bumps both of these in the launcher,
-# and a copy of either here would turn the next bump into a red gate that says
-# nothing about the controller. The two package pins below are this test's own
-# fixture values, so they stay literals.
+# Read back from the launcher, which Renovate bumps; the package pins are fixtures.
 ansible_core_version=$(sed -n 's/^ansible_core_version=//p' \
   "$repo_dir/tests/integration.sh")
 requests_version=$(sed -n 's/^requests_version=//p' "$repo_dir/tests/integration.sh")
@@ -91,14 +49,8 @@ fail() {
 }
 
 # ---------------------------------------------------------------------------
-# The disposable checkout.
-#
-# Production mounts a *copy* of the caller's tree at /repo -- integration.sh
-# builds it at $sandbox/repo -- so a checkout the controller writes its
-# generated vault into is what it already expects. Only the files the controller
-# and its launcher library actually reach are placed here; a file that turns out
-# to be missing makes the controller die, which fails this test, so the fixture
-# cannot drift silently the way an over-broad copy could rot.
+# The disposable checkout: only the files the controller reaches, so a missing
+# one fails the test rather than rotting.
 # ---------------------------------------------------------------------------
 
 install_stub() {
@@ -108,9 +60,7 @@ install_stub() {
   chmod 0755 "$stub_path"
 }
 
-# Every stub logs one line per invocation in the same shape, so an assertion can
-# name argv word by word: a value that lost its quoting arrives as two words and
-# the fixed-string match fails.
+# One line per invocation, so argv can be matched word by word.
 stub_preamble() {
   cat <<'PREAMBLE'
 #!/bin/sh
@@ -134,23 +84,15 @@ build_checkout() {
     "$checkout/inventory/group_vars/all" "$checkout/services/beszel" \
     "$checkout/services/kapowarr"
 
-  # Read for real: the controller runs the lifecycle producer/consumer out of the
-  # checkout, and both the suite roster and the consumer's refusals are theirs.
   cp "$repo_dir/tests/integration.sh" "$checkout/tests/integration.sh"
   cp "$repo_dir/tests/integration_lifecycle.sh" \
     "$checkout/tests/integration_lifecycle.sh"
   cp "$repo_dir/tests/ci/suites.conf" "$checkout/tests/ci/suites.conf"
   chmod 0755 "$checkout/tests/integration.sh"
   cp "$repo_dir/services/beszel/compose.yml" "$checkout/services/beszel/compose.yml"
-  # The upgrade lane's subject, read for real: the controller finds the head pin
-  # by reading this file and rewrites that exact line, so a fixture pin invented
-  # here would prove the rewrite against a shape the repository does not have.
+  # Read for real: the controller rewrites this exact pin line.
   cp "$repo_dir/services/kapowarr/compose.yml" "$checkout/services/kapowarr/compose.yml"
-  # Present, not stubbed, and never executed: the contract wrapper beside it is a
-  # stub. tests/integration.sh derives which services the upgrade lane may take
-  # as a subject from which ones have this file, so a fixture without it refuses
-  # the lane before a single event runs -- which is what a missing copy here
-  # looked like the first time.
+  # Present but never executed: integration.sh derives upgrade subjects from it.
   cp "$repo_dir/tests/contracts/kapowarr-upgrade.rb" \
     "$checkout/tests/contracts/kapowarr-upgrade.rb"
   cp "$repo_dir/inventory/group_vars/all/main.yml" \
@@ -213,17 +155,7 @@ STUB
   } > "$checkout/tests/media_control_network_collision_test.sh"
   chmod 0755 "$checkout/tests/media_control_network_collision_test.sh"
 
-  # One stub per contract the lanes below reach. run_contract prepends the
-  # environment ABI, so the contract records the two variables whose derivation
-  # from the disposable namespace is the property under test.
-  #
-  # The three *-foundation stubs stood here, present rather than absent on
-  # purpose: a closedness assertion that held only because a stub was missing
-  # would be detecting a missing fixture rather than an opened case arm. #639
-  # removed the dispatch they stood for -- the seven byte-identical
-  # tests/contracts/*-foundation.sh wrappers, of which one was reachable -- so
-  # there is no invocation for a stub to record, and the arm's closedness is now
-  # carried by the two tag assertions in case_jellyfin instead.
+  # One stub per contract the lanes below reach.
   for contract_name in arr downloaders bindery trailarr seerr \
       kapowarr pinchflat jellyfin komga; do
     {
@@ -243,13 +175,8 @@ STUB
   relocate_program "$pristine_library" "$checkout/tests/integration_controller_lib.sh"
 }
 
-# The one transformation, and the reason it is safe to make. Every /repo in the
-# program becomes the disposable checkout, including the launcher's own
-# `[ "$CONTROLLER_REPO_DIR" = /repo ]` guard, so the two roots stay exactly as
-# explicit as they are in production. The count is asserted in both directions:
-# the destination path contains no /repo substring, so a residual occurrence
-# means the substitution missed a line, and a low replacement count means the
-# source no longer says what this file thinks it says.
+# Every /repo becomes the disposable checkout, including the launcher's own guard.
+# Counted both ways: no residual /repo, and no fewer replacements than expected.
 relocate_program() {
   relocate_source=$1
   relocate_destination=$2
@@ -271,10 +198,8 @@ build_stub_bin() {
   rm -rf "$stub_bin"
   mkdir -p "$stub_bin"
 
-  # The recap is what the controller and the launcher library parse. Since #638
-  # both go through enabled_idempotence_recap_is_clean, so both require exactly
-  # one recap, exactly one line naming the target host, and changed, unreachable
-  # and failed all zero.
+  # Since #638 both parse via enabled_idempotence_recap_is_clean: one recap, one
+  # host line, changed/unreachable/failed zero.
   {
     stub_preamble
     cat <<'STUB'
@@ -294,14 +219,8 @@ printf '%s\n' 'decrypted_fixture_input: true'
 STUB
   } > "$stub_bin/ansible-vault"
 
-  # `docker` answers two reads for real, because the upgrade lane's stop event
-  # (#781) is a decision taken ON their output rather than a call whose argv is
-  # the whole property: enumerate the subject's running containers, stop each,
-  # then read back the state and exit code it stopped with. A stub that logged
-  # and printed nothing would make that event refuse on every run, and a stub
-  # that always printed `exited:0` would make its assertion unfalsifiable. So
-  # both come from the case's own environment, and the SIGKILL case below sets
-  # the second to what #671 produced.
+  # `docker` answers two reads for the upgrade stop event (#781): running
+  # containers and their stopped state, both from the case's environment.
   {
     stub_preamble
     cat <<'STUB'
@@ -333,14 +252,9 @@ build_sandbox() {
     "$sandbox/volume2" \
     "$sandbox/volume1/Docker/nas-platform/current/services/beszel" \
     "$sandbox/volume1/Docker/nas-platform/runtime/services"
-  # The controller compares the target's beszel compose against the checkout's
-  # byte for byte. Nothing here converges, so the target copy is seeded.
   cp "$checkout/services/beszel/compose.yml" \
     "$sandbox/volume1/Docker/nas-platform/current/services/beszel/compose.yml"
-  # Reset per run, not once: the controller installs the ephemeral vault it
-  # generated here, and a copy left over from the previous run would make a
-  # planted defect that skips the install look like a pass. A case that needs
-  # something else at that path asks for it.
+  # Reset per run, so a plant that skips the vault install cannot pass.
   rm -f "$checkout/inventory/group_vars/all/vault.yml"
   case ${CASE_OPERATOR_VAULT-} in
     file)
@@ -350,8 +264,6 @@ build_sandbox() {
       ln -s "$work/absent-vault-target" \
         "$checkout/inventory/group_vars/all/vault.yml" ;;
   esac
-  # A committed per-service vault, which the controller must remove for the
-  # same reason: it would be decrypted with the ephemeral password.
   printf '%s\n' 'committed-operator-vault' \
     > "$checkout/inventory/group_vars/all/vault_beszel.yml"
 }
@@ -360,10 +272,8 @@ build_sandbox() {
 # Running the program.
 # ---------------------------------------------------------------------------
 
-# Every CONTROLLER_* input the program requires, spelled once. Absent ones are
-# refused by `${VAR:?}` at the top of the controller, which is a property a case
-# below exercises by status alone: `bash` and `dash` word that refusal
-# differently, so pinning its text would pin which shell the machine has.
+# Every CONTROLLER_* input, spelled once. Missing ones are asserted by status
+# only: bash and dash word the `:?` refusal differently.
 export_controller_environment() {
   CONTROLLER_REPO_DIR=${CASE_REPO_DIR-$checkout}
   CONTROLLER_SANDBOX=$sandbox
@@ -396,8 +306,6 @@ export_controller_environment() {
     CONTROLLER_TEST_PLAYBOOK CONTROLLER_TEST_TARGET CONTROLLER_TEST_SENTINEL
 }
 
-# suite, tags, service scenarios, toolchain, then the playbook and any extra
-# Ansible arguments -- the same argv the launcher hands across the boundary.
 run_controller() {
   run_suite=$1
   run_tags=$2
@@ -407,19 +315,13 @@ run_controller() {
 
   build_sandbox
   : > "$stub_log"
-  # The controller writes phase 2's output to a literal /tmp/second.txt. A file
-  # left by an earlier case would let a planted defect that removes the second
-  # play go undetected, so it is removed rather than trusted.
+  # The controller writes phase 2 to a literal /tmp/second.txt; never trust a leftover.
   rm -f /tmp/second.txt /tmp/media-acquisition-idempotence.txt
   mkdir -p "$work/home"
 
   run_status=0
-  # A subshell rather than `env`, so no value has to survive word splitting, and
-  # so nothing exported here reaches the next case. HOME is redirected because
-  # the controller runs `git config --global` and must not reach the caller's
-  # configuration. The working directory is the checkout, which is what -w /repo
-  # gives the program in production and what its `-i inventory/local.yml`
-  # resolves against.
+  # A subshell so nothing leaks to the next case; HOME redirected because the
+  # controller runs `git config --global`.
   (
     export_controller_environment
     if [ -n "${CASE_UNSET_VARIABLE-}" ]; then
@@ -438,14 +340,9 @@ run_controller() {
     PLATFORM_PAPERLESS_FIXTURE_PRESEEDED=false
     PLATFORM_KOMGA_FIXTURE_PRESEEDED=false
     PLATFORM_JELLYFIN_FIXTURE_PRESEEDED=false
-    # Empty for every lane but the upgrade one, which is what the launcher passes
-    # and what the controller refuses that lane without.
     INTEGRATION_UPGRADE_SERVICE=${CASE_UPGRADE_SERVICE-}
     INTEGRATION_UPGRADE_BASE_IMAGE=${CASE_UPGRADE_BASE_IMAGE-}
-    # What the docker stub reports for the upgrade lane's stop: which containers
-    # the subject's Compose project is running, and the state each stopped in.
-    # Empty and unset everywhere else, which is what leaves every other lane's
-    # docker stub exactly the logging one it was.
+    # Empty everywhere but the upgrade lane.
     CONTROLLER_STUB_DOCKER_RUNNING=${CASE_DOCKER_RUNNING-}
     CONTROLLER_STUB_DOCKER_STATE=${CASE_DOCKER_STATE-exited:0}
     export PATH HOME CONTROLLER_STUB_LOG PLATFORM_INTEGRATION_SANDBOX \
@@ -461,10 +358,7 @@ run_controller() {
 }
 
 # ---------------------------------------------------------------------------
-# Assertions.
-#
-# The log is read with the run's own paths and namespace replaced by tokens, so
-# each expectation is a fixed string a reader can check against the controller.
+# Assertions: the log is normalized to tokens so each expectation is a fixed string.
 # ---------------------------------------------------------------------------
 
 normalized_log() {
@@ -502,8 +396,6 @@ expect_log_count() {
     fail "expected $2 occurrence(s) of $1, saw $observed"
 }
 
-# Order is a property in its own right: an idempotence play that ran after the
-# check-mode play would prove nothing about the converge it is meant to follow.
 expect_log_order() {
   first_line=$(normalized_log | grep -nF -- "$1" | head -1 | cut -d: -f1)
   second_line=$(normalized_log | grep -nF -- "$2" | tail -1 | cut -d: -f1)
@@ -518,18 +410,13 @@ expect_output() {
   normalized_output | grep -qF -- "$1" || fail "controller output is missing: $1"
 }
 
-# The refusal cases need this half: a lane that refuses and still reports itself
-# complete is a lane whose verdict nobody can read.
 expect_no_output() {
   if normalized_output | grep -qF -- "$1"; then
     fail "controller output unexpectedly has: $1"
   fi
 }
 
-# Nothing may deploy under a project name the disposable sandbox does not own: a
-# stack started under its production project survives sandbox cleanup. Asserted
-# over observed argv rather than over the source text, so a name assembled at
-# runtime cannot slip past a fixed-string read of the file.
+# Asserted over observed argv, so a name assembled at runtime cannot slip past.
 expect_only_disposable_project_names() {
   unexpected=$(normalized_log | tr '[' '\n' |
     sed -n 's/^platform_project_name=\([^]]*\)\].*$/\1/p' |
@@ -539,23 +426,16 @@ expect_only_disposable_project_names() {
 }
 
 # ---------------------------------------------------------------------------
-# The cases. Each is a lane the controller can be driven through end to end
-# against stubs, and each asserts the properties that lane is the cheapest place
-# to observe. `case_<name>` is called twice: once against the pristine program,
-# and once per planted defect, where the same assertions must fail.
+# The cases. Each runs once against the pristine program and once per plant.
 # ---------------------------------------------------------------------------
 
-# The idempotence-check lane is the thin path. It reaches the vault handover,
-# the launcher library, the lifecycle plan, the initial converge and both of the
-# harness's other two promises -- a second run that changes nothing and a
-# working --check --diff -- without entering a single service scenario.
+# The thin path: vault handover, launcher library, lifecycle plan, converge,
+# idempotence and --check --diff, with no service scenario.
 case_idempotence_check() {
   run_controller idempotence-check host_prep,deployment_bundle true true \
     site.yml
   expect_status 0
 
-  # The three plays the harness exists to run, in order, each carrying the tags
-  # the launcher chose as one argv word.
   expect_log_count 'ansible-playbook argv=' 3
   expect_log_count '[--tags][host_prep,deployment_bundle]' 3
   expect_log_count '[--check][--diff]' 1
@@ -567,13 +447,8 @@ case_idempotence_check() {
   expect_output 'CHECK MODE OK: dry run completed'
   expect_output 'FRESH_ROOT_OK: clean deployment root converged'
 
-  # The vault the controller generated is the vault every play reads, both as
-  # the checkout's own encrypted file and as the exported password file. Nothing
-  # is read back out of a running service, so this is the whole credential path.
   expect_log_count 'ansible-playbook env=[ANSIBLE_VAULT_PASSWORD_FILE={sandbox}/nas-platform-vault.000000/password]' 3
-  # Empty between the first pair of brackets: every lane but downloaders asks
-  # for the whole credential set stood in, which is what makes the downloaders
-  # lane's request below the exception it is meant to be.
+  # Empty first brackets: only the downloaders lane asks for an undeclared set.
   expect_log 'ephemeral-vault argv=[--undeclared][][--output][{sandbox}/nas-platform-vault.000000/vault.yml][--password-file][{sandbox}/nas-platform-vault.000000/password]'
   expect_log 'ephemeral-vault argv=[--cleanup][{sandbox}/nas-platform-vault.000000]'
   if [ "$(cat "$checkout/inventory/group_vars/all/vault.yml" 2>/dev/null)" != \
@@ -585,13 +460,9 @@ case_idempotence_check() {
   fi
   expect_only_disposable_project_names
 
-  # The bundle the target carries must be the controller's own, checked against
-  # the checkout rather than reported by the play that installed it.
   expect_log 'verify-manifest argv=[{sandbox}/volume1/Docker/nas-platform/current/manifest.yml][{repo}][{repo}/services/manifest.yml][nas][integration][0000000000000000000000000000000000000abc]'
 }
 
-# Extra Ansible arguments must survive the two hops from the caller's command
-# line, through the launcher, into every play the controller runs.
 case_extra_arguments() {
   run_controller idempotence-check host_prep,deployment_bundle true true \
     site.yml --limit nas
@@ -600,23 +471,9 @@ case_extra_arguments() {
   expect_log '[site.yml][--tags][host_prep,deployment_bundle][--limit][nas][--check][--diff]'
 }
 
-# The untagged shape: the nightly sweep and every `--full` push to `main`. All
-# three phases must run the whole play, so no `--tags` word may reach
-# ansible-playbook at any of them. Until the quoting fix this case pinned the
-# defect instead -- `[--tags][]` twice, which is `--tags ""` and selects only the
-# `always` pre_tasks. On nightly run 34454075921 that was `ok=88` in each of
-# phases 2 and 3 against `ok=1495` in phase 1, under a phase 2 that went on to
-# print "IDEMPOTENT: second run changed nothing".
-#
-# This one case reaches all three branches of `run_selected_play`, which is why
-# no other is needed: phase 1 through `perform_initial_converge`, phase 2 with no
-# arguments at all, and phase 3 with `--check --diff` and no tags, which is the
-# `else` branch that tests/integration_suite_test.sh used to have to assert by
-# reading the source text because nothing could execute it.
-#
-# `perform_initial_converge`'s own `[ -z $INTEGRATION_TAGS ]` is quoted too, but
-# no plant can prove it: unquoted it degenerates to `[ -z ]` on the same empty
-# value, which is also true, and true is the branch that was already correct.
+# The untagged shape (nightly, `--full`): no `--tags` may reach any of the three
+# phases. This case reaches every branch of `run_selected_play`. The quoted
+# `[ -z $INTEGRATION_TAGS ]` in perform_initial_converge cannot be planted: unquoted is also true.
 case_empty_tags() {
   run_controller idempotence-check '' true true site.yml
   expect_status 0
@@ -628,9 +485,6 @@ case_empty_tags() {
   expect_output 'CHECK MODE OK: dry run completed'
 }
 
-# The acquisition lane's own five-step proof: the registry-free collision
-# contract, the static contract, a verification-only play, a real second
-# converge for idempotence, and only then check mode.
 case_arr() {
   run_controller arr host_prep,deployment_bundle,arr true true site.yml
   expect_status 0
@@ -640,17 +494,9 @@ case_arr() {
   expect_log '[site.yml][--tags][arr]'
   expect_log '[site.yml][--tags][arr][--check][--diff]'
   expect_output 'ARR_PHASE1_RUNTIME_VERIFIED'
-  # The enabled lane converges with the transport on, which is what makes the
-  # verification assert against real reader state rather than a skipped role.
-  # The provider policy rides between them: four of the provider's six values
-  # are inventory rather than vault material since #298, so this is the only
-  # place a lane can state them, and a lane that stated nothing would inherit
-  # inventory's undeclared host while the vault handed it an account -- a half
-  # declared provider, which the role refuses.
+  # Four of the provider's six values are inventory, not vault, since #298.
   expect_log '[-e][media_usenet_enabled=true][-e][{"media_usenet_provider":{"host":"news.usenet.invalid","port":563,"connections":8,"ssl":true}}][-e][media_acquisition_adopt_existing_libraries=true]'
   expect_log_order 'collision argv=[live]' 'contract arr argv=[static]'
-  # Idempotence is proved by a real play, and it must precede check mode: a
-  # check-mode run cannot stand in for the converge it is meant to follow.
   expect_log_order '[site.yml][--tags][arr]' \
     '[site.yml][--tags][arr][--check][--diff]'
   expect_only_disposable_project_names
@@ -668,34 +514,17 @@ case_downloaders() {
   expect_log '[site.yml][--tags][arr,downloaders][--check][--diff]'
   expect_log_order '[site.yml][--tags][arr,downloaders]' \
     '[site.yml][--tags][arr,downloaders][--check][--diff]'
-  # The property this lane exists for after #295: its vault declares no Usenet
-  # provider, so its converge, its verification, its second converge and its
-  # check-mode run are all the undeclared half of the pair. The request has to
-  # be asserted here rather than inferred from the lane passing, because a lane
-  # handed the stood-in credentials would pass exactly the same way -- that is
-  # the whole shape of the bug #274 shipped.
+  # This lane's vault declares no Usenet provider; asserted, not inferred (#274).
   expect_log 'ephemeral-vault argv=[--undeclared][usenet][--output]'
-  # And the policy half emptied with it. Both halves or neither: the vault
-  # supplies the account and inventory supplies the host, so a lane that asked
-  # the generator for an undeclared account while still declaring a host would
-  # converge nothing -- roles/downloaders refuses the pair. Asserted as the
-  # negation of the arr lane's line above.
+  # Both halves or neither: roles/downloaders refuses a half-declared provider.
   expect_log '[-e][{"media_usenet_provider":{"host":"","port":563,"connections":8,"ssl":true}}]'
-  # And the verification play, which is a separate ansible-playbook invocation
-  # with an argv of its own. verify.yml branches on this value, so a converge
-  # that gets it and a verification that does not is a lane asserting the wrong
-  # branch against its own converge -- which is exactly how the bindery lane
-  # failed before this was passed here too.
+  # The verification play is a separate invocation and must get the value too.
   expect_log '[-e][media_usenet_enabled=true][-e][{"media_usenet_provider":{"host":"","port":563,"connections":8,"ssl":true}}][{repo}/verify.yml][--tags][platform_verify_downloaders]'
   expect_output 'DOWNLOADERS_UNDECLARED_PROVIDER_RUNTIME_VERIFIED'
 }
 
-# The other half of that pair. Bindery converges the same arr and downloaders
-# stacks, and it converges them from a fully declared vault, so it is where the
-# declared provider's verification branch is asserted as a play of its own. The
-# two `--undeclared` assertions are each other's negation on purpose: a lane
-# that quietly stopped asking for the state it claims to converge is the exact
-# failure #274 shipped, and neither lane can report it alone.
+# The declared half of the pair; the two `--undeclared` assertions are each
+# other's negation (#274).
 case_bindery() {
   run_controller bindery \
     host_prep,deployment_bundle,arr,downloaders,audiobookshelf,bindery true true site.yml
@@ -707,9 +536,6 @@ case_bindery() {
   expect_log 'contract bindery argv=[run]'
   expect_log '[{repo}/verify.yml][--tags][platform_verify_downloaders]'
   expect_log '[{repo}/verify.yml][--tags][platform_verify_bindery]'
-  # The declared half of the same property: this lane's verification has to see
-  # the declared host its converge saw, or it asserts that no owned server
-  # exists against the server it just created.
   expect_log '[-e][media_usenet_enabled=true][-e][{"media_usenet_provider":{"host":"news.usenet.invalid","port":563,"connections":8,"ssl":true}}][{repo}/verify.yml][--tags][platform_verify_downloaders]'
   expect_log '[site.yml][--tags][arr,downloaders,audiobookshelf,bindery]'
   expect_log '[site.yml][--tags][arr,downloaders,audiobookshelf,bindery][--check][--diff]'
@@ -718,11 +544,7 @@ case_bindery() {
   expect_output 'BINDERY_PHASE2_RUNTIME_VERIFIED'
 }
 
-# Seerr is the last acquisition project, so the shared inert foundation's own
-# runtime proof lives in its lane: the reader prerequisites converge, and a
-# verification play whose only fact is the tag. The static half is not re-run
-# here -- #639 removed that call, because it ran exactly the check the gate
-# already runs bare plus a branch that verified the wrapper's own bytes.
+# Seerr's lane carries the shared foundation's runtime proof (#639).
 case_seerr() {
   run_controller seerr host_prep,deployment_bundle,arr,jellyfin,seerr \
     true true site.yml
@@ -733,21 +555,15 @@ case_seerr() {
   expect_log_order \
     '[site.yml][--tags][audiobookshelf]' \
     '[{repo}/verify.yml][--tags][platform_verify_media_acquisition_foundation]'
-  # The foundation verification must not supply the facts it is meant to assert
-  # against: a lane that forced the transport or the control network would be
-  # asserting against a truth it wrote itself rather than the inventory's.
+  # Verification must not supply the facts it asserts against.
   expect_no_log '[-e][platform_media_control_network='
   expect_no_log '[-e][media_torrent_enabled='
-  # ... and then falls through to Seerr's own arm rather than exiting there.
   expect_log 'contract seerr argv=[static]'
   expect_log 'contract seerr argv=[run]'
   expect_log '[site.yml][--tags][arr,jellyfin,seerr][--check][--diff]'
   expect_output 'SEERR_PHASE4_RUNTIME_VERIFIED'
 }
 
-# Komga and Jellyfin each dispatch their scenarios independently of the suite
-# that converges them: a seed for every lane that reaches the service, and the
-# full contract only for the lane that owns it.
 case_jellyfin() {
   run_controller jellyfin host_prep,deployment_bundle,jellyfin true true \
     site.yml
@@ -756,14 +572,8 @@ case_jellyfin() {
   expect_log 'contract jellyfin argv=[run]'
   expect_log_order 'contract jellyfin argv=[seed]' 'contract jellyfin argv=[run]'
   expect_log 'contract jellyfin env=[PLATFORM_PROJECT_NAME=<unset>][PLATFORM_JELLYFIN_CONTAINER={ns}-jellyfin][PLATFORM_KIND=integration]'
-  # The acquisition foundation dispatch is a closed case arm: no lane but the
-  # last acquisition project's runs the shared foundation's reader prerequisites
-  # or its verification. The text assertion this replaces -- `grep -qF 'seerr)'`
-  # -- could not see that, because the same string also appears in the
-  # `arr|downloaders|bindery|trailarr|seerr)` arm forty lines earlier, so it
-  # would have passed with the dispatch arm deleted outright. The third
-  # assertion here was `expect_no_log 'contract jellyfin-foundation'`; it went
-  # with the wrappers in #639, and the two below carry the closedness alone.
+  # The foundation dispatch is a closed case arm; a `seerr)` grep also matched
+  # the earlier arm, so it could not see that (#639).
   expect_no_log '[--tags][audiobookshelf]'
   expect_no_log '[--tags][platform_verify_media_acquisition_foundation]'
 }
@@ -776,27 +586,12 @@ case_komga() {
   expect_log_order 'contract komga argv=[seed]' 'contract komga argv=[run]'
 }
 
-# The upgrade lane, which is the one lane that does not start from an empty
-# store. Everything it adds over a service lane happens inside the controller --
-# rewriting the subject's pin, committing it so platform_release_id moves, the
-# two converges either side of a seed, and the verify -- so this is the only
-# place any of it can be observed without a Docker daemon and a real migration.
-#
-# The checkout is made a git repository here rather than in build_checkout
-# because the repin COMMITS: deployment_bundle keys its immutable release on
-# `git rev-parse HEAD` and refuses to mutate a release `current` already points
-# at, so a lane that rewrote compose.yml without moving HEAD would meet that
-# refusal instead of upgrading. Rebuilt per run, because a plant that breaks the
-# repin leaves the fixture pinned at the base image and the next case would then
-# read a head equal to its base.
+# The upgrade lane. The checkout is a git repository because the repin commits:
+# deployment_bundle refuses to mutate an active release. Rebuilt per run, so a
+# broken plant cannot leave the next case reading a head equal to its base.
 upgrade_base_image=docker.io/mrcas/kapowarr:v0.0.1@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
-# No -b and no branch name anywhere below, deliberately: this fixture is read
-# only through HEAD, HEAD~1 and `rev-list --count HEAD`, so it never depends on
-# what `git init` called the initial branch. That matters because the caller's
-# init.defaultBranch is `main` on a development Mac and `master` on the runner
-# image -- tests/ci/classify_changes_test.rb assumed one and red CI while every
-# local run was green. Verified by running this file under both.
+# No branch names: init.defaultBranch differs between a Mac and the runner.
 build_upgrade_git_fixture() {
   rm -rf "$checkout/.git"
   cp "$repo_dir/services/kapowarr/compose.yml" \
@@ -824,10 +619,7 @@ case_upgrade() {
   unset CASE_UPGRADE_SERVICE CASE_UPGRADE_BASE_IMAGE CASE_DOCKER_RUNNING
   expect_status 0
 
-  # Two converges of the same tags, the seed between them and the verify after
-  # the second. Order is the whole property: a seed after the repin migrates an
-  # empty store, and a verify before the second converge reads the rows back
-  # from the image that wrote them.
+  # Order is the property: seed before the repin, verify after the second converge.
   expect_log_count '[site.yml][--tags][host_prep,deployment_bundle,kapowarr]' 2
   expect_log 'contract kapowarr argv=[seed]'
   expect_log 'contract kapowarr argv=[verify]'
@@ -837,53 +629,31 @@ case_upgrade() {
   expect_output 'UPGRADE_VERIFIED'
   expect_output 'UPGRADE_STOPPED'
   expect_output 'UPGRADE_LANE_COMPLETE'
-  # The stop is an action, not a reading: the container has to actually be
-  # stopped, after the verify has read its rows back, and its state read
-  # afterwards. Asserted on the argv rather than on UPGRADE_STOPPED, which a
-  # printf alone would satisfy.
+  # An action, not a reading: asserted on the argv, not on UPGRADE_STOPPED.
   expect_log 'docker argv=[stop][{ns}-kapowarr]'
   expect_log 'docker argv=[inspect][--format][{{.State.Status}}:{{.State.ExitCode}}][{ns}-kapowarr]'
   expect_log_order 'contract kapowarr argv=[verify]' 'docker argv=[stop][{ns}-kapowarr]'
-  # The window that stop was measured against is READ, not narrated. Without
-  # this the whole StopTimeout arm could be replaced by a literal and every
-  # case here would still pass -- which is what it did until #781 planted it.
-  # Per container, because a project-level line carrying one container's window
-  # would attribute it to the others.
+  # The stop window is read per container, not narrated (#781).
   expect_log 'docker argv=[inspect][--format][{{.Config.StopTimeout}}][{ns}-kapowarr]'
   expect_output 'UPGRADE_STOPPED_CONTAINER: {ns}-kapowarr exited:0'
-  # Only running containers are enumerated. An exited container keeps the code
-  # it exited with and `docker stop` answers 0 for it, so `docker ps -a` here
-  # would let a stack that died during the converge read as one that stopped
-  # cleanly.
+  # Only running containers: an exited one answers `docker stop` with 0.
   expect_log 'docker argv=[ps][--filter][label=com.docker.compose.project={ns}-kapowarr][--filter][status=running][--format][{{.Names}}]'
-  # The second converge is a real converge and not a rehearsal.
   expect_no_log '[site.yml][--tags][host_prep,deployment_bundle,kapowarr][--check][--diff]'
 
-  # THE PROPERTY THE WHOLE LANE RESTS ON, read out of the fixture's own history
-  # rather than off the controller's own report: the revision the FIRST converge
-  # assembled its release from pinned the base image, and the revision the second
-  # one assembled pinned the head image. Nothing else in this file can tell an
-  # upgrade from two converges of one version.
+  # The property the lane rests on, read from the fixture's history: the first
+  # converge pinned the base image, the second the head.
   observed_base=$(upgrade_compose_at 'HEAD~1')
   observed_head=$(upgrade_compose_at HEAD)
   [ "$observed_base" = "$upgrade_base_image" ] ||
     fail "the first converge's revision pinned $observed_base, not the base image"
   [ "$observed_head" = "$upgrade_head_image" ] ||
     fail "the second converge's revision pinned $observed_head, not the head image"
-  # And HEAD moved between them, which is what keeps deployment_bundle from
-  # refusing to mutate an active immutable release.
   upgrade_revisions=$(git -C "$checkout" rev-list --count HEAD)
   [ "$upgrade_revisions" -eq 3 ] ||
     fail "the upgrade lane left $upgrade_revisions revision(s), expected 3"
 }
 
-# The stop the lane ends on (#781), and the two states it has to tell apart.
-#
-# 137 is 128+SIGKILL: the container was still running when its grace period ran
-# out, which is what #671 produced on every recreate and what a green upgrade
-# lane would have automerged. It is the reason this event exists, so it gets a
-# case of its own rather than a plant on the program -- the program being right
-# is exactly what is under test here.
+# 137 is 128+SIGKILL (#671): its own case, since the program is what is under test (#781).
 case_upgrade_stop_sigkill() {
   build_upgrade_git_fixture
   CASE_UPGRADE_SERVICE=kapowarr
@@ -897,18 +667,12 @@ case_upgrade_stop_sigkill() {
     CASE_DOCKER_STATE
   expect_nonzero_status
   expect_output 'did not stop cleanly: exited:137'
-  # The migration half still ran and still passed. A lane that reported the
-  # whole run green here is precisely the state #781 exists to end, so the
-  # refusal has to arrive after a successful verify rather than instead of one.
+  # The refusal must come after a successful verify, not instead of it.
   expect_output 'UPGRADE_VERIFIED'
   expect_no_output 'UPGRADE_LANE_COMPLETE'
 }
 
-# The stack that is not running when the stop arrives. An exited container keeps
-# whatever code it exited with and `docker stop` answers 0 for it, so a crashed
-# container reads as a clean stop unless the running state is required first --
-# and an empty enumeration is also what a subject whose Compose project is not
-# named `<namespace>-<service>` would produce.
+# Not running when the stop arrives: a crashed container must not read as a clean stop.
 case_upgrade_stop_nothing_running() {
   build_upgrade_git_fixture
   CASE_UPGRADE_SERVICE=kapowarr
@@ -921,11 +685,8 @@ case_upgrade_stop_nothing_running() {
   expect_no_output 'UPGRADE_LANE_COMPLETE'
 }
 
-# The three refusals that stand in front of the lane, none of which had a case.
-# The first is the one the whole issue exists for: a base equal to the head
-# converges ONE version twice and asserts a migration that never ran, which is
-# the fresh-install path every other lane already takes -- green, and proving
-# strictly less than the lane it is pretending to be.
+# The three refusals in front of the lane; base equal to head converges one
+# version twice and proves nothing.
 case_upgrade_refusals() {
   upgrade_head_image=$(sed -n 's/^[[:space:]]*image:[[:space:]]*//p' \
     "$repo_dir/services/kapowarr/compose.yml")
@@ -942,25 +703,16 @@ case_upgrade_refusals() {
     unset CASE_UPGRADE_SERVICE CASE_UPGRADE_BASE_IMAGE
     expect_nonzero_status
     expect_output "$refusal_expected"
-    # Nothing may converge on the way to a refusal: the whole point is that the
-    # lane does not start rather than that it reports afterwards.
     expect_no_log '[site.yml][--tags][host_prep,deployment_bundle,kapowarr]'
   }
 
   run_upgrade_refusal kapowarr "$upgrade_head_image" \
     'the upgrade base and head pins of kapowarr are identical'
-  # The second refusal, and beszel is the subject because it is a real multi-image
-  # stack -- four `image:` lines, hub, agent and the socket proxy -- so the
-  # ambiguity is the repository's own rather than a fixture's. A rewrite that
-  # picked one of four would repin a container the lane is not upgrading and
-  # converge the subject unchanged.
+  # beszel has four images, so the ambiguity is the repository's own.
   run_upgrade_refusal beszel "$upgrade_base_image" \
     'the upgrade subject beszel does not pin exactly one image'
 }
 
-# The subject whose compose definition is absent. Separate from the case above
-# because the controller reaches it earlier -- before it has read any pin -- and
-# because the fixture has to be missing a file the others need present.
 case_upgrade_missing_compose() {
   build_upgrade_git_fixture
   CASE_UPGRADE_SERVICE=nosuchservice
@@ -973,27 +725,19 @@ case_upgrade_missing_compose() {
   expect_no_log '[site.yml][--tags][host_prep,deployment_bundle,kapowarr]'
 }
 
-# The smoke lane stops after the converge, and is the cheapest place to observe
-# the toolchain the controller installs when it is not running from an image
-# that already has it -- the path a developer's first run and a fork's CI take.
 case_toolchain_install() {
   run_controller smoke host_prep,deployment_bundle,beszel true false \
     site.yml
   expect_status 0
   expect_log "apk argv=[add][--no-cache][--quiet][docker-cli][docker-cli-compose][git][tar][openssl][apache2-utils][openssh-client][$ruby_package][$curl_package]"
   expect_log "pip argv=[install][--quiet][--no-input][ansible-core==$ansible_core_version][requests==$requests_version]"
-  # --no-cache is in the argv rather than asserted separately: the Galaxy API
-  # cache entry is written blank and filled in when the response arrives, so an
-  # interrupted install leaves an entry every later read refuses, and this path
-  # installs once and never reads it back.
+  # --no-cache: an interrupted install leaves a blank Galaxy cache entry.
   expect_log 'ansible-galaxy argv=[collection][install][--no-cache][-r][{repo}/requirements.yml]'
   expect_log_count 'ansible-playbook argv=' 1
   expect_no_log '[--check][--diff]'
 }
 
-# Both roots are non-defaultable, and the refusals are asserted by status only:
-# `bash` says "parameter null or not set" and `dash` says "parameter not set or
-# null", so a case pinning either would be pinning which shell ran it.
+# Asserted by status only: bash and dash word the refusal differently.
 case_refuses_missing_roots() {
   CASE_UNSET_VARIABLE=CONTROLLER_SANDBOX
   export CASE_UNSET_VARIABLE
@@ -1012,12 +756,8 @@ case_refuses_missing_roots() {
   expect_log_count 'ansible-playbook argv=' 0
 }
 
-# No vault.yml is committed any more, but an operator's untracked single-file
-# vault, installed where the secrets guide says, reaches /repo through the
-# working-tree copy tests/integration.sh makes. That is accepted and overwritten
-# inside the disposable clone. A symlink at the path is refused instead --
-# including a dangling one, which `test -e` would report absent -- because
-# `install` would follow it out of the checkout.
+# An operator's untracked vault.yml is overwritten in the clone; a symlink
+# (even dangling) is refused because `install` would follow it.
 case_vault_install_path() {
   CASE_OPERATOR_VAULT=file
   export CASE_OPERATOR_VAULT
@@ -1041,21 +781,11 @@ case_vault_install_path() {
 }
 
 # ---------------------------------------------------------------------------
-# Planted defects.
-#
-# A case that passes on a healthy tree proves nothing on its own -- that was
-# true of the greps this file replaces and it is true of execution. So every
-# property above is paired with a defect planted in the line that produces it,
-# and the same case is required to fail. The substitution declares how many
-# occurrences it expects and refuses to apply otherwise: three mutation rows in
-# this repository have silently planted nothing and reported a pass that proved
-# nothing, and an unchecked count is exactly how.
+# Planted defects. Each plant asserts its expected occurrence count.
 # ---------------------------------------------------------------------------
 
-# A count mismatch is fatal and says why: the plant's anchor text moved, which
-# is a stale plant rather than a detected defect, and deleting it would silently
-# retire the property it proves. $6 and $7 name the plant and the repository file
-# it anchors in, because the path in $1 is a temporary copy nobody can edit.
+# A count mismatch means the anchor moved (a stale plant, not a detection).
+# $6 and $7 name the plant and the repository file it anchors in.
 apply_plant() {
   ruby -e '
     path, pattern, replacement, expected, mode, label, source = ARGV
@@ -1137,9 +867,7 @@ plant 'launcher library not sourced' idempotence_check program \
   '. /repo/tests/integration_controller_lib.sh' ':' 1
 plant 'suite tags dropped from the selected play' idempotence_check program \
   'run_play --tags "$INTEGRATION_TAGS" "$@"' 'run_play "$@"' 1
-# The whole of the empty-tags fix, reverted. Unquoted, the condition is true on
-# an empty value, so phases 2 and 3 are handed `--tags ""` and prove the harness's
-# two other promises over the `always` pre_tasks alone.
+# The empty-tags fix reverted: phases 2 and 3 then get `--tags ""` (SC2070).
 plant 'empty tags select only the always tasks' empty_tags program \
   'if [ -n "$INTEGRATION_TAGS" ]; then' 'if [ -n $INTEGRATION_TAGS ]; then' 1
 plant 'check mode dropped from phase 3' idempotence_check program \
@@ -1191,31 +919,17 @@ plant 'downloaders check mode runs before its idempotence converge' \
   1 regexp
 plant 'undeclared provider request dropped' downloaders program \
   '--undeclared usenet' '' 1
-# The per-lane host choice, planted in both directions because neither lane can
-# report the other's. Emptying the default makes the declared lanes converge a
-# host-less provider beside a vault account; never taking the downloaders branch
-# makes the undeclared lane converge an account-less host. Both are the
-# half-declared state roles/downloaders refuses, and each is invisible to the
-# lane that is already in the state being planted.
+# Planted both ways: each half-declared state is invisible to the lane already in it.
 plant 'declared provider policy host dropped' arr program \
   'integration_media_usenet_host=news.usenet.invalid' \
   'integration_media_usenet_host=' 1
 plant 'undeclared provider policy branch dropped' downloaders program \
   'downloaders) integration_media_usenet_host=' \
   'never) integration_media_usenet_host=' 1
-# The verification play's own copy. Dropping it leaves the converge correct and
-# the verification reading inventory's default instead, which is the shape that
-# reached CI: a lane asserting the undeclared branch against a declared converge.
 plant 'verification provider policy dropped' bindery library \
   '-e "$integration_media_usenet_provider" "$@"' '"$@"' 1
 plant 'declared downloader verification-only play dropped' bindery program \
   'run_downloaders_verify_only' ':' 2
-# The 'acquisition foundation contract dropped' plant stood here, anchored on
-# '"/repo/tests/contracts/$INTEGRATION_SUITE-foundation.sh" static'. #639 removed
-# that call along with the seven wrappers behind it, so the plant goes with the
-# property rather than instead of it -- there is no invocation left whose removal
-# it could detect. The two plants below still hold the parts of the seerr arm
-# that do work nothing else does.
 plant 'acquisition reader prerequisites dropped' seerr program \
   'converge_media_acquisition_reader_prerequisites' ':' 1
 plant 'acquisition foundation verification dropped' seerr program \
@@ -1235,11 +949,7 @@ plant 'Jellyfin owning contract dropped' jellyfin program \
   'run_jellyfin_contract run' ':' 1
 plant 'Komga fixture seed dropped' komga program \
   'run_komga_contract seed' ':' 1
-# The upgrade lane's own plants. The first two are the acceptance proof issue
-# #773 asks for at this level: a lane whose seed or verify has stopped running
-# is a lane that converges twice and asserts nothing, and it would be green and
-# faster. The last three are the pin surgery, without which the lane converges
-# one version twice however faithfully it seeds.
+# The upgrade lane's plants (#773): seed and verify, then the pin surgery.
 plant 'upgrade seed dropped' upgrade program \
   'run_contract "$upgrade_service" seed' ':' 1
 plant 'upgrade verify dropped' upgrade program \
@@ -1251,9 +961,7 @@ plant 'upgrade repin never committed' upgrade program \
 plant 'upgrade converge dropped' upgrade program \
   'run_selected_play "$@" || upgrade_converge_status=$?' \
   'upgrade_converge_status=0' 1
-# The stop the lane ends on (#781). Three plants, one per decision it takes: the
-# stop itself, the state it refuses, and the running enumeration that stops a
-# container which had already died from reading as one that stopped cleanly.
+# The stop (#781): one plant per decision.
 plant 'upgraded container never actually stopped' upgrade program \
   'docker stop "$upgrade_container" >/dev/null || {' \
   ': stop "$upgrade_container" >/dev/null || {' 1
@@ -1261,10 +969,6 @@ plant 'a SIGKILLed stop tolerated' upgrade_stop_sigkill program \
   'exited:0|exited:143) ;;' 'exited:*) ;;' 1
 plant 'a stack that is not running tolerated' upgrade_stop_nothing_running \
   program '[ -n "$upgrade_running" ] || {' '[ -z "" ] || {' 1
-# The three refusals that stand in front of the lane. The first is the one the
-# whole issue exists for: without it a base equal to the head converges one
-# version twice and reports success, which is the fresh-install path every other
-# lane already takes.
 plant 'identical base and head pins tolerated' upgrade_refusals program \
   '[ "$upgrade_head_image" != "$upgrade_base_image" ] || {' \
   'if false; then' 1

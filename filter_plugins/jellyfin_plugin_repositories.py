@@ -1,54 +1,18 @@
 """Normalization and merge of the Jellyfin plugin repository list.
 
-`roles/jellyfin/tasks/settings.yml` previously built this list with six tasks,
-four of which were `set_fact` loops that appended one entry per iteration: one
-to key the desired repositories by normalized URL, one to pair every current
-repository with its normalized URL, one to preserve the current repositories
-that are neither retired nor overridden, and one to append the desired
-repositories that are absent. Jellyfin's `POST /Repositories` replaces the whole
-collection, so all four had to agree on one ordering, and the ordering was
-expressed as "whichever order these four loops happened to run in".
+`POST /Repositories` replaces the whole collection. Rules kept from the Jinja
+loops this replaced:
 
-The merge itself is a dictionary lookup with a fallback, which Jinja cannot
-express over a list without either a nested loop or a `zip`/`regex_replace`
-chain that hides the rule it implements. That is why this is Python and not more
-Jinja.
+* Normalization is `Url | trim | lower | regex_replace('/+$', '')`; both sides of
+  the retired comparison are normalized, and the retired list must be a list
+  (a scalar would be a substring test) (#648).
+* The merge is a shallow `{**raw, **desired}` overlay.
+* Order: current repositories as Jellyfin returned them, then absent desired
+  ones in declaration order; any reordering would be a permanent change.
+* A desired repository normalizing onto a retired URL is dropped when listed and
+  appended when not -- a preserved wart.
 
-Parity with the loops it replaces, verified by differential on ansible-core
-2.21.3 rather than by reading:
-
-* Normalization is `Url | trim | lower | regex_replace('/+$', '')`. Jinja's
-  `trim` and `lower` stringify a non-string rather than refusing it, so this
-  module stringifies too. The role asserts `item.Url is string` on the current
-  repositories immediately before calling in, so that coercion is the behaviour
-  of a path the role has already closed, not a new tolerance.
-* Both sides of the retired comparison are normalized, which is the one place
-  this module departs from the `when:` condition it replaces. That condition
-  compared the raw retired list against the *normalized* URL, and so did this
-  module until #648: a retired entry differing only in case or in a trailing
-  slash matched nothing and the run reported success — a guard that validates
-  rather than refuses. It held only because the single default value happens to
-  be already normalized, so normalizing the retired list retires nothing new
-  today while making the declaration mean what it reads as. The asymmetry was the
-  anomaly rather than the rule: the same function normalizes the declared URLs
-  eight lines further down. Its list-ness is enforced as well, which the `when:`
-  condition never did: `in` against a string is Python's substring test, so a
-  scalar retired URL silently retired every repository whose URL it contained.
-* `combine` with the default `recursive=false` is a shallow overlay in which the
-  desired keys win and every unrelated key on the current record survives, so
-  the merge is `{**raw, **desired}` and not a replacement.
-* Order is preserved current repositories first, in the order Jellyfin returned
-  them, then absent desired repositories in declaration order. The role compares
-  the merged list against the unmodified read-back to decide whether to POST at
-  all, so any reordering would turn a converged platform into a permanent change.
-* A desired repository that normalizes onto a retired URL is dropped when
-  Jellyfin already lists it and appended when it does not. That is what the
-  loops did; it is preserved deliberately rather than tidied.
-
-The duplicate-URL refusal stays in the role as an `assert`, and this module
-neither performs it nor depends on it: the role's task order runs the assert
-between the inventory and the merge, so a duplicate still aborts with the role's
-own message before any merged list is used.
+The duplicate-URL refusal stays in the role as an `assert`, run before the merge.
 """
 
 import re
@@ -95,8 +59,7 @@ def jellyfin_normalized_repositories(current):
 def jellyfin_repositories_by_url(desired):
     """Key the declared repositories by normalized URL, last declaration winning.
 
-    Last-wins is what `combine` did per iteration. The role's duplicate refusal
-    is what makes a collision fatal, so a collision is not rejected here.
+    The role's duplicate refusal is what makes a collision fatal.
     """
     entries = _require_sequence(desired, "declared Jellyfin plugin repositories")
     keyed = {}
@@ -113,10 +76,7 @@ def jellyfin_repositories_by_url(desired):
 def jellyfin_merged_repositories(inventory, desired, retired):
     """Overlay the declared repositories onto the reported ones.
 
-    `inventory` is the output of `jellyfin_normalized_repositories`, `desired` the
-    declared list, and `retired` the raw retired-URL list, which is normalized
-    here so that it is compared like for like against the inventory's own
-    normalized URLs (#648).
+    `retired` is the raw list, normalized here like the inventory's URLs (#648).
     """
     entries = _require_sequence(inventory, "the Jellyfin repository inventory")
     declared = _require_sequence(desired, "declared Jellyfin plugin repositories")

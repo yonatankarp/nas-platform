@@ -14,9 +14,7 @@ ROOT = File.expand_path("..", __dir__)
 ROLE_TASKS = File.join(ROOT, "roles/beszel/tasks/main.yml")
 ROLE_VARS = File.join(ROOT, "roles/beszel/vars/main.yml")
 
-# This test executes real ansible-playbook runs and asserts exact output, so it is
-# pinned to the version CI installs rather than tolerating a range. Stated once and
-# maintained by Renovate; tests/ci/workflow_test.rb proves it still matches ci.yml.
+# Exact output is asserted, so pinned to CI's version (tests/ci/workflow_test.rb checks).
 REQUIRED_ANSIBLE_CORE = "2.21.4" # renovate: datasource=pypi depName=ansible-core
 
 version_output, version_status = Open3.capture2("ansible-playbook", "--version")
@@ -43,10 +41,7 @@ def run_play(tasks, vars, vars_files: [], check: false, tags: nil)
 end
 
 failures = []
-# Read through static_role_tasks: the role is one stage per file and main.yml is
-# an index of static imports, so the capability assertion lives in deploy.yml and
-# the telemetry tasks in configure.yml. A bare read of the index finds none of
-# them and would report the assertions absent rather than exercising them.
+# static_role_tasks: main.yml is only an index of stage imports.
 tasks = PolicySupport.flatten_tasks(PolicySupport.static_role_tasks(ROLE_TASKS))
 capability = tasks.find { |task| task["name"] == "Require the selected Beszel telemetry capability" }
 cardinality = tasks.find { |task| task["name"] == "Require exactly one managed Beszel system for telemetry" }
@@ -132,13 +127,8 @@ if capability
   end
 end
 
-# A declared S.M.A.R.T. device that is not a device node on the host renders
-# /dev/null in its slot and warns, and the run does not fail: a devices: entry
-# naming an absent node stops the agent starting, so failing or passing it
-# through would block every deploy. Run through the role's own stat and warning
-# tasks and its own env.j2, against one present character device per list, a
-# regular file (which Docker refuses as firmly as an absent path) and two
-# absent paths. Under --check the stat must still run, or the warning is lost.
+# An absent or non-device S.M.A.R.T. node renders /dev/null and warns rather than failing
+# (a missing devices: entry stops the agent). The stat must still run under --check.
 smart_stat = tasks.find { |task| task["name"] == "Look for each declared S.M.A.R.T. device node on this host" }
 smart_warn = tasks.find { |task| task["name"] == "Warn about declared S.M.A.R.T. devices absent from this host" }
 failures << "Beszel S.M.A.R.T. device presence tasks are absent" unless smart_stat && smart_warn
@@ -157,8 +147,7 @@ if smart_stat && smart_warn
       "platform_render_device_path" => "/dev/dri/renderD128", "beszel_app_url" => "http://127.0.0.1:8090",
       "beszel_port" => 8090, "beszel_system_name" => "contract", "platform_project_name" => "",
       "vault_beszel_agent_key" => "contract-key", "vault_beszel_universal_token" => "contract-token",
-      # The inventory's own expression, not a copy of its value: env.j2 renders
-      # it, so a play without it fails at the template before any slot is read.
+      # The inventory's own expression: env.j2 renders it.
       "platform_alert_relay_network" =>
         YAML.safe_load_file(File.join(ROOT, "inventory/group_vars/all/main.yml"),
                             aliases: true).fetch("platform_alert_relay_network")
@@ -180,7 +169,6 @@ if smart_stat && smart_warn
       mode = check ? "under --check" : "on a converge"
       stdout, stderr, status = run_play([smart_stat, smart_warn, render], smart_vars,
                                         vars_files: [ROLE_VARS], check: check)
-      # Ansible reports a task's failure on stdout, so stderr alone is usually empty.
       unless status.success?
         output = stdout + stderr
         reason = output.lines.grep(/fatal:|ERROR!/).last(3)
@@ -216,10 +204,8 @@ if cardinality
   end
 end
 
-# Remote systems (beszel_remote_systems) run through the role's own read, guards,
-# absence report and include loop, the include swapped for a debug that carries
-# its loop and vars, against injected hub answers. The beszel lane only ever
-# meets the absent case, so this is the only proof of the present ones.
+# Remote systems through the role's own tasks against injected hub answers; the lane only
+# ever meets the absent case.
 remote_names = ["Read the remote managed systems", "Require the complete remote system result set",
                 "Refuse remote systems outside the managed user relation",
                 "Refuse duplicate remote managed systems",
@@ -247,8 +233,6 @@ if remote_tasks.all? && remote_include
     ["none declared", [], nil, 0, true, [], false]
   ].each do |label, declared, items, pages, expected_success, expected_lines, expect_absence|
     vars = { "beszel_user_id" => "user-safe", "beszel_remote_systems" => declared }
-    # A skipped read registers no json; the none-declared row runs the real read
-    # to prove its when: skips it, and every other row injects the hub's answer.
     play_tasks = items.nil? ? remote_tasks : remote_tasks.drop(1)
     vars["beszel_remote_systems_read"] = { "json" => { "items" => items, "totalPages" => pages } } unless items.nil?
     stdout, stderr, status = run_play(play_tasks + [pair_task], vars, vars_files: [ROLE_VARS])
@@ -267,15 +251,8 @@ else
   failures << "Beszel remote-system tasks are absent"
 end
 
-# Alert reconciliation through configure.yml's own two includes and the real
-# alert.yml, against a fake hub that serves, creates and patches alert records.
-# verify.yml runs only platform_verify_beszel tasks, so create and patch never
-# run there: a remote system that registered after site.yml has no alerts yet
-# when verify reads them (#911). That absence is pending the next converge,
-# never a failure; a duplicate or a wrong value still is, and the NAS system's
-# own alerts are never pending, because site.yml created them before verify ran.
-# A hub that accepts a create and then does not serve it is the one way to meet
-# an absence on a converge, so it proves the pending branch is verify's alone.
+# Alert reconciliation against a fake hub. Under verify an absent alert on a remote system
+# is pending the next converge, never a failure (#911); a duplicate or wrong value is.
 def with_fake_alert_hub(alerts, keep_creates: true)
   server = TCPServer.new("127.0.0.1", 0)
   requests = []
@@ -385,11 +362,7 @@ if resolve_evidence && verify_evidence
         "system_id" => "system-safe", "system_stats_id" => "[invalid]",
         "container_stats_id" => "container-stats-safe",
         "missing_categories" => %w[core disk gpu],
-        # The probe returns this from every one of its returns (#658). Present
-        # here because the role resolves it on every converge: a fixture that
-        # omitted it would fail the set_fact rather than the assertion this
-        # case is about, and it is the number that tells an unreadable hub from
-        # an agent that collected nothing.
+        # Returned by the probe on every path (#658); tells an unreadable hub from an idle agent.
         "transient_failures" => 4
       }
     }

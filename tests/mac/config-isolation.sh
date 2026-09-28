@@ -221,10 +221,5 @@ render first nas-platform-mac-first 38090 38080 33378 35600 38096 32283 38000 \
 render second nas-platform-mac-second 38091 38081 33379 35601 38097 32284 38001 \
   37879 38990 36970 36768 38083 38946 35657 38788 37890 35056
 
-# The 219 lines of assertions that used to follow as a `<<'RUBY'` heredoc are
-# config-isolation.rb, where sh -n, ruby -c and a reader can all reach them.
-# Resolve it from this script's own directory, not from $repo_dir: the two are
-# the same tree today, but $repo_dir is what this script renders Compose files
-# out of, and a program is part of the script rather than part of the tree it
-# inspects. stdin stays at end-of-file because the heredoc exhausted it.
+# Assertions live in config-isolation.rb beside this script; stdin held at EOF (#315).
 "$mac_test_dir/config-isolation.rb" "$temporary_dir" </dev/null

@@ -1,37 +1,7 @@
 #!/bin/sh
-# Coverage accounting for the pre-converge group, and nothing else.
-#
-# This group is not a coverage group in the sense drift is. Drift asks every
-# service to prove a hand edit is reverted, so a service missing from it is a
-# service whose central claim is untested. Pre-converge asks a much narrower
-# question, and the answer is "no" for almost everything:
-#
-#   a service belongs here when its *converge* reads fixture state off disk,
-#   so the fixture has to exist before run_site rather than after it.
-#
-# Audiobookshelf is the only one. roles/audiobookshelf/tasks/initial_scan.yml
-# requests a library scan during the converge and then waits on the items that
-# scan finds, so an empty media root at converge time is a converge that proves
-# nothing. Every other service seeds after deploy, in fixtures-seed, which is
-# the ordering tests/mac/integration-context-test.sh pins.
-#
-# What mac_run_hooks already caught, and what it did not. For a group of exactly
-# one hook, `mac_hook_count -gt 0` does refuse a deletion, and the rename is
-# refused by tests/contracts/audiobookshelf-audio-test.sh, which addresses
-# 30-audiobookshelf.sh by name. The two gaps this file closes are the other
-# direction and the future one: a hook *added* outside the roster runs before
-# every Mac converge with nothing to say so, and a newly promoted service can be
-# added to the platform without anyone being asked whether its converge needs a
-# fixture on disk first. The exemption list below is where that question gets
-# answered, which is why it is fifteen lines of "no" rather than a shorter file.
-#
-# The roster is exact in both directions: a hook deleted and a hook added both
-# fail here. The exemption list is exact too, and not append-only — a service
-# that later gains a pre-converge hook must have its exemption line removed, or
-# mac_assert_service_coverage refuses it as stale.
-#
-# This hook runs no fixture of its own and needs no environment, which is what
-# lets tests/mac/hook-coverage-test.sh run it against a stub tree.
+# Coverage accounting for pre-converge: a service belongs here only when its
+# converge reads fixture state off disk (Audiobookshelf's initial scan). The roster
+# and the exemption list are exact both ways, so a new service must answer here.
 set -eu
 set +x
 umask 077

@@ -1,9 +1,6 @@
 ---
-# Run by roles/managed_users between the existing-credential proof and the
-# creation plan (managed_users_before_create_tasks), in reconcile, --check
-# included. Every existing identity's preference and user records are read and
-# refused here, before anything is created, so an administrator or an
-# unsupported response stops the whole batch rather than the half after it.
+# Read and refuse every existing identity's records before anything is created,
+# so a bad response stops the whole batch rather than the half after it.
 - name: Read existing Immich managed user preferences before creation
   ansible.builtin.uri:
     url: >-
@@ -42,12 +39,8 @@
   check_mode: false
   no_log: true
 
-# The thirty-six conditions this and its post-creation twin each spelled out are
-# one table in filter_plugins/immich_response_schema.py, called from both. Every
-# name that reaches fail_msg is an Immich API literal from that table, so the
-# operator is told which field of which scope Immich returned wrongly; item is
-# a vault managed-user record and never leaves this task, which is why only
-# item.json is passed in and why no_log stays.
+# The conditions live in filter_plugins/immich_response_schema.py; only item.json
+# is passed in because item is a vault record, hence no_log.
 - name: Require supported existing Immich managed user preference responses
   ansible.builtin.assert:
     that:

@@ -1,65 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-# The "Unexpected exit" rule's exit-code exclusion list is written in six places
-# and, until this file, no check read two of them together.
-#
-# The list is a contract between two programs. Dozzle evaluates the rule
-# expression in roles/dozzle/defaults/main.yml and forwards every `die` event
-# whose exit code is not excluded; services/dozzle/alert_relay.py re-validates
-# the same exclusion and answers 400 to anything it thinks Dozzle should have
-# filtered. The two halves must name the same codes or the platform loses
-# alerts: a code the rule forwards and the relay rejects is dropped at
-# `alert_relay.py:799` as a bare HTTP 400, and `log_message` is a no-op, so the
-# alert leaves no notification and no log line. The relay is the delivery path
-# every alert on this platform takes, so it cannot report its own drop either.
-#
-# The other four copies are the tests, which pin the rule's whole expression
-# string: tests/dozzle_contract_test.rb, tests/contracts/dozzle-runtime.rb and
-# tests/contracts/dozzle-alerts.rb each restate it, and
-# tests/dozzle_alert_relay_test.py restates the relay's set. Each copy is pinned
-# only to the half it belongs to, which is what let #516's probe pass every
-# existing check: dropping 143 from the role default and the three Ruby literals
-# together, leaving the relay and its unit test at {0, 130, 143}, kept
-# policy_test.rb, dozzle_contract_test.rb, dozzle_quality_test.rb and
-# dozzle_alert_relay_test.py all green while Dozzle forwarded exit-143 die
-# events into a relay that refused them.
-#
-# So this is the comparison, as a check, over all six owners rather than the two
-# the divergence needs: four of them are copies that move as a group, and a
-# comparison that covered only the group and the relay would still pass a
-# divergence introduced in one member of the group alone.
-#
-# WHY THE OWNER LIST IS DECLARED rather than discovered by grepping for the
-# expression. A grep finds the copies that still look like copies; a copy
-# reworded past the pattern would silently leave the comparison, which is the
-# failure this check exists to prevent. The gate manifest and
-# tests/capture_helper_identity_test.rb are declared for the same reason (#476).
-#
-# HOW SIX WAS ESTABLISHED, so the next reader can redo it rather than trust it.
-# Not from #516's list -- an issue can be stale -- but from a repository-wide
-# grep of the constructs rather than of the values: `attributes["exitCode"]`
-# finds the four that restate the rule expression, `numeric_exit` finds the
-# relay's own set, and the files carrying `exitCode` at all add only the relay
-# unit test. The one other hit is
-# docs/superpowers/plans/2026-08-05-mac-platform-proof.md, which still carries
-# the pre-#493 list including "137"; it is a plan rather than a definition and
-# tests/policy_test.rb excludes docs/superpowers/ wholesale, so it is out of
-# scope here by the same decision.
-#
-# WHY A FLOOR AND AN EXACT COUNT, both. An identity comparison over zero
-# extractions finds one distinct value and passes, and an identity comparison
-# over six empty lists passes just as happily while the rule excludes nothing
-# and the relay refuses every code Dozzle sends. So every owner must yield
-# exactly one list, the owner count is asserted as a literal, and each list is
-# floored at MINIMUM_EXCLUDED_CODES entries.
-#
-# WHY 137 IS NAMED HERE and nothing else is. #493 removed "137" from the
-# exclusion list precisely so that a host-level OOM kill pages: Docker's own
-# `oom` event is cgroup-scoped and cannot report one, which leaves the `die`
-# rule as the only path. That is a decision about one value, and restoring the
-# value to any owner would silence it again, so the value is refused by name.
-# The rest of the list is compared and never restated, because a restatement
-# here would be a seventh copy for the next divergence to hide in.
+# The "Unexpected exit" rule's exit-code exclusion list must be identical in all
+# six owners: a code Dozzle forwards but the relay refuses is dropped silently (#516).
+# Owners are declared, not grepped (#476); 137 stays out so host OOM kills page (#493).
 
 require "fileutils"
 require "tmpdir"
@@ -69,19 +12,11 @@ require_relative "policy_support"
 
 include TestScaffold
 
-# The alert whose expression carries the list. Named once; every owner below
-# that reads YAML or a whole expression string is anchored on it.
 RULE_NAME = "Unexpected exit"
 
-# `["0", "130", "143"]` out of the rule expression, in any of the four files
-# that restate the expression.
 EXPRESSION_PATTERN = /attributes\["exitCode"\]\s+in\s+\[([^\]]*)\]/
-# `{0, 130, 143}` out of the relay's own re-validation.
 RELAY_SET_PATTERN = /numeric_exit\s+in\s+\{([^}]*)\}/
-# `("0", "130", "143")` out of the relay unit test, inside the one test method
-# that asserts the graceful codes stay quiet. The file has a second
-# `for exit_code in (...)` loop over non-canonical spellings, so the region
-# anchor is what makes this extraction unambiguous rather than the pattern.
+# The relay test has a second `for exit_code in (...)` loop; the region anchor disambiguates.
 RELAY_TEST_TUPLE_PATTERN = /for exit_code in \(([^)]*)\):/
 RELAY_TEST_REGION_START = "    def test_sigkill_exit_pages_while_the_graceful_codes_stay_quiet(self):"
 RELAY_TEST_REGION_END = /\A    def /
@@ -119,20 +54,15 @@ OWNERS = [
   }
 ].freeze
 
-# Stated rather than derived, so an owner dropped from the list narrows the
-# comparison loudly instead of leaving a smaller one green.
+# Stated, so a dropped owner fails loudly.
 EXPECTED_OWNERS = 6
-# The list has held three codes since it was written and #493 only removed one.
-# The floor is not the content -- it is what stops six empty lists from agreeing.
+# The floor stops six empty lists from agreeing.
 MINIMUM_EXCLUDED_CODES = 3
-# The one value the list must not regain. See the header.
 REFUSED_CODE = 137
 
 class ExtractionError < StandardError; end
 
-# `"0", "130", "143"` / `0, 130, 143` -> [0, 130, 143]. Canonical decimal only:
-# the relay refuses "0130" as a non-canonical spelling, so a copy that wrote one
-# would be comparing something the relay can never receive.
+# Canonical decimal only: the relay refuses non-canonical spellings like "0130".
 def parse_code_list(raw, owner_path)
   elements = raw.split(",").map(&:strip).reject(&:empty?)
   raise ExtractionError, "#{owner_path} lists no exit codes at all" if elements.empty?
@@ -221,9 +151,7 @@ def excluded_codes(root, owner)
   end
 end
 
-# The whole comparison, against an arbitrary root, so --self-test can plant a
-# divergence in a copy of the six files and re-run it in process. Returns the
-# accumulated failures rather than reporting them.
+# Takes a root so --self-test can plant divergences in a copy.
 def exclusion_failures(root)
   failures = []
 
@@ -271,8 +199,6 @@ end
 
 SELF_TEST_MESSAGE = "distinct forms across its owners"
 
-# Copy just the six owners, so a planted divergence costs a few kilobytes rather
-# than a copy of the repository.
 def with_planted_root
   Dir.mktmpdir("dozzle-exclusion-identity") do |root|
     OWNERS.each do |owner|
@@ -319,8 +245,6 @@ def run_self_test
     end
   end
 
-  # #516's own probe, one owner at a time. Each of the four expression copies and
-  # the two Python copies must be enough on its own.
   expect_self_test_failure(failures, "143 dropped from the rule Dozzle evaluates",
                            SELF_TEST_MESSAGE) do |root|
     plant(root, "roles/dozzle/defaults/main.yml", '["0", "130", "143"]', '["0", "130"]')
@@ -346,8 +270,7 @@ def run_self_test
     plant(root, "tests/dozzle_alert_relay_test.py", '("0", "130", "143")', '("0", "130")')
   end
 
-  # The exact shape #516 probed: the group of four moved together, the relay half
-  # left behind. Every existing check passed this; this one must not.
+  # #516's exact shape: the group of four moved, the relay left behind.
   expect_self_test_failure(failures, "143 dropped from the rule and all three Ruby literals at once",
                            SELF_TEST_MESSAGE) do |root|
     plant(root, "roles/dozzle/defaults/main.yml", '["0", "130", "143"]', '["0", "130"]')
@@ -356,8 +279,6 @@ def run_self_test
     plant(root, "tests/contracts/dozzle-alerts.rb", '["0", "130", "143"]', '["0", "130"]')
   end
 
-  # An identity comparison passes over six empty lists, so the floor is what has
-  # to catch a list emptied everywhere at once.
   expect_self_test_failure(failures, "the list emptied in every owner", "found, expected at least") do |root|
     plant(root, "roles/dozzle/defaults/main.yml", '["0", "130", "143"]', '["0"]')
     plant(root, "services/dozzle/alert_relay.py", "{0, 130, 143}", "{0}")
@@ -367,7 +288,6 @@ def run_self_test
     plant(root, "tests/dozzle_alert_relay_test.py", '("0", "130", "143")', '("0",)')
   end
 
-  # #493 restored in every owner at once: six agreeing copies, all of them wrong.
   expect_self_test_failure(failures, "137 restored in every owner", "which #493 removed on purpose") do |root|
     plant(root, "roles/dozzle/defaults/main.yml", '["0", "130", "143"]', '["0", "130", "143", "137"]')
     plant(root, "services/dozzle/alert_relay.py", "{0, 130, 143}", "{0, 130, 143, 137}")
@@ -377,8 +297,7 @@ def run_self_test
     plant(root, "tests/dozzle_alert_relay_test.py", '("0", "130", "143")', '("0", "130", "143", "137")')
   end
 
-  # An extractor that stops matching must fail rather than drop its owner from a
-  # comparison that then reports one distinct form.
+  # An extractor that stops matching must fail, not drop its owner.
   expect_self_test_failure(failures, "the relay's exclusion set renamed past its pattern",
                            "expected exactly once") do |root|
     plant(root, "services/dozzle/alert_relay.py", "numeric_exit in {0, 130, 143}",

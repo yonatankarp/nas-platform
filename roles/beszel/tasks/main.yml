@@ -1,33 +1,8 @@
 ---
-# Beszel, one stage per file, in the order they run. This file is the index:
-# what the role does, and nothing about how.
-#
-# Beszel appears to force a read-back: the hub generates a keypair on first start
-# and its documentation says to copy the public key out of the Add System dialog.
-# It does not. Authoring the keypair in vault removes the read-back, the second
-# deploy pass it required, and the least idempotent step in the design; deploy.yml
-# installs it and superuser.yml asserts the hub adopted it. The read-only lookups
-# throughout carry check_mode: false for the reason deploy.yml's preamble gives:
-# uri is skipped under --check, and a register without a status or json key breaks
-# every conditional that follows.
-#
-# The stages are imported statically. verify.yml lists this role with
-# tags: [never], and a role-level tag reaches a statically imported task exactly
-# as it reaches an inline one, so each verification task still carries
-# [never, platform_verify_beszel] and --tags platform_verify_beszel selects the
-# same thirty-seven tasks it selected when they lived here. A dynamic include is
-# skipped under never before its file is ever read, which is why roles/arr pairs
-# include_tasks with apply: tags: -- and why this role does not need to. Static
-# imports are also expanded by --list-tasks, so the transcript an operator reads
-# before touching the NAS is unchanged. Every import below carries a name and
-# nothing else: a when:, vars: or tags: on a static import would apply to every
-# task in the file, which is a behaviour change rather than a move.
-#
-# The dynamic includes that stay here are the phase-gated ones -- managed_users.yml,
-# called twice with a different beszel_managed_users_phase. That sequence is the
-# thing an index is for, vars: on a static import would leak into the rest of the
-# role, and tests/database_managed_users_test.rb reads a top-level
-# include_tasks: managed_users.yml from this file.
+# Beszel, one stage per file, in the order they run. Stages are imported
+# statically so role-level `never` tags reach each verify task; a when:/vars:/tags:
+# on a static import would apply to every task in the file. managed_users.yml
+# stays a dynamic include (two phases; tests/database_managed_users_test.rb reads it).
 - name: Deploy the Beszel stack
   ansible.builtin.import_tasks: deploy.yml
 

@@ -1,11 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 #
-# Jellyfin acceleration, plugin and restart probes (the jellyfin_settings group).
-#
-# Required by media_managed_users_test.rb, which owns the probe selection so the
-# MEDIA_MANAGED_USERS_PROBES contract keeps naming one group rather than a file set.
-# Fixtures and helpers come from media_managed_users_support.rb.
+# Jellyfin acceleration, plugin and restart probes (the jellyfin_settings group),
+# required by media_managed_users_test.rb; helpers from media_managed_users_support.rb.
 
 def exercise_jellyfin_settings(failures)
   desired_encoding = {
@@ -198,11 +195,8 @@ def exercise_jellyfin_policy_preflight(failures)
     "platform_kind" => "mac",
     "platform_compose_kind" => "mac",
     "deployment_bundle_test_mode" => false,
-    # The render-device inspection below stats this path. Without it the stat
-    # itself would fail on an undefined variable and the production-NAS case
-    # would report a failure without ever reaching the assert it exists to
-    # exercise. platform_render_device_available is deliberately left undefined,
-    # because that is the capability the assert must refuse to assume.
+    # Defined so the stat reaches the assert; platform_render_device_available is
+    # left undefined on purpose.
     "platform_render_device_path" => "/dev/dri/renderD128"
   )
   base["jellyfin_encoding_policy"] = base.dig("jellyfin_encoding_profiles", "mac")
@@ -821,21 +815,14 @@ def exercise_jellyfin_qsv_probe(failures)
   exercise_jellyfin_qsv_probe_selection(failures, probe_path)
 end
 
-# The probe's whole value is its exit code (#535), so the fixture drives the exit
-# code rather than counting requests, which is what the earlier version of this
-# harness could do and what left the probe unable to fail for as long as it did.
-# Only the module is swapped, for a command whose rc each case chooses; the
-# register name, the `when`, the changed_when and the real failed_when string are
-# read out of the file and left exactly as the role states them, so a weakened
-# guard there is a red case here rather than an untested edit.
+# The probe's value is its exit code (#535): only the module is swapped for a
+# command with a chosen rc; register, when, changed_when and failed_when are
+# read from the role unchanged.
 def exercise_jellyfin_qsv_probe_verdict(failures, probe_path)
   cases = [
     ["a passing QSV probe on the NAS", "nas", "0", true],
     ["a failing QSV probe on the NAS", "nas", "1", false],
-    # A chdir that does not exist makes the command module refuse before it runs
-    # anything: it registers no rc at all. That is the state `| default(0)` would
-    # report as a passing probe and `| default(1)` refuses, and it is the only
-    # case that can tell the two spellings apart.
+    # A missing chdir registers no rc: `default(0)` would pass it, `default(1)` refuses.
     ["a QSV probe whose module refused before running", "nas", :refused, false],
     ["a failing QSV probe off the NAS", "mac", "1", true],
     ["a failing QSV probe in integration test mode", "integration", "1", true]
@@ -864,14 +851,8 @@ def exercise_jellyfin_qsv_probe_verdict(failures, probe_path)
   end
 end
 
-# Whether Ansible actually selects the probe, which is the one thing the two
-# checks above cannot say: they read YAML, and a `never` that arrived through an
-# `apply:` block suppressing the included task would leave every shape assertion
-# in this file, in tests/contracts/jellyfin-static.rb and in the contract's own
-# rows green over a proof that runs nowhere. So this drives the real include task
-# out of verify.yml against a copy of the probe whose module is a command that
-# exits 1, and gives the include the jellyfin/media tags site.yml's role listing
-# gives it -- those tags are exactly what make `never` insufficient on its own.
+# Whether Ansible selects the probe at all: drive the real include from
+# verify.yml with site.yml's tags, which make `never` insufficient alone.
 def exercise_jellyfin_qsv_probe_selection(failures, probe_path)
   include_task = YAML.safe_load_file(
     File.join(ROOT, "roles", "jellyfin", "tasks", "verify.yml"), aliases: false
@@ -913,15 +894,8 @@ def exercise_jellyfin_qsv_probe_selection(failures, probe_path)
   end
 end
 
-# Where the proof runs. It is fatal, so the stage it is included from decides
-# what a hardware fault takes down with it: jellyfin precedes seerr, immich,
-# paperless_ngx and nextcloud in site.yml, and roles/jellyfin/tasks/verify.yml
-# is imported by main.yml and therefore runs inside the converge like any other
-# stage -- tags are the only thing that withhold it. Both are required, and
-# `never` alone is not enough: `site.yml --tags jellyfin` requests a tag the task
-# carries, which runs a `never` task, and the run-tag condition is what stops it
-# there and in the --check --diff review. tests/contracts/jellyfin-static.rb
-# states the same placement as a contract refusal.
+# The probe is fatal and runs inside the converge, so tags alone withhold it:
+# `never` plus the run-tag condition. tests/contracts/jellyfin-static.rb agrees.
 def exercise_jellyfin_qsv_probe_placement(failures)
   qsv_include = lambda do |task|
     value = task["ansible.builtin.include_tasks"]

@@ -1,17 +1,7 @@
 ---
-# One alert on one system. The caller binds beszel_alert, beszel_alert_system_id,
-# beszel_alert_system_name and beszel_alert_absent_is_pending as include vars;
-# they are per-include, so they are deliberately absent from
-# meta/argument_specs.yml, and the last has no default so an includer that
-# forgets it fails rather than silently choosing.
-#
-# beszel_alert_absent_is_pending is true only for a remote system under
-# verify.yml (#911). Verify runs only platform_verify_beszel tasks, so the create
-# and patch below never run there, and a remote agent that registered between
-# the poller's site.yml and its verify.yml has no alerts yet: that absence is
-# pending the next converge, not a failure. A duplicate or a wrong value still
-# fails. The NAS system's own alerts pass false in every mode, because site.yml
-# created them before verify could read them.
+# One alert on one system; the caller binds the beszel_alert_* include vars.
+# beszel_alert_absent_is_pending has no default and is true only for a remote
+# system under verify.yml, where a not-yet-created alert is pending (#911).
 - name: Query managed-identity alerts for {{ beszel_alert.name }}
   tags: [platform_verify_beszel]
   ansible.builtin.uri:

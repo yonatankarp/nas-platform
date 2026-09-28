@@ -1,10 +1,6 @@
 #!/usr/bin/env ruby
-# Integration harness policy.
-#
-# The plays must be exercised, not merely parsed: the two worst bugs so far, a
-# Darwin-only fact and a command skipped under --check, both survived syntax
-# checking and were caught by running. These checks police tests/integration.sh
-# and its locking and sandboxing, and change with that harness.
+# Integration harness policy: tests/integration.sh, its controller, locking and
+# sandboxing.
 
 require "open3"
 require "rbconfig"
@@ -17,24 +13,14 @@ include TestScaffold
 
 failures = []
 
-# The plays must be exercised, not merely parsed: the two worst bugs so far, a
-# Darwin-only fact and command being skipped under --check, both survived syntax
-# checking and were caught by running.
 harness = File.read(File.join(ROOT, "tests", "integration.sh"))
-# The play, contract and verification launchers are a file of their own, so the
-# properties required of them are read from there. They are ordinary shell now
-# rather than escaped text inside the controller argument, which is why the
-# spellings below carry no backslashes: the same guarantee, asserted where the
-# code it polices actually lives.
+# The play, contract and verification launchers live in their own file, as plain
+# shell, so their spellings carry no backslashes.
 controller_library = File.read(
   File.join(ROOT, "tests", "integration_controller_lib.sh")
 )
-# So is the controller itself. tests/integration.sh is the launcher --
-# the sandbox, the lock, the mounts, the environment it hands across --
-# and tests/integration_controller.sh is the program that runs inside the
-# container. Each property below is asserted against whichever of the two
-# holds the code it polices, and the controller's spellings carry no
-# backslashes because it is a program now rather than text in an argument.
+# tests/integration.sh is the launcher; tests/integration_controller.sh runs
+# inside the container. Each property is asserted where its code lives.
 controller = File.read(File.join(ROOT, "tests", "integration_controller.sh"))
 check(failures,
       controller.include?(". /repo/tests/integration_controller_lib.sh") &&
@@ -49,14 +35,8 @@ check(failures,
       "the controller must source its launcher library and hand it the sandbox " \
       "it deploys into")
 
-# The controller used to be one double-quoted argument to `sh -eu -c`,
-# built by a shell that was still parsing. An unescaped quote inside it
-# closed the argument and the next metacharacter terminated the whole
-# `docker run`, silently truncating the program -- invisible to `sh -n`
-# and to every static read of the file, and it broke every suite once.
-# That failure mode goes with the argument: the controller is a file the
-# container runs. What is left to assert is that it never becomes an
-# argument again, and that the launcher runs the file it claims to.
+# The controller must never again be a `sh -eu -c "..."` argument: an unescaped
+# quote once truncated the whole program silently.
 check(failures, !harness.include?(%(sh -eu -c ")),
       "tests/integration.sh must not paste the controller back into an " \
       "sh -c argument, where no syntax check and no linter can read it")
@@ -67,44 +47,14 @@ check(failures,
       "tests/integration.sh must run the controller as a file, handing " \
       "it the playbook and the remaining arguments as argv")
 dozzle_contract = File.read(File.join(ROOT, "tests", "contracts", "dozzle.sh"))
-# `- "$mode" "$@"` until issue #147 gave the live half a file of its own. The
-# property is unchanged and still lives in the wrapper: whatever mode the caller
-# asked for, plus the arguments after it, reach the program that talks to the
-# deployed API. Only the token naming that program moved, from `-` to the path.
+# The caller's mode and arguments must reach the live program (#147).
 check(failures, dozzle_contract.include?('exec ruby "$runtime_program" "$mode" "$@"'),
       "Dozzle contract must pass its default verify mode to the dynamic probe")
 
-# Every registered contract has a static half -- the assertions that need no
-# deployed stack -- and two shapes reach it. In most wrappers the static
-# assertions run above the runtime half, so every mode executes them and the
-# `static` mode is an early exit after the fact; `run_contracts.rb --execute`,
-# which invokes each contract with no argument at all, is enough for those. In
-# Beszel's and Dozzle's the static work sits *inside* `if [ "$mode" = static ]`,
-# and both wrappers default to `verify`, so until #667 nothing invoked either
-# wrapper in that mode. The two cost different amounts. Beszel's static program
-# is already run against this tree by tests/beszel_contract_test.rb, so what was
-# unasserted there is only the wrapper around it. Dozzle's is not:
-# tests/dozzle_contract_test.rb drives static mode through a stubbed `docker`,
-# which asserts the argv the wrapper builds rather than the labels a render
-# produces, and the static half's whole subject is what `docker compose config`
-# returns for every stack in services/manifest.yml. So no real render had ever
-# been judged, and #656 found arr and downloaders carrying no dev.dozzle.group
-# at all -- seven containers loose in the Running Containers panel under a rule
-# that cannot fail for a stack nothing renders.
-#
-# The universe is derived from tests/contracts/registry.yml rather than restated,
-# and the partition below closes it in both directions: a registered contract
-# that grows a static half and neither a lane invocation nor a line here fails,
-# and one that gains a lane invocation while keeping its line here fails too,
-# because an exemption nobody deletes is the next guard that stops holding.
-#
-# What is *not* derived is each line's premise -- that the wrapper really does
-# run its static assertions before the mode test. Both textual shapes that could
-# stand for it were tried and neither survives the file's own layout: the mode
-# validation at the top of arr.sh and downloaders.sh spells `"$mode" = static`
-# before any assertion, and dozzle.sh calls fail_contract for other things long
-# before its static branch. A heuristic that reports the wrong answer for four of
-# fifteen subjects is worse than a list that says plainly it was read.
+# Contracts whose static half runs in every mode (so --execute with no argument
+# reaches it); the others need a lane invocation in static mode (#667). Derived
+# from tests/contracts/registry.yml and closed both ways; each line's premise was
+# read, not derived, because no textual heuristic survives the wrappers' layout.
 STATIC_HALF_RUN_BY_EVERY_MODE = {
   "audiobookshelf" => "static program runs above the runtime half; `static` only exits after it",
   "immich" => "static program runs above the capability halves; `static` only exits after it",
@@ -148,9 +98,8 @@ check(failures, controller.include?("MAC_PATH_CANONICAL") &&
   check(failures, controller.include?(property),
         "integration harness must assert #{property}")
 end
-# `producer | tee log` reports tee's status, and every script here is #!/bin/sh
-# with no pipefail available, so a play that died reached its recap grep looking
-# merely quiet. Redirect and read the producer's own status instead.
+# `producer | tee log` reports tee's status and #!/bin/sh has no pipefail, so
+# read the producer's own status instead.
 check(failures,
       !harness.match?(/\|\s*tee\b/) && !controller.match?(/\|\s*tee\b/) &&
         !controller_library.match?(/\|\s*tee\b/) &&
@@ -197,22 +146,15 @@ check(failures,
         namespace_call && controller_run && namespace_call < controller_run,
       "integration must derive and validate a lowercase six-character sandbox namespace before the controller starts")
 scoped_project_variables = %w[arr_platform_project_name downloaders_platform_project_name]
-# Every service, not only the acquisition stacks, is deployed under the
-# disposable namespace: sandbox cleanup deletes by exact Compose ownership, so a
-# stack left in its production project would survive the run and collide with
-# the next one. The role-scoped names stay, because they are the override
-# interface the two acquisition roles expose.
+# Every service deploys under the disposable namespace: cleanup deletes by exact
+# Compose ownership, so a production-named stack would survive the run.
 check(failures,
       scoped_project_variables.all? do |variable|
         run_play_body.include?(%(-e #{variable}="$integration_project_namespace"))
       end && run_play_body.include?(%(-e platform_project_name="$integration_project_namespace")),
       "integration must deploy every service under the disposable namespace")
-# One launcher runs every per-service verification, so the namespace, the vault
-# quoting and the play itself are written once. Assert the property on that
-# launcher, and require every wrapper to be nothing but a delegation to it: a
-# hand-rolled verification that spelled any of those differently — as five of
-# the seven copies once spelled the vault paths unquoted — is now rejected
-# outright rather than checked copy by copy.
+# One launcher runs every per-service verification; each wrapper must be nothing
+# but a delegation to it.
 verification_launcher = controller_library[/^run_verification\(\) \{.*?^\}/m].to_s
 check(failures,
       verification_launcher.include?(
@@ -228,10 +170,7 @@ check(failures, verify_only_bodies.length >= 6 &&
                   body.match?(/\A  run_verification [a-z_]+\n\z/)
                 end,
       "every integration verification wrapper must delegate to the shared launcher")
-# The controller argument spells a namespaced project with escaped quotes and
-# the launcher library with plain ones. Both spellings are read, and both must
-# reduce to the sandbox namespace: any other project is a stack sandbox cleanup
-# does not own.
+# Both spellings of a namespaced project must reduce to the sandbox namespace.
 negative_project_names = (
   (harness + controller).scan(/-e platform_project_name=([^\s\\]+)/).flatten.reject do |value|
     value == "\\\"$integration_project_namespace\\\""
@@ -245,21 +184,9 @@ check(failures,
       "integration scenario projects must derive from the sandbox namespace: " \
       "#{negative_project_names.inspect}")
 
-# A contract that runs a play of its own is a second entry point into the same
-# sandbox, and namespacing tests/integration.sh alone left it behind: the
-# Audiobookshelf refusal suite converged Audiobookshelf into its production
-# project, where the integration override's ${PLATFORM_PROJECT_NAME:?} refused
-# the deployment before the refusal under test could be reached. Require both
-# halves of the propagation — the harness exports the namespace to every such
-# contract, and the contract derives its play's project from that export rather
-# than naming a project of its own.
-#
-# The glob covers the sibling Ruby programs as well as the wrappers, because
-# since #147 a contract's body is as likely to be a .rb beside it as a heredoc
-# inside it -- audiobookshelf is the only contract that runs a play, and its play
-# moved into tests/contracts/audiobookshelf-runtime.rb. A .sh-only glob went
-# straight from policing one contract to policing none, which is what the first
-# check below exists to say out loud.
+# A contract running its own play must take its project from the harness's
+# exported namespace. The glob covers .rb siblings too (#147), since that is
+# where audiobookshelf's play lives.
 playing_contracts = Dir[File.join(ROOT, "tests", "contracts", "*.{sh,rb}")].sort.select do |path|
   File.read(path).include?("ansible-playbook")
 end
@@ -275,13 +202,9 @@ check(failures, unnamespaced_contracts.empty?,
       "namespace: #{unnamespaced_contracts.map { |path| File.basename(path) }.join(', ')}")
 contract_launcher = controller_library[/^run_contract\(\) \{.*?^\}/m].to_s
 unexported_namespace = playing_contracts.reject do |path|
-  # The launcher's case arms are named for the service, and a sibling program is
-  # named <service>-<half>.rb, so the half has to come off before the arm can be
-  # found. Reading the file name rather than the registry keeps this working for
-  # a contract whose wrapper does not run the play its own program does.
+  # Launcher case arms are named for the service; strip the -static/-runtime half.
   service = File.basename(path).sub(/\.(?:sh|rb)\z/, "").sub(/-(?:static|runtime)\z/, "")
-  # The per-service extras now live in a case arm of the single launcher, so
-  # read the arm that names this contract rather than a wrapper of its own.
+  # Read the case arm naming this contract in the single launcher.
   contract_launcher[
     /^\s*[a-z|]*\b#{Regexp.escape(service)}\b[a-z|]*\)\n(.*?)^\s*;;$/m, 1
   ].to_s.include?(%(PLATFORM_PROJECT_NAME="$integration_project_namespace"))
@@ -315,12 +238,8 @@ check(failures,
       end,
       "downloader integration containers must use the disposable platform namespace")
 
-# Sandbox cleanup deletes a resource only when it carries the disposable
-# namespace, so a service left with its fixed production name is not cleaned up
-# at all: it survives the run and collides with the next one. Derive the
-# requirement from the base and Mac Compose rather than a second hand-kept list,
-# so adding a service to a stack cannot skip its override, and so the two
-# disposable lanes cannot drift into naming the same container differently.
+# Every fixed container_name needs a namespaced override in both disposable lanes,
+# derived from the base and Mac Compose, or cleanup would miss it.
 namespaced_container_names = {}
 named_stacks = 0
 Dir.children(File.join(ROOT, "services")).sort.each do |stack|
@@ -334,8 +253,7 @@ Dir.children(File.join(ROOT, "services")).sort.each do |stack|
     definition.is_a?(Hash) && definition["container_name"].is_a?(String) &&
       !definition.fetch("container_name").include?("${")
   end.keys
-  # A service that declares no container name is already named after its project
-  # by Compose, so it needs no override to be owned by the sandbox.
+  # An unnamed service is already named after its project by Compose.
   unless production_named.empty?
     named_stacks += 1
     if File.file?(override_path) && File.file?(mac_path)
@@ -369,19 +287,10 @@ end
 check(failures, named_stacks.positive?,
       "no service Compose declares a fixed container name to override")
 
-# The cleanup registry is the only place that says which namespaced identity
-# belongs to which project. It is checked against the overrides that create
-# those containers, so a renamed or added service cannot leave cleanup looking
-# for a container that is never created, or ignoring one that is.
+# The cleanup registry is checked against the overrides that create those containers.
 cleanup_source = File.read(File.join(ROOT, "tests", "sandbox_cleanup.sh"))
-# The sandbox-clearing program moved out of a `cat <<'PY'` heredoc and into
-# tests/sandbox_cleanup_contents.py in #315, and POSIX sh gives a sourced file no
-# way to find itself -- "$0" is the sourcing script. So every caller names the
-# checkout on the line above its `.`, and that is only a convention until
-# something requires it: a caller that forgot would fall through to a fallback
-# meant for the one caller that runs this file, and find out when a cleanup it
-# was relying on refused. The refusal is loud rather than silent by construction,
-# which is why this is a check rather than a redesign.
+# Every caller must set cleanup_sandbox_repo_dir on the line above its `.`:
+# a sourced file cannot find itself (#315).
 %w[
   tests/integration.sh
   tests/integration_cleanup_test.sh

@@ -17,8 +17,7 @@ nas_storage_beszel:
   - path: "{{ nas_docker_root }}/beszel/agent"
     mode: "0755"
     recovery: cache
-  # Empty bind sources that let Beszel report filesystem capacity without
-  # exposing either volume's contents.
+  # Empty bind sources that let Beszel report filesystem capacity.
   - path: "{{ nas_docker_root }}/beszel/volume1"
     mode: "0755"
     recovery: cache

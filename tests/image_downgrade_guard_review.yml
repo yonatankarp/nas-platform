@@ -1,14 +1,6 @@
 ---
-# The review rows of tests/image_downgrade_guard_test.yml, which runs this with
-# --check against the fixture it has just written. A play of its own because
-# only a --check run sets ansible_check_mode, and that is what the guard reads
-# to know `current` still names the release this run replaces (#851).
-#
-# The fixture holds two releases that disagree: `current`, the release the host
-# last activated, and `candidate`, the controller checkout this run would
-# install. It exits 0 only when the guard judged the candidate's pin, reached
-# the verdict the row declares, and -- where it refused -- refused for the
-# downgrade rather than for a file it could not read.
+# The review (--check) rows of tests/image_downgrade_guard_test.yml: only --check makes
+# the guard read the candidate's pin rather than `current`'s (#851).
 - name: Review the image downgrade guard
   hosts: localhost
   gather_facts: false

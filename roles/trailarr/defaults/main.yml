@@ -1,21 +1,14 @@
 ---
 trailarr_port: 7889
 trailarr_api: "http://127.0.0.1:{{ trailarr_port }}/api/v1"
-# /status is the only unauthenticated route outside /api/v1/auth/*, the OpenAPI
-# document and the single-page application, and it sits beside the API rather
-# than under it.
+# The only unauthenticated route besides auth, OpenAPI and the SPA; outside /api/v1.
 trailarr_status_url: "http://127.0.0.1:{{ trailarr_port }}/status"
 trailarr_config_host_path: "{{ nas_docker_root }}/trailarr/config"
 trailarr_movies_host_path: "{{ nas_media_root }}/Media/Movies"
 trailarr_series_host_path: "{{ nas_media_root }}/Media/Series"
 
-# Trailarr addresses both arrs by their Compose service alias on the shared
-# media-control network. Compose registers the service name as a network alias
-# regardless of the per-project container_name the disposable lanes apply, so
-# these are correct in production and in a sandbox alike. The keys they carry
-# are Radarr's and Sonarr's own, read from vault rather than minted again here:
-# a second copy of an API key is a second thing to rotate and a second thing to
-# drift.
+# Compose service aliases work under any container_name. Keys are the arrs' own vault
+# keys, not a second copy to rotate.
 trailarr_connections:
   - name: Radarr
     arr_type: radarr
@@ -26,63 +19,18 @@ trailarr_connections:
     url: http://sonarr:8989
     api_key: "{{ vault_arr_sonarr_api_key }}"
 
-# Whether the platform permits Trailarr to fetch trailers at all.
-#
-# MONITOR_ENABLED is a hard gate at the top of the download task. Measured on
-# the NAS: with it false the task logs "Monitoring is disabled, skipping
-# trailers download" and returns in eight milliseconds. DOWNLOADS_ENABLED is
-# softer, and with it false the task runs in preview mode, publishing what it
-# would download while scans and syncs keep running.
-#
-# The gate also swallows a manual download, which corrects what this comment
-# used to claim. POST /api/v1/media/batch_update with action "download" against
-# a monitored item queued nothing at all: no job in /media/{id}/downloads, no
-# entry in /media/downloading, and the response body was null rather than the
-# message the endpoint documents. So "prove one trailer by hand, then open the
-# gate" is not a possible sequence; nothing can be proved until the gate is
-# open.
-#
-# What makes that safe anyway is that the monitored set is itself the throttle.
-# With the gate open the download task fetches exactly the items that are
-# monitored, so the blast radius of opening it equals however many items
-# trailarr_monitor_all_media and the operator have monitored so far.
-#
-# monitor_new_media on a connection is applied once, when an item is first
-# created, and never rewritten, so this flag alone does not retroactively
-# monitor an adopted library. reconcile_monitoring.yml is what closes that gap.
+# MONITOR_ENABLED is a hard gate that also swallows manual downloads, so nothing can be
+# proved by hand before opening it. The monitored set is the throttle. monitor_new_media
+# applies only at item creation; reconcile_monitoring.yml covers an adopted library.
 trailarr_monitoring_enabled: false
 
-# Which items the platform intends to have a trailer, as distinct from whether
-# it is allowed to fetch them. The two are separate questions and separating
-# them buys three things.
-#
-# It is the useful staging state: monitor everything, leave the gate shut, and
-# read the preview report the download task publishes before any outbound
-# request is made. It is the only way the disposable lanes execute this file at
-# all, since they keep the gate shut and would otherwise never reach it. And it
-# says the true thing, which is that monitoring an item is a statement about
-# intent while MONITOR_ENABLED is a statement about permission.
-#
-# Items Trailarr already counts satisfied are excluded rather than monitored, so
-# a library whose trailers all exist converges to no writes at all.
+# Intent, separate from permission: monitor everything with the gate shut to read the
+# preview first. Items already satisfied are excluded, so a complete library writes nothing.
 trailarr_monitor_all_media: true
 
-# The two trailer profiles a migration seeds on a fresh database, reconciled by
-# compare-then-PUT against their seeded ids. POST has no dedupe, so the role
-# never creates one.
-#
-# Both are seeded mkv/vp9/opus, which indexes correctly but has no hardware
-# encode path on this platform's N5105, so any client that cannot direct-play
-# VP9 software-transcodes every trailer under a 1.0-CPU ceiling. mp4/h264/aac
-# direct-plays everywhere. The three format fields move together in one PUT
-# because cross-field validators reject mp4 with vp9 and force opus for webm,
-# so the intermediate states are not writable.
-#
-# folder_enabled is reconciled true on both. The Movie profile ships it false,
-# which would drop the trailer beside the movie file on the very first
-# download; a Trailers/ subdirectory beneath the item directory is the boundary
-# the design draws, and Jellyfin types the file from that folder name and from
-# the -trailer filename token independently.
+# Seeded profiles, compare-then-PUT by id (POST has no dedupe). mp4/h264/aac because the
+# N5105 cannot hardware-encode VP9; the three format fields move in one PUT because
+# validators reject the mixed states. Trailers/ folder is the design boundary.
 trailarr_trailer_profiles:
   - id: 1
     label: Movie Trailers
@@ -96,19 +44,12 @@ trailarr_trailer_profile_settings:
   video_format: h264
   audio_format: aac
 
-# The application's own /config/.env, which is not the Compose environment.
-#
-# scripts/start.sh sources that file with `set -o allexport` after the container
-# environment is already in place, so every key present in it overwrites the
-# Compose-supplied value permanently, and the application writes to it. These
-# four are persisted on every boot by the configuration object's constructor, so
-# the reconcile rewrites the line only when the value differs.
+# The app's own /config/.env overrides the Compose environment on every start
+# (start.sh, allexport). These four are persisted every boot; rewritten only on change.
 trailarr_config_env_log_level: INFO
 trailarr_config_env_wait_for_media: "False"
 trailarr_config_env_yt_cookies_path: ""
-# These are persisted only when a human changes something through the web
-# interface or the settings API, so their presence *is* the drift and removing
-# the line is the repair. Nothing here is created by a converge.
+# Persisted only by a human change in the UI/API, so presence is the drift.
 trailarr_config_env_absent_keys:
   - WEBUI_USERNAME
   - WEBUI_PASSWORD
@@ -119,18 +60,12 @@ trailarr_config_env_absent_keys:
   - DELETE_TRAILER_CONNECTION
   - DELETE_TRAILER_MEDIA
   - URL_BASE
-# YTDLP_VERSION and the GPU_* block are deliberately not listed above and are
-# never rewritten: the entrypoint regenerates both on every start, so a
-# whole-file template would report changed forever. That is why this one file
-# is a hand-rolled parse and compare rather than a template.
+# YTDLP_VERSION and GPU_* are regenerated every start, which is why this file is
+# parsed and compared rather than templated.
 trailarr_config_env_absent_pattern: >-
   ^({{ trailarr_config_env_absent_keys | join('|') }})=
 
-# Trailarr deploys unconditionally — its web interface is a useful trailer
-# manager with no arr attached — but a connection is validated with a live
-# GET {url}/api/v3/system/status at write time and answers 400 when the host
-# cannot be reached, so the two rows can only be written while Radarr and Sonarr
-# are running. That is exactly what this flag gates.
+# A connection write does a live status GET, so rows need running arrs.
 media_usenet_enabled: false
 
 trailarr_compose_project_name: >-

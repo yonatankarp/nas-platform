@@ -1,13 +1,7 @@
 """Create one absent Paperless managed user with its initial password.
 
-Run inside the Paperless webserver container by `manage.py shell -c`. Inputs
-arrive as environment variables so no vault value is interpolated into this
-source or into argv.
-
-Identity and password are persisted in a single transaction on purpose: a user
-row that exists without its password set is a login-less account that the next
-converge would treat as already present, so the two must commit together or not
-at all.
+Identity and password commit in one transaction: a row without a password is a
+login-less account the next converge would treat as present.
 """
 
 import os

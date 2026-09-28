@@ -10,10 +10,7 @@ argument_specs:
       paperless_data_compose_wait_timeout: {type: int, required: false}
       paperless_task_workers: {type: int, required: false}
       paperless_threads_per_worker: {type: int, required: false}
-      # The AI settings live only in inventory group_vars, so the role has no
-      # default to fall back on and templates/env.j2 reads all three
-      # unconditionally. Requiring them here fails naming the missing key instead
-      # of midway with an undefined-variable trace.
+      # Inventory-only, no role default: required so a missing key is named.
       paperless_ai_enabled: {type: bool, required: true}
       paperless_ai_llm_endpoint: {type: str, required: true}
       paperless_ai_llm_model: {type: str, required: true}
@@ -37,10 +34,7 @@ argument_specs:
       paperless_hebrew_model_checksum: {type: str, required: false}
       paperless_mail_account: {type: dict, required: false}
       paperless_mail_rule: {type: dict, required: false}
-      # The two mail object names are operator policy and live only in inventory
-      # group_vars, so the role has no default to fall back on and the mail
-      # tasks read both unconditionally. Requiring them here fails naming the
-      # missing key instead of midway through reconciliation.
+      # Inventory-only operator policy, no role default.
       paperless_mail_account_name: {type: str, required: true}
       paperless_mail_rule_name: {type: str, required: true}
       vault_paperless_admin_username: {type: str, required: true}

@@ -1,30 +1,11 @@
 """Validation and coercion primitives shared by the acquisition filters.
 
-The media-acquisition filters cover three unrelated domains — Prowlarr/Servarr
-relationship bodies, Bazarr settings and Configarr profile materialization — and
-lived in one 2,281-line module because they share these few functions and
-nothing else. They are here so the three domains can be three files.
+* **Guards** (`mapping`, `sequence`, `strict_boolean`, ...) refuse a value not
+  already the right shape: a live API field that changed type is drift.
+* **Coercions** (`coerce_string`, `coerce_boolean`, ...) accept the documented
+  spellings an API returns and normalize them, for declaration/readback compares.
 
-Two kinds of primitive live here, and the difference matters at every call site:
-
-* **Guards** (`mapping`, `sequence`, `strict_boolean`, `strict_integer`,
-  `required_string`, `number`, `safe_setting_value`) refuse a value that is not
-  already the right shape. They are what a projection of live API state is built
-  from, because a Servarr field that changed type is drift, not something to
-  coerce away.
-* **Coercions** (`coerce_string`, `coerce_boolean`, `coerce_integer`,
-  `sorted_integers`) accept the documented spellings an API returns — "true"
-  for a boolean, "25" for an integer — and normalize them. They are what a
-  comparison between a declaration and a readback is built from.
-
-`native` and `with_native_arguments` are neither: they exist because Ansible
-hands a filter templated proxies rather than plain containers, and every element
-access on one re-enters the templating engine. Every filter this platform
-exposes is wrapped, and `tests/acquisition_filter_native_arguments_test.py`
-fails if one is added that is not.
-
-Loaded by path from `filter_plugins/`, which cannot import `module_utils/` by
-name. It imports `ansible.errors`, so it is controller-only.
+Loaded by path from `filter_plugins/`; imports `ansible.errors`, so controller-only.
 """
 
 from __future__ import annotations
@@ -151,18 +132,8 @@ def safe_setting_value(value: Any, label: str) -> Any:
 def native(value: Any) -> Any:
     """Return plain containers for values that arrived from a play.
 
-    Ansible hands a filter its arguments as templated proxies rather than plain
-    containers, and every element access on one re-enters the templating engine.
-    That is invisible against a fixture and ruinous against a real play: these
-    filters measured 0.05-2.5ms called directly and 1.3-96s called through
-    Jinja on the same data, a factor of about thirty thousand, in proportion to
-    how much of the structure each one walks. Converting once on the way in
-    pays that cost a single time instead of once per access, and every filter
-    below then traverses ordinary dicts and lists.
-
-    A round trip through to_json/from_json inside the template does not work:
-    Ansible re-wraps the intermediate result before the next filter sees it, so
-    the conversion has to happen here.
+    Ansible passes templated proxies, and every element access re-enters the
+    templating engine (measured ~30,000x slower); converting once here avoids that.
     """
     if isinstance(value, dict):
         return {native(key): native(item) for key, item in value.items()}

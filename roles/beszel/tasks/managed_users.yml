@@ -1,16 +1,6 @@
 ---
-# Beszel's managed-user reconciliation is roles/managed_users, parameterised,
-# the way roles/komga/tasks/managed_users.yml is. The opening assert stays
-# because it is what makes beszel_managed_users_phase a gated variable:
-# include_tasks never applies meta/argument_specs.yml, so tests/policy_test.rb
-# holds main.yml's callers to exactly the phases named here, and the shared
-# role's own argument spec cannot see a caller of THIS file.
-#
-# Every Beszel-specific value lives in defaults/main.yml as
-# beszel_managed_users_*, so what follows is a one-to-one map. The exceptions
-# are the admin header, which reads the superuser token superuser.yml resolved,
-# and the literals that say this service is not a basic-auth one and binds each
-# credential to the record it authenticates as.
+# roles/managed_users, parameterised from defaults/main.yml. The opening assert
+# gates beszel_managed_users_phase: include_tasks never applies argument_specs.
 - name: Validate the Beszel managed-user phase
   ansible.builtin.assert:
     that:

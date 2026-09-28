@@ -1,31 +1,8 @@
 ---
-# Trailarr inverts this repository's core invariant, and this file is the
-# correction.
-#
-# scripts/start.sh runs as the application user, after the container
-# environment is already in place, and does `set -o allexport` around a
-# `source` of ${APP_DATA_DIR}/.env. Every key present in that file therefore
-# overwrites the Compose-supplied value permanently. The application writes to
-# it: the configuration object persists API_KEY, LOG_LEVEL, WAIT_FOR_MEDIA and
-# YT_COOKIES_PATH on every boot, and every settings mutation made through the
-# web interface writes its key there too. settings.py also calls
-# load_dotenv(..., override=False), which reads as though the environment wins;
-# it is a decoy, because the shell has already clobbered it.
-#
-# The measured consequences are that a rotated vault credential has no effect
-# after first boot, and that a login or a setting changed by hand survives a
-# converge — which is directly disqualifying against this repository's claim
-# that the next run reverts a hand edit.
-#
-# Removing the platform-owned keys and restarting restores every declared value,
-# and the file the application then writes back holds exactly those values, so
-# the steady state is a fixed point and the next run finds nothing to do.
-#
-# This is the one place in the role where a hand-rolled parse and compare is
-# correct rather than lazy. The entrypoint rewrites the GPU_* block through a
-# grep and a move on every start, and the yt-dlp version line with it, so a
-# whole-file template would report changed forever. Everything not named below
-# is carried through byte for byte.
+# Trailarr's start.sh sources /config/.env with allexport after Compose's environment,
+# so any key there permanently overrides the vault (load_dotenv's override=False is a
+# decoy). Removing the platform-owned keys and restarting reaches a fixed point.
+# Parsed, not templated: the entrypoint rewrites GPU_* and yt-dlp lines every start.
 - name: Look for the Trailarr application environment
   ansible.builtin.stat:
     path: "{{ trailarr_config_host_path }}/.env"
@@ -33,8 +10,7 @@
   changed_when: false
   check_mode: false
 
-# Redacted: the file carries the API key, and a drifted one carries a
-# hand-made administrator hash beside it.
+# Redacted: the file carries the API key and possibly a hand-made admin hash.
 - name: Read the Trailarr application environment
   ansible.builtin.slurp:
     src: "{{ trailarr_config_host_path }}/.env"
@@ -44,25 +20,13 @@
   check_mode: false
   no_log: true
 
-# python-dotenv writes KEY='value' with quote_mode="always", so the repaired
-# line is written in exactly that form and a converged file compares equal
-# byte for byte. Nothing here needs escaping: the API key is contracted to 32
-# hexadecimal digits and the other three values are literals in the role's
-# defaults, so no value can carry a quote or a backslash.
-#
-# Redacted: the computed content is the file, API key included.
+# Written in python-dotenv's always-quoted form so a converged file compares equal.
+# No value can hold a quote: the key is 32 hex digits, the rest are role literals.
+# Redacted: the content includes the API key.
 - name: Compute the platform-owned Trailarr application environment
   vars:
-    # The separator is spelled once, here, in a double-quoted scalar YAML
-    # resolves to a real newline before Jinja is handed the expression. Written
-    # inline as join('\n') it is not a newline at all: the folded block below is
-    # a YAML block scalar, where a backslash is an ordinary character, and
-    # Jinja's own string literal does not unescape it back. The whole file then
-    # joins onto one line separated by a literal backslash and an n, which the
-    # application's `set -o allexport; source` reads as a single comment and
-    # discards -- so the repair silently destroyed the file it was repairing,
-    # and every following run found the environment it had just written back
-    # differing again.
+    # A real newline via a double-quoted scalar: join('\n') inside the folded block below
+    # is a literal backslash-n, which collapsed the file into one comment line.
     trailarr_config_env_newline: "\n"
   ansible.builtin.set_fact:
     trailarr_config_env_repaired: >-
@@ -81,11 +45,7 @@
   when: trailarr_config_env_stat.stat.exists
   no_log: true
 
-# The repair itself has to be redacted, which leaves it unable to say why it
-# fired. These three facts are not credential material — a permission, a numeric
-# owner and whether the two contents differ at all — and between them they name
-# which of the file's properties drifted. Without this a repair that keeps
-# recurring is a silent `changed` with nothing to read.
+# Names which properties drifted without printing the redacted content.
 - name: Report the planned Trailarr application environment repair
   vars:
     trailarr_config_env_current_lines: >-
@@ -105,15 +65,8 @@
           | map('regex_replace', '=.*$', '') | unique | sort | join(', ') }}]
   when: trailarr_config_env_stat.stat.exists
 
-# python-dotenv's own rewriter reads the destination's mode and restores it
-# after every write, so the application keeps 0600 for every key it persists.
-# entrypoint.sh does not: it rewrites the file through a grep and a move on
-# every start, and the replacement lands at the image's default 0644. This mode
-# therefore holds only until the next start, and the permission the platform
-# relies on is enforced again after the deployment in main.yml. Leaving it
-# declared here keeps the file private the moment its content is repaired.
-#
-# Redacted: the content is the credential.
+# 0600 holds only until the entrypoint rewrites the file at 0644; main.yml enforces it
+# again after start. Redacted: the content is the credential.
 - name: Own the Trailarr application environment
   ansible.builtin.copy:
     content: "{{ trailarr_config_env_repaired }}"

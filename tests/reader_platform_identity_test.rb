@@ -1,19 +1,7 @@
 #!/usr/bin/env ruby
-# The three reader services — Audiobookshelf, Jellyfin and Komga — used to
-# embed a literal "1000:100" in their canonical Compose files. That literal
-# happened to equal the platform identity, so nothing distinguished "runs as
-# the platform identity" from "runs as the number someone typed once".
-#
-# This suite pins the difference. Every assertion below renders the effective
-# Compose document with a uid and gid the repository never mentions, so a
-# reintroduced literal cannot pass by coincidence: it would render as itself
-# rather than as the identity supplied to the render.
-#
-# It also pins the half of the migration that must NOT happen. The NAS owns the
-# media files; the containers adopt the platform identity, the files are not
-# rewritten to match. So the media trees stay ownerless in nas_storage and the
-# media mounts stay read-only, while each service's own state directory is
-# owned by exactly the identity its container now runs as.
+# The reader services (Audiobookshelf, Jellyfin, Komga) must run as the
+# platform identity, not a literal 1000:100: renders use a uid/gid the repo never
+# mentions. Media stays NAS-owned and read-only; only state dirs match the identity.
 
 require "json"
 require "open3"
@@ -24,8 +12,7 @@ require_relative "policy_support"
 
 include TestScaffold
 
-# Deliberately not 1000:100, and deliberately not equal to each other: a
-# renderer that swapped uid and gid, or that ignored one of them, is caught.
+# Not 1000:100 and not equal to each other, so a uid/gid swap is caught.
 PROOF_UID = "4242"
 PROOF_GID = "4343"
 
@@ -84,10 +71,8 @@ READERS = {
   }
 }.freeze
 
-# The identity reference exactly as the newer direct-user services spell it.
 IDENTITY = "${NAS_UID:?}:${NAS_GID:?}"
 
-# Every string a parsed Compose document carries, keys included, each on its own.
 def compose_strings(node)
   case node
   when Hash then node.flat_map { |key, value| [key.to_s] + compose_strings(value) }
@@ -99,10 +84,7 @@ end
 
 failures = []
 
-# Every Compose file the platform ever hands Docker for this service: the
-# canonical definition on its own, and the canonical definition beneath each
-# platform override that exists. An override cannot be allowed to reintroduce a
-# literal identity either.
+# The canonical file alone and beneath each platform override.
 def compose_stacks(name)
   base = File.join("services", name, "compose.yml")
   stacks = { "canonical" => [base] }
@@ -137,11 +119,8 @@ READERS.each do |name, reader|
   compose_document = YAML.safe_load_file(compose_path, aliases: true)
   declared_users = Array(compose_document["services"]).map { |_service, definition| definition["user"] }
 
-  # Declared shape. The rendered document below proves the identity resolves;
-  # this proves it is spelled the one way the rest of the platform spells it, so
-  # a second convention cannot quietly appear. Read off the parsed services
-  # rather than the file's lines: a user declared in a comment is not a user, and
-  # a stray 1000:100 in a comment is not an identity the stack adopts.
+  # Spelled the one way the platform spells it; read from parsed services, so a
+  # comment cannot count.
   check(failures, declared_users.count(IDENTITY) == 1,
         "#{name} Compose must declare its user as #{IDENTITY} exactly once")
   check(failures, compose_strings(compose_document).none? { |value| value.include?("1000:100") },
@@ -174,8 +153,7 @@ READERS.each do |name, reader|
           "so adopting the identity cannot rewrite NAS-owned media")
   end
 
-  # The :? guard is the whole reason an unset identity cannot silently become a
-  # relative or empty value. Prove it fails the render rather than trusting it.
+  # Prove the :? guard fails the render rather than trusting it.
   %w[NAS_UID NAS_GID].each do |variable|
     _stdout, _stderr, succeeded = render(
       ["services/#{name}/compose.yml"], identity_environment.merge(variable => nil)
@@ -184,9 +162,6 @@ READERS.each do |name, reader|
           "#{name} Compose must refuse to render without #{variable}")
   end
 
-  # The migration must not touch NAS media ownership. Every state directory the
-  # service writes is owned by the identity it runs as; the media trees it reads
-  # stay unclaimed, because the NAS owns those files.
   reader.fetch("state_paths").each do |path|
     entry = storage.find { |candidate| candidate["path"] == path }
     check(failures, entry && entry["owner"] == "{{ nas_uid }}" && entry["group"] == "{{ nas_gid }}",

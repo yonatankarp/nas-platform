@@ -1,65 +1,10 @@
 #!/usr/bin/env ruby
-# The policy gate's own check list, declared, and its partition into CI shards.
-#
-# tests/validate-policy.sh dispatches one bare command per line of its own
-# heredocs, and until #469 nothing said what that list should contain. Individual
-# lines were required one at a time -- tests/policy_ci_test.rb names about
-# ninety, tests/policy_mac_test.rb eleven, tests/policy_test.rb and
-# tests/policy_deployment_test.rb a handful each -- which pins the lines somebody
-# thought to pin and says nothing at all about the rest. On the order of forty
-# lines were required by nothing, so deleting any of them left every check
-# green and the gate faster than before. #315 found six of those by auditing the
-# manifest against the policy scripts by hand, #334 found a seventh that was in
-# no manifest at all, and a hand audit is not a guard.
-#
-# This is the guard: the three shard lists below and the three heredocs in
-# tests/validate-policy.sh must be the same lists, their union must be the whole
-# manifest, no line may appear in two shards, and no shard may collapse. The
-# diagnostic names the lines that differ.
-#
-# State what that buys precisely, because it is easy to claim more. Removing a
-# check from the gate now takes an edit in two places instead of one, so an
-# omission that used to be invisible is a two-place diff a reviewer can see. It
-# does NOT make each line exercised: delete a command from a shard heredoc and
-# from the matching list below and this check still passes, by construction. The
-# improvement is over ~40 lines having been freely prunable with every gate
-# green, and that is the whole of it.
-#
-# WHY THIS MATTERS MORE ONCE THE GATE IS SHARDED, which is what #469 did. An
-# unsharded gate that loses a line loses a check. A sharded gate has a second and
-# much more efficient way to produce the same defect: drop a line from the
-# partition and it runs nowhere, the run goes green, and it goes green *faster*
-# than before. There is nothing in a passing CI run to notice that. The union
-# assertion below is the only thing that does, which is why it was written before
-# the partition existed and why the partition is a literal list rather than
-# anything computed: an index-modulo split balances count rather than time, and a
-# time-weighted split needs a cost table that drifts silently. A literal list
-# costs manual rebalancing, and the gate's own slowest-checks report is what
-# makes that an informed act rather than a guess.
-#
-# WHY A SEPARATE FILE, rather than completing the `%w[]` list in
-# tests/policy_ci_test.rb and adding the reverse assertion there. That was the
-# obvious alternative and it is the wrong one for a measured reason, not an
-# aesthetic one. tests/policy_manifest_test.rb mutates this manifest at eight
-# call sites, and it declares per site which policy scripts detect the planted
-# defect: one declares `%i[deployment]`, one declares `%i[mac]` and covers the
-# six #315 Mac checks, and the rest already name `ci`. An equality assertion
-# living inside tests/policy_ci_test.rb would fire on every one of those
-# mutations, so those two sites -- seven mutations -- would gain `ci`, their
-# declared sets would be wrong, and `ruby tests/policy_manifest_test.rb --audit`
-# would fail on the drift. The declaration therefore has to sit outside the
-# eight scripts in POLICY_SCRIPTS, which is what this file is, and it must not
-# be moved into one of them later.
-#
-# DO NOT TIDY THIS AWAY. A second copy of a list looks like duplication, and
-# deleting it is exactly the silent prune it exists to prevent -- the gate would
-# still pass, faster, with nothing to say a check had gone. The copy is the
-# mechanism, not an accident of it.
-#
-# Deliberately not here: whether each command's target file exists. The gate
-# runs these commands, so a path that does not exist fails there, loudly, with
-# the command named -- and asserting it twice would only add a way for this
-# check to be wrong.
+# The policy gate's check list, declared, and its partition into CI shards (#469).
+# The three lists below must equal the three heredocs in tests/validate-policy.sh,
+# union to the whole manifest, never repeat a line, and never collapse a shard.
+# Removing a check therefore costs a visible two-place edit; it does not prove a
+# line runs. Kept outside the eight POLICY_SCRIPTS so policy_manifest_test.rb's
+# declared detector sets stay right. DO NOT TIDY THIS COPY AWAY: it is the mechanism.
 
 require "open3"
 require_relative "policy_support"
@@ -68,156 +13,13 @@ include TestScaffold
 
 failures = []
 
-# The manifest, restated one shard at a time. Copy the heredoc across when a
-# check is added or removed: the blocks are deliberately the same shape as the
-# ones in tests/validate-policy.sh so the edit is a paste and the diff is
-# readable.
-#
-# WHICH SHARD A CHECK GOES IN is a balance decision, and what it balances is
-# COST, not count. The lists below therefore hold UNEVEN numbers of checks, and
-# that asymmetry is the result rather than a defect: #469 drew the partition
-# round robin, which balances count because count is all a partition without a
-# cost table can balance, and by #517 the three shards were 53/54/57 checks
-# carrying a 2.2x spread of work. Nothing had gone wrong; nothing had been
-# balancing cost.
-#
-# The three counts are deliberately NOT written here, and #652 is why: a
-# restatement went stale in this comment, in tests/validate-policy.sh and in
-# CLAUDE.md simultaneously, repeatedly, because nothing compares a number in a
-# comment against the lists beside it -- including in the file that holds them.
-# Running this check prints them, which is the one place they cannot drift:
-#
-#   ruby tests/gate_manifest_coverage_test.rb
-#   gate manifest: N declared checks across 3 shards (1: ..., 2: ..., 3: ...)
-#
-# THE MEASUREMENT, four post-merge `main` runs (#517). Each shard's leg is its
-# own runner, so the three columns of one run are three different machines and a
-# cross-shard comparison inside a single run is confounded by runner luck --
-# shard 1 printed 888s of check time in one run and 1247s in another. What
-# survives that is each shard's SHARE of its run's total, and it was stable:
-#
-#   run                    shard 1        shard 2        shard 3
-#   34263365430 (474dc0c)  392s / 1216s   440s / 1467s   190s /  732s
-#   34274246779 (a9b2a18)  394s / 1228s   476s / 1574s   189s /  725s
-#   34371789489 (ba8bd10e) 401s / 1247s   433s / 1458s   120s /  452s
-#   34406723195 (c6296e2d) 286s /  888s   417s / 1402s   183s /  697s
-#   share of check time    30-40%         43-47%         14-23%
-#
-# Shard 2 was the largest of the three in all four runs and shard 3 the smallest
-# in all four. Medians: 1222 / 1462 / 711 of check time, and a worst leg of 436s
-# wall against a 59s run-to-run range, so the imbalance is about twice that
-# range and five times its 22s standard deviation -- worth collecting, which
-# the 90s #484 declined was not. Say it in those terms rather than in an
-# adverb: 111s over a 59s range is a clear yes and "several times the noise"
-# would be a prose claim about a number that the number does not support.
-#
-# NO TWO OF THE TOP THREE SHARE A SHARD, because a shard cannot finish faster
-# than its own slowest check, so pairing them wastes a runner. That rule was
-# already written here and the tree already broke it: `immich_release_helper_
-# test.rb` (~292s) and `media_managed_users_test.rb` (~226s), the two slowest
-# checks in the gate, were both in shard 2. This needs no projection to see, and
-# it is the primary reason the lines below moved.
-#
-# WHAT MOVED, all of it into shard 3: `media_managed_users_test.rb` and
-# `sandbox_cleanup_acquisition_ownership_test.sh` out of shard 2,
-# `paperless_mail_reconciliation_test.rb` and `immich_user_onboarding_test.rb`
-# out of shard 1. That leaves ~1124 / ~1112 / ~1159 of check time at the medians
-# above, with each shard's slowest check at ~158 / ~299 / ~231 -- so shard 2 is
-# floor-bound on `immich_release_helper_test.rb` and the other two are not
-# floor-bound at all.
-#
-# SPREAD THE WAITS, and this outranks the rules above. A check that spends its
-# time waiting still holds one of the four worker slots while consuming none of
-# the CPU the other three compete for, so two long waits in one shard cut its
-# effective pool from four workers to two. #484 put `beszel_contract_test.rb`
-# (86s of wait) and its `--self-test` (85s) in the same shard and that shard's
-# other checks inflated by 298s; the move was reverted. Keep them apart.
-#
-# The gate's one known wait is `sandbox_cleanup_acquisition_ownership_test.sh`,
-# and it is a wait by construction and not only by measurement: it starts a
-# container on `sleep 300`, and #517 measured 400.3s elapsed against 116.6s of
-# CPU. It is now in shard 3, which is allowed because shard 3's two heaviest
-# incumbents were checked and are work, not wait: on a 12-core Mac,
-# `komga_library_reconciliation_test.rb` ran 73.2s of CPU in 86.6s elapsed and
-# `dozzle_contract_test.rb --self-test` 54.6s in 97.7s, and neither file sleeps
-# at all. Shard 3 therefore holds exactly one wait, and shard 2 -- the shard
-# that was floor-bound and saturated -- now holds none.
-#
-# Those two were measured twice by accident and the accident is worth keeping,
-# because it is this repository's own rule tested rather than quoted. The first
-# pair was taken at load average 128-147 on that Mac, the second after 36 leaked
-# CPU spinners were reaped and the load fell to 12-28. Elapsed collapsed --
-# komga 149.8s to 86.6s -- while the CPU column barely moved, 72.9s to 73.2s and
-# 56.7s to 54.6s. So user+sys really is the load-invariant measure and the ratio
-# built from it is not: contention only pushes the ratio down, which makes a HIGH
-# ratio proof of work whatever the machine was doing, and a LOW one on a busy
-# machine a lower bound rather than a verdict. komga read 0.49 contaminated and
-# 0.85 clean, and only the second says anything.
-#
-# THE GATE'S TOTAL CHECK TIME IS NOT A QUANTITY, which is the answer to the part
-# of #517 that asked where "+46% of check time for +3% more checks" against the
-# 2342s/155 baseline this file used to quote had gone. It had not gone anywhere.
-# The four runs above total 2987, 3157, 3415 and 3527s over essentially the same
-# manifest -- an 18% spread -- so the growth against that baseline is +27% or
-# +51% depending only on which run is picked, and the same point appears in
-# miniature within one shard: shard 3 printed 452s in one run and 697s in the
-# next, +54% for two checks added. Before explaining a total, check whether it
-# holds still.
-#
-# A second and smaller effect is real but do not promote it: shard 2's check time
-# was the STEADIEST of the three, 1402-1574 across the four runs, a 12% range,
-# while shard 1 swung 29% and shard 3 39% of their own medians. That is the
-# signature of a shard saturated by its own heavy work -- seven checks over 80s
-# in one four-worker pool, insensitive to runner luck because it is always
-# contending with itself -- which means a partition that concentrates the heavy
-# checks partly inflates the wall times the pool records for them, and a shard
-# that sheds heavy neighbours should record its remaining checks as cheaper. Do
-# not promise a number for that; let the next runs measure it.
-#
-# WHAT #653 ADDED, one line to each shard, and why they landed where they did.
-# `tests/integration_cleanup_test.sh`, `tests/immich_probe_status_test.py` and
-# `tests/generate-secrets-redaction-test.sh` were steps of the `static` job, so
-# each ran once per shard for a verdict that cannot vary by shard. One line each
-# is what makes them run once, and it is also what gives them the declaration
-# guard this file is: as workflow steps nothing held them but a literal in
-# tests/ci/workflow_test.rb, which is itself one line of one shard.
-#
-# The cleanup test is the one whose placement is a decision rather than a
-# rotation. It starts real containers, so SPREAD THE WAITS applies to it before
-# the cost rule does, and shard 3 already holds the gate's one known wait -- it
-# went to shard 1, which holds none. The other two are work: the Immich probe
-# test renders through the gate's own interpreter and the redaction test stubs
-# `docker` rather than running one.
-#
-# Measured on run 35041492555, the first that dispatched them, and the figure is
-# a bound rather than a reading: the gate prints only its slowest ten, and none
-# of the three is in any shard's. So each is under its own shard's tenth place --
-# 44s in shard 1, 34s in shard 2, 40s in shard 3 -- against shard floors of 212,
-# 233 and 238. None of them is a floor and the cleanup test did not turn out to
-# be a second wait in shard 1. That is one run against a 30% shard-level runner
-# variance, so it settles the placement rather than the cost.
-#
-# REBALANCING IS EXPECTED as checks are added, removed and made faster. It is a
-# manual act and it is meant to be: the gate prints its ten slowest checks on
-# every run, pass or fail, so the figures above can be replaced with a current
-# measurement rather than re-derived. What that report cannot support is
-# arithmetic: a check's seconds are its wall time at that shard's load, not work
-# that can be carried to another shard, and #484 predicted 1170s for the shard
-# that measured 1453s by treating them as though it could. Nor can one run
-# confirm a rebalance, because shard-level runner variance is 30% and can swamp
-# the ~110s this one is aiming at; two or three runs, and the claim to check is
-# that the WORST leg fell, not that any single figure did. A cost guard was
-# considered here and rejected for the reason the partition is a literal list at
-# all: a pinned cost table drifts silently, and a rebalance is meant to be
-# informed by a fresh measurement rather than by a stale assertion. Move lines
-# between the shard blocks here and in tests/validate-policy.sh together; every
-# assertion below exists to fail when only one of the two moves.
-#
-# ORDER IS PART OF THE BALANCE, and the per-shard comparison below is ordered for
-# that reason. The gate dispatches each heredoc top to bottom, so every block
-# lists its heaviest checks first and a check that lands in the slowest-checks
-# report goes near the top, never at the end. #843 measured what the other order
-# costs: docs/ci-performance-history.md has it.
+# The manifest, restated one shard at a time (same shape as validate-policy.sh,
+# so an edit is a paste). Counts are printed by this check, never written here (#652).
+# Balance cost, not count; re-measure from the gate's slowest-checks report
+# (evidence: docs/ci-performance-history.md, #517). Three constraints:
+# - No two of the gate's three slowest checks share a shard (a shard's floor is its slowest check).
+# - Spread the waits: a waiting check holds a worker slot without using CPU.
+# - Heaviest checks first in each block: the gate dispatches top to bottom (#843).
 
 SHARD_1 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/contract_structure_mutation_test.rb
@@ -419,14 +221,9 @@ SHARDS = { "1" => SHARD_1, "2" => SHARD_2, "3" => SHARD_3 }.freeze
 GATE_CHECKS = SHARDS.values.flatten.freeze
 
 MANIFEST_PATH = File.join(ROOT, "tests", "validate-policy.sh")
-# A parse that quietly matches nothing satisfies every emptiness test and
-# proves nothing, so the floors are numbers. Each is far enough below the
-# current count to survive a real prune and far enough above zero to fail a
-# broken read.
+# A parse that matches nothing passes every emptiness test, so the floors are numbers.
 MANIFEST_FLOOR = 120
-# Per shard, and the reason this is not `!empty?`: the shard that should hold
-# fifty checks and holds one is the failure that actually happens, and it passes
-# every non-emptiness test there is while removing a third of the gate.
+# Per shard: one shard holding one check instead of fifty passes `!empty?`.
 SHARD_FLOOR = 30
 
 manifest_shards = PolicySupport.gate_shards(MANIFEST_PATH)
@@ -436,10 +233,7 @@ check(failures, !manifest_shards.empty?,
       "name: the manifest cannot be read, so nothing below has been checked")
 manifest = manifest_shards.values.flatten
 
-# The shards the runner actually dispatches, which is a separate statement from
-# the shards whose lists exist. A heredoc nothing cats is a third of the gate
-# that never runs, and the run stays green because the checks it holds are still
-# declared here.
+# Dispatched, not merely declared: a heredoc nothing cats never runs.
 dispatched = PolicySupport.gate_shard_ids(MANIFEST_PATH)
 check(failures, dispatched == manifest_shards.keys,
       "tests/validate-policy.sh dispatches shards #{dispatched.inspect} but declares heredocs " \
@@ -451,13 +245,8 @@ check(failures, manifest_shards.keys == SHARDS.keys,
       "Adding or removing a shard means editing both, and the CI matrix in " \
       ".github/workflows/ci.yml with them")
 
-# The same list read by a different program. The point is not redundancy but
-# that it fails differently: this one knows nothing about PolicySupport.gate_shards,
-# matches its boundaries as patterns rather than as whole lines, streams the
-# file, and reads straight through the shard boundaries -- so what it produces is
-# the union, arrived at without the per-shard bookkeeping above. A boundary the
-# reading above locates on the wrong line does not move here in the same
-# direction.
+# The same list read by a different program (awk), so a misread boundary does
+# not move both readings in the same direction.
 AWK_PROGRAM = [
   '/^  cat <</ && /POLICY_CHECKS_/ { inside = 1; next }',
   '/^POLICY_CHECKS_[0-9]+$/ { inside = 0 }',
@@ -481,10 +270,6 @@ check(failures, manifest.length >= MANIFEST_FLOOR,
       "of #{MANIFEST_FLOOR}: the reading has broken rather than the gate shrunk, and a set " \
       "comparison against a list that short would be an accident")
 
-# One line per check, across the whole partition. The gate dispatches a line at a
-# time, so a command written twice is a check run twice -- and a command written
-# into two shards is a check that costs two runners while proving what one
-# proved.
 repeated_in_manifest = manifest.tally.select { |_, count| count > 1 }.keys
 check(failures, repeated_in_manifest.empty?,
       "tests/validate-policy.sh runs #{repeated_in_manifest.inspect} more than once; " \
@@ -494,12 +279,8 @@ check(failures, repeated_in_declaration.empty?,
       "this file declares #{repeated_in_declaration.inspect} in more than one shard; the " \
       "partition must claim each check exactly once")
 
-# The lines themselves, because a count says nothing about which check left. The
-# names are capped and the remainder is counted rather than dropped: a real
-# divergence is one or two lines, and the case that produces a hundred and fifty
-# is a manifest that could not be read at all, which the floor above already
-# names -- printing every line there buries that sentence instead of adding to
-# it.
+# Names are capped: a hundred-line divergence means the manifest was unreadable,
+# which the floor already reports.
 NAMED_LIMIT = 12
 def named(commands)
   shown = commands.first(NAMED_LIMIT).inspect
@@ -520,10 +301,7 @@ check(failures, unrun.empty?,
       "Either the gate stopped running them, which is the failure this check exists for, or " \
       "they were deliberately removed and the shard lists have not been told")
 
-# Shard by shard, not only in union. The union assertion above is what keeps a
-# check from being lost; this is what keeps it from being *moved* on one side
-# only, which is how a shard silently grows past the runner it was sized for
-# while the other two idle.
+# Per shard as well: a line moved on one side only unbalances the runners.
 SHARDS.each do |id, declared|
   found = manifest_shards.fetch(id, nil)
   next if found.nil?
@@ -535,11 +313,6 @@ SHARDS.each do |id, declared|
         "partition is a guess")
 end
 
-# The floor, per shard and on both readings. A shard emptied on either side is
-# the whole defect sharding introduces: the gate reports success having run two
-# thirds of its checks, in less time than before, and every other assertion here
-# still holds because the union of two shards and an empty one is still a subset
-# in one direction.
 SHARDS.each do |id, declared|
   check_floor(failures, declared.length, SHARD_FLOOR, "shard #{id} as this file declares it")
 end
@@ -548,18 +321,8 @@ manifest_shards.each do |id, found|
               "shard #{id} as tests/validate-policy.sh runs it")
 end
 
-# The CI matrix, against the partition it is supposed to dispatch. This is not
-# this file's natural business -- tests/ci/workflow_test.rb owns the workflow's
-# shape -- and it is here anyway for a reason worth stating, because the reason
-# is the same failure mode one level up.
-#
-# tests/ci/workflow_test.rb is itself one line of one shard. Drop *that* shard
-# from the matrix and the guard asserting the matrix is complete is the very
-# check that stops running: a third of the gate goes, the run reports success,
-# and it reports it faster. The assertion has to live in more than one shard for
-# that to be caught, so it lives in the three files that sit in three different
-# shards -- this one, tests/policy_ci_test.rb and tests/ci/workflow_test.rb.
-# Whichever single shard is dropped, two of the three still run.
+# The CI matrix against the partition. Here as well as in policy_ci_test.rb and
+# tests/ci/workflow_test.rb so that dropping any one shard leaves two guards running.
 WORKFLOW_PATH = File.join(ROOT, ".github", "workflows", "ci.yml")
 workflow_shards = if File.file?(WORKFLOW_PATH)
                     YAML.safe_load_file(WORKFLOW_PATH, aliases: false)
@@ -571,11 +334,7 @@ check(failures, workflow_shards == manifest_shards.keys,
       "a shard missing from the matrix runs on no runner, and every check it holds is still " \
       "declared, still inside a heredoc and still claimed by exactly one shard")
 
-# ...and the three shards those three guards must sit in, asserted rather than
-# asked for in a comment. Three copies of that assertion protect each other only
-# while no shard holds two of them and none holds all three; a rebalance that
-# collects them costs nothing visible and quietly returns the guard to being one
-# line of one shard, which is what this makes a check rather than a hope.
+# ...and those three guards must sit in three different shards.
 MATRIX_GUARDS = [
   "tests/ci/workflow_test.rb",
   "tests/gate_manifest_coverage_test.rb",

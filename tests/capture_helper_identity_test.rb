@@ -1,64 +1,9 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-# Three checks carry their own copy of capture3_with_timeout and its helpers:
-# tests/immich_configured_password_test.rb,
-# tests/beszel_password_preservation_test.rb and
-# tests/audiobookshelf_initial_scan_behavior_test.rb. Per-file copies are this
-# repository's idiom and the reason is sound -- a shared helper would be another
-# .rb to register in tests/validate-policy.sh, in one of its shard lists and in
-# tests/policy_ci_test.rb -- but the whole value of that duplication is the
-# copies agreeing, and until this file nothing checked that they did.
-#
-# They have not agreed. #464 found one copy missing
-# `unit = timeout_seconds == 1 ? "second" : "seconds"`, rendering "after 1
-# seconds", and it had been wrong since it was written because the line only
-# renders at a one-second budget and nothing used one. #470 found three copies
-# blocking indefinitely after KILL where the fourth bounded its joins at a
-# second -- the correct copy was the minority, so the obvious reconciliation
-# would have propagated the defect to all four. #474 and #475 each had to land a
-# change in all four at once or reintroduce the divergence just removed. Five
-# times the central property was "all four agree", five times it was established
-# by an agent running an awk extract and a digest by hand and reporting it in a
-# pull request body, and nothing carried it into the next change.
-#
-# This is that comparison, as a check. It extracts a declared list of regions
-# from each of the three files and asserts exactly one distinct digest per region.
-#
-# WHY THE REGION LIST IS DECLARED rather than inferred. The three are not
-# identical everywhere and must not be: immich_configured_password_test.rb
-# carries the canonical-copy docstring above capture3_with_timeout, and
-# audiobookshelf_initial_scan_behavior_test.rb carries a different explanatory
-# block in the same place. A heuristic that guessed the shared surface would
-# either demand sameness where the files legitimately differ or quietly stop
-# covering a region somebody moved. The gate manifest is declared rather than
-# inferred for the same reason (#476).
-#
-# DELIBERATELY OUT OF SCOPE: the "Every join on the timeout path is bounded"
-# comment, which immich_configured_password_test.rb and
-# audiobookshelf_initial_scan_behavior_test.rb both carry verbatim above
-# capture3_with_timeout and the other two do not carry at all. That is a
-# two-file property, not a four-way one, and folding it in here would mean
-# either declaring a region that some of the three cannot satisfy or weakening the
-# comparison from "all three" to "whoever has it". Adding a two-file region is a
-# separate decision from this one.
-#
-# WHY A FLOOR AND AN EXACT COUNT, both. A digest comparison over an empty set
-# finds one distinct value and passes, so an extractor that silently matched
-# nothing would report the property it stopped checking as holding -- the
-# failure this repository saw six times in one day. So every extraction is
-# required to have matched its start anchor exactly once, in a named file, with a
-# minimum line count; and the shapes of the declarations themselves are asserted
-# as literals, because deleting a region declaration narrows the check one level
-# up and every surviving assertion still passes.
-#
-# WHY A SECOND EXTRACTION METHOD. The line-anchored scan below is textual, and
-# textual extraction has been wrong twice in this repository in a week: a
-# `grep -c` of a name counted definitions alongside uses, and a regex for a
-# construct matched a comment mentioning the construct. So every region is
-# cross-checked against Ruby's own parser, which fails differently: each
-# declared definition must be the file's only definition of that name and must
-# end on the region's last line, so a scan that walked past the real `end` to a
-# later column-0 one is caught even though its digests would agree.
+# Asserts the three per-file copies of capture3_with_timeout and its helpers stay
+# byte-identical, region by region (#464, #470). Regions are declared, not inferred,
+# because the files legitimately differ around them; a Ruby-parser cross-check catches
+# an `end` scan that ran past the real end.
 
 require "digest"
 
@@ -66,21 +11,14 @@ require_relative "policy_support"
 
 include TestScaffold
 
-# The three copies, in the order they were reconciled; a fourth went with the
-# service #558 removed.
 FIXTURE_FILES = %w[
   tests/immich_configured_password_test.rb
   tests/beszel_password_preservation_test.rb
   tests/audiobookshelf_initial_scan_behavior_test.rb
 ].freeze
 
-# The shared surface, one region per entry. `start` and `finish` are matched
-# against whole lines, so a line mentioning `def capture3_with_timeout` inside a
-# comment is not a definition. `finish` is searched forward from the line after
-# the start match, so the first column-0 `end` closes the region.
-#
-# `definitions`, `constants`, `classes` and `locals` are the parser's half: what
-# the region must contain, and each must appear exactly once in the whole file.
+# `start`/`finish` match whole lines; `finish` is the first match after `start`.
+# `definitions`..`locals` must each appear exactly once in the whole file.
 REGIONS = [
   {
     "name" => "capture limit comment, constant and overflow error class",
@@ -149,8 +87,6 @@ check(failures, REGIONS.length == EXPECTED_REGIONS,
       "the shared surface must be #{EXPECTED_REGIONS} declared regions, not " \
       "#{REGIONS.length}: a region dropped from this list is compared by nothing")
 
-# Every node the parser saw, flattened once per file, because each region asks
-# about a different node type and re-walking per region would cost four walks.
 def parsed_nodes(path)
   nodes = []
   walk = lambda do |node|
@@ -183,8 +119,7 @@ def local_spans(nodes, name)
        .map { |node| [node.first_lineno, node.last_lineno] }
 end
 
-# The parser is the half that fails differently, so its absence must fail rather
-# than reduce this check to the textual scan alone with nothing said.
+# A missing parser must fail rather than silently reduce this to the textual scan.
 PARSER_AVAILABLE = defined?(RubyVM::AbstractSyntaxTree) == "constant"
 check(failures, PARSER_AVAILABLE,
       "RubyVM::AbstractSyntaxTree is unavailable, so the parser cross-check " \
@@ -223,13 +158,8 @@ FIXTURE_FILES.each do |relative|
     check_floor(failures, body.length, region.fetch("minimum_lines"),
                 "#{relative} region #{name.inspect} (lines #{first + 1}..#{last + 1})")
 
-    # The parser's half. A definition must be the file's only one of that name
-    # and must close on the region's own last line: an `end` scan that ran past
-    # the real end to a later column-0 `end` would still digest consistently
-    # across three files, and only this catches it. Lines between the region's
-    # start and the definition are required to be comments, which is what makes
-    # a comment-prefixed region a comment plus a definition rather than an
-    # arbitrary span.
+    # An `end` scan that overran to a later column-0 `end` would still digest
+    # consistently across files; only the parser's end line catches it.
     region.fetch("definitions").each do |method_name|
       spans = definition_spans(nodes, method_name)
       unless spans.length == 1
@@ -291,9 +221,7 @@ check(failures, extractions.length == EXPECTED_EXTRACTIONS,
       "#{EXPECTED_REGIONS} regions), #{extractions.length} succeeded; the comparison below " \
       "covers less than it claims")
 
-# The comparison itself. Copies can split without a clear majority to name,
-# so there is none to trust: print every file's digest and span for the region that
-# differs, and the reader sees the partition without redoing the extraction.
+# No majority is trusted: print every copy's digest so the split is visible.
 REGIONS.each do |region|
   name = region.fetch("name")
   found = FIXTURE_FILES.filter_map do |relative|

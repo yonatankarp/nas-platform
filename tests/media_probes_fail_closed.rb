@@ -1,11 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#
 # Fail-closed probes: a managed-user run must refuse rather than half-apply.
-#
-# Required by media_managed_users_test.rb, which owns the probe selection so the
-# MEDIA_MANAGED_USERS_PROBES contract keeps naming one group rather than a file set.
-# Fixtures and helpers come from media_managed_users_support.rb.
+# Required by media_managed_users_test.rb, which owns the probe selection.
 
 def exercise_komga_fail_closed(failures)
   managed = [{ "email" => "reader@example.invalid", "password" => "reader-secret",
@@ -15,12 +11,8 @@ def exercise_komga_fail_closed(failures)
     "vault_komga_admin_password" => "admin-secret",
     "vault_managed_komga_users" => managed
   }
-  # Each scenario carries the refusal it must produce. The path anchor this
-  # replaces was satisfied by the "included:" banner the run prints whenever the
-  # file merely RUNS, which is the #419 shape: it would have reported the
-  # property holding for a run that failed anywhere else, and after #647 it
-  # reported it for a run whose refusals come from roles/managed_users. A
-  # diagnostic is emitted only by the path that refuses.
+  # Each scenario carries the refusal it must produce: the "included:" banner prints
+  # whenever the file merely runs (#419).
   scenarios = {
     "incomplete listing" => [
       lambda { |_request| [200, { "content" => [], "last" => false }] },
@@ -103,12 +95,8 @@ def exercise_media_fail_closed(failures)
       failures << "#{label} authentication failure reached a mutation" if
         requests.any? { |request| %w[PATCH DELETE].include?(request["method"]) ||
           (request["method"] == "POST" && !request["target"].match?(/login|AuthenticateByName/)) }
-      # The role's own fail_msg, not the task name: ansible prints "TASK [<name>]"
-      # whenever a task merely runs, so a task-name substring passes while the
-      # guard executes and does nothing -- see HttpFixtureSupport.refused_with?
-      # (#419). The anchor is tied to ansible-core 2.21.3's wording, pinned in
-      # controller-requirements.txt, and stated in
-      # HttpFixtureSupport::TASK_REFUSAL_PREFIX.
+      # The role's fail_msg, not the task name, which prints whenever a task runs (#419);
+      # see HttpFixtureSupport::TASK_REFUSAL_PREFIX.
       failures << "#{label} authentication failure did not stop at preserved credential assertion" unless
         HttpFixtureSupport.refused_with?(
           stdout + stderr,

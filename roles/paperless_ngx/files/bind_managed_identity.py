@@ -1,14 +1,7 @@
 """Prove an authenticated token belongs to the expected managed user.
 
-Run inside the Paperless webserver container by `manage.py shell -c`. Inputs
-arrive as environment variables.
-
-This runs before any repair writes to the row. Both the token owner and the
-username must match what the play authenticated, and the rows are locked with
-`select_for_update` inside the transaction, so a concurrent rename cannot make a
-later repair land on a different account than the one whose credential was
-proven. Usernames are compared case-folded because Paperless treats them
-case-insensitively at login.
+Rows are locked with `select_for_update` so a concurrent rename cannot redirect
+a later repair; usernames compare case-folded, as Paperless logins do.
 """
 
 import os

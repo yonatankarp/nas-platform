@@ -34,12 +34,8 @@
         if platform_compose_kind == 'nas' else
         (nas_docker_root ~ '/paperless-ngx')) ~ '/tessdata')
 
-# raw.githubusercontent.com is a third party, and a converge must not fail
-# because it was briefly unreachable: that is exactly what happened on
-# 2026-09-04 (#330), where the read timed out at get_url's own ten-second
-# default and took the whole run with it. The checksum is what makes retrying
-# safe -- an unchanged file is a no-op that reports so, and a truncated
-# download fails here rather than becoming the OCR model.
+# Retried because a third-party host must not fail the converge (#330); the
+# checksum makes retrying safe and rejects a truncated download.
 - name: Install the pinned Hebrew OCR model
   ansible.builtin.get_url:
     url: "{{ paperless_hebrew_model_url }}"
@@ -59,14 +55,8 @@
     mode: "0600"
   no_log: true
 
-# Before any Compose operation, because recreating the webserver from an older
-# image is the act being refused. The webserver runs Django's migrations against
-# the database on start and they are one-way, so a pin older than one that has
-# already run here would crash-loop inside the container rather than fail in a
-# play (#511, #826). The webserver and not db: the PostgreSQL major is a
-# different hazard, withheld by its own Renovate rule. The five paths this reads
-# are the ones the containment re-include at the top of this file already
-# declared through deployment_target_service, so it needs no extra_paths.
+# Before any Compose operation: the webserver's Django migrations are one-way,
+# so an older pin would crash-loop in the container (#511, #826).
 - name: Refuse a Paperless image older than the database this host has migrated
   ansible.builtin.include_role:
     name: image_downgrade_guard
@@ -135,24 +125,9 @@
       Restore the previous vault values or migrate the database credential explicitly, then rerun.
   when: not ansible_check_mode
 
-# After the data services and the credential refusal and before the webserver,
-# so the database is up, healthy and reachable with the vault's credential, and
-# Django's migrations have not run: roles/pre_upgrade_backup's pg_dump entry stops the webserver -- the consumer, the Celery worker and the scheduler
-# run inside it, so it is every writer -- and dumps the database from inside the
-# db container. The guard runs first, so a downgrade is refused before
-# anything stops; the role reads the pin itself (#858).
-#
-# The dump alone is enough to go back, and document_exporter is not taken:
-# Paperless's migrations are Django schema migrations of that database, and the
-# originals and archive files under the media root are not rewritten by them.
-# That holds only while a release's migrations stay in the database -- a
-# release notes entry that moves or renames files would need the media root
-# too.
-#
-# The dump holds every account's password hash, mail account passwords and the
-# full OCR text of every document, so it is secret-bearing and not small; it is
-# written 0600 in a 0700 directory, as postgres/pre-upgrade-backup under the
-# state root on the host.
+# Before the webserver (every writer) starts and migrates. The dump suffices
+# while migrations touch only the database, not the media root. It holds
+# password hashes and mail passwords: secret-bearing, written 0600 (#826, #858).
 - name: Dump the Paperless database before a pinned upgrade
   ansible.builtin.include_role:
     name: pre_upgrade_backup

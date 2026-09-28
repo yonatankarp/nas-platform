@@ -1,10 +1,6 @@
 #!/usr/bin/env ruby
-# The planned-change half of the Dozzle service contract: the exact number of
-# times each `DOZZLE_PLAN_*` marker may appear in a `--check --diff` transcript.
-#
-# Counts rather than presence, because a repair predicate that fires on an
-# already-correct object and one that fires on a missing object both print the
-# same marker; only the count separates the two scenarios.
+# Planned-change half of the Dozzle contract: exact `DOZZLE_PLAN_*` marker counts in
+# a `--check --diff` transcript; presence alone cannot tell repair from creation.
 mode, output_path = ARGV
 abort "Dozzle contract failed: planned-change output path is absent" unless output_path
 abort "Dozzle contract failed: planned-change output is unsafe" unless

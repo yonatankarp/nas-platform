@@ -6,35 +6,15 @@ on:
     branches:
       - main
   schedule:
-    # The minute is off the hour and off the half hour because GitHub delays
-    # scheduled runs hardest at those boundaries. The hour is chosen so that the
-    # whole plausible fire window misses this repository's merge window; the hour
-    # itself is not the property. docs/ci-performance-history.md, "A `cron` is a lower bound on when
-    # the sweep lands", carries the measured delays and how to re-check them.
+    # Off the hour and half hour, where GitHub delays scheduled runs most;
+    # docs/ci-performance-history.md has the measured delays.
     - cron: '47 17 * * *'
   workflow_dispatch:
 
 concurrency:
-  # A run is superseded only by a newer run of the same thing. A pull request's
-  # previous run tested a tree that no longer exists; a `main` push run is the
-  # only run that will ever see the tree it merged. Hence the predicate.
-  #
-  # The event name is load-bearing rather than decorative: without it `push` and
-  # `schedule` both resolve to `refs/heads/main`, and the nightly sweep -- not a
-  # push, so still cancelling -- would kill an in-flight post-merge run once a
-  # night and reintroduce what the predicate removes.
-  #
-  # The push fallback is `github.sha`, not `github.ref`, because the predicate was
-  # necessary but not sufficient. A shared `refs/heads/main` group serialises every
-  # merge, and GitHub's default `queue: single` permits one *pending* run per
-  # group: a third merge arriving while one runs and one waits evicts the waiter
-  # before it runs a job. That cost 5 of 57 push runs (8.8%) after the predicate
-  # landed. Per-commit groups make eviction structurally impossible rather than
-  # merely reconfigured. `queue: max` would have kept the serialisation, but the
-  # only way to learn whether GitHub rejects it alongside an *expression* for
-  # `cancel-in-progress` is to push to `main` and see, and serialising merges
-  # bought nothing worth that: the runs contend for one account-wide job budget
-  # either way, and that queue is at the job level, where waiting does not evict.
+  # Only pull requests cancel superseded runs. The event name keeps the nightly
+  # out of main's push group; push groups are per commit because GitHub keeps one
+  # pending run per group, so a third merge would evict the waiting one.
   group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -131,35 +111,17 @@ jobs:
           fi
 
   static:
-    # Three shards, each a runner with its own worker pool running one shard of
-    # the manifest. Why more cores rather than extraction, and why three is where
-    # it stops paying, is docs/ci-performance-history.md's "The `static` budget" and
-    # "The fifth occurrence" sections, whose rules CLAUDE.md keeps; read the gate's own slowest-check report rather than a
-    # number quoted anywhere. This timeout stays well above the observed runtime
-    # so a slow runner cannot cancel a passing gate the way the previous one did.
-    #
-    # Every step below runs on all three legs, the toolchain install included, and
-    # that is deliberate rather than merely simpler: a step conditioned on the
-    # shard number is a step that runs on one leg, so tests/ci/workflow_test.rb
-    # refuses an `if` on any static step -- otherwise a check quietly becomes a
-    # check that runs a third as often.
-    #
-    # What remains here is what a shard genuinely needs. The toolchain install
-    # stays triplicated because the gate's own manifest runs "$ansible_python"
-    # and ansible-playbook checks on every shard; the six steps that did not vary
-    # by shard are gone, three of them into the gate's manifest and three into
-    # the `lint` job below (#653).
+    # Three shards of the policy gate's manifest (docs/ci-performance-history.md).
+    # No step may carry an `if:` (tests/ci/workflow_test.rb): a shard-conditioned
+    # step silently runs a third as often.
     timeout-minutes: 45
     name: static (${{ matrix.shard }})
     needs: changes
     if: ${{ needs.changes.outputs.static == 'true' }}
     runs-on: ubuntu-26.04
     strategy:
-      # Every shard reports. Failing fast would cancel the other two, so a run
-      # that broke checks in more than one shard would name only the first. The
-      # gate's path is deliberately not named in this comment: the mutation
-      # harness plants a defect by rewriting the first mention of it in this file,
-      # and a mention above the step it must reach would absorb that.
+      # Every shard reports. Do not name the gate's path in this comment: a mutation
+      # plants its defect at the first mention of that path in this file.
       fail-fast: false
       matrix:
         shard: ['1', '2', '3']
@@ -200,18 +162,8 @@ jobs:
             sudo apt-get -o Acquire::Retries=3 install --yes shellcheck
           fi
 
-      # The venv below is built with whatever `python3` the runner image happens
-      # to ship, and controller-requirements.txt pins ansible-core 2.21.4, which
-      # requires Python 3.12 or newer. Nothing declared that floor, so a runner
-      # image moving its default interpreter -- in either direction -- silently
-      # changed the toolchain CI resolved, and a contributor on 3.11 met the
-      # documented `pip install -r controller-requirements.txt` with a resolver
-      # wall of text naming no cause (#655). The version is read from
-      # .python-version rather than written here, for the same reason the pins
-      # are read from controller-requirements.txt: five jobs carry this pair
-      # byte-identically, and a literal repeated five times is five places a bump
-      # has to find. pyenv reads that file too, so a contributor gets the same
-      # interpreter without being told to.
+      # Python comes from .python-version (ansible-core needs 3.12+, #655); this pair
+      # is held byte-identical across five jobs, so no version literal here.
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -270,41 +222,15 @@ jobs:
             sleep $((attempt * 10))
           done
 
-      # The shard reaches the gate through the environment rather than by
-      # interpolating a matrix value into shell source, as every other matrix here
-      # does. The gate refuses an identifier its manifest does not declare, so a
-      # matrix naming a shard the partition dropped is a red leg rather than a leg
-      # that runs nothing.
+      # The shard comes through env; the gate refuses one its manifest does not declare.
       - name: Check policy properties
         env:
           POLICY_SHARD: ${{ matrix.shard }}
         run: tests/validate-policy.sh "$POLICY_SHARD"
 
   lint:
-    # The shard-independent half of what `static` used to be. Every step below
-    # produces the same verdict on every shard, so running them inside the matrix
-    # ran each of them three times per pull request and charged all three to the
-    # job with the stated 10-15 minute budget (#653).
-    #
-    # An `if:` on the step was the obvious trim and is refused by
-    # tests/ci/workflow_test.rb, deliberately: a step conditioned on the shard is
-    # a check that runs on one leg of three, which is the silent-coverage-loss
-    # shape #469 wrote the union guard against. So the checks move to a runner of
-    # their own instead, the way `mutation` and `reconciliation` did -- with the
-    # difference that those left the gate because they were its floor, and these
-    # leave the matrix because they were never per-shard work at all.
-    #
-    # The three single-command checks that stood beside them went the other way,
-    # into tests/validate-policy.sh, where they run once as one line of one shard
-    # and gain the manifest declaration guard they had no equivalent of here.
-    # What stayed is what cannot be a manifest line: ansible-lint and
-    # ansible-playbook are not this repository's own programs, and the ephemeral
-    # vault self-test is asserted by tests/policy_vault_test.rb against the
-    # workflow's own dependency install rather than against the gate.
-    #
-    # Gated on the same classifier output as `static`, not on a narrower lane:
-    # lint and a syntax check read every play and every role, so there is no
-    # subset of files that cannot change what they say.
+    # Shard-independent checks, moved out of `static` so they run once (#653).
+    # Gated like `static`: lint and syntax checks read every play and role.
     timeout-minutes: 15
     needs: changes
     if: ${{ needs.changes.outputs.static == 'true' }}
@@ -314,18 +240,8 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The venv below is built with whatever `python3` the runner image happens
-      # to ship, and controller-requirements.txt pins ansible-core 2.21.4, which
-      # requires Python 3.12 or newer. Nothing declared that floor, so a runner
-      # image moving its default interpreter -- in either direction -- silently
-      # changed the toolchain CI resolved, and a contributor on 3.11 met the
-      # documented `pip install -r controller-requirements.txt` with a resolver
-      # wall of text naming no cause (#655). The version is read from
-      # .python-version rather than written here, for the same reason the pins
-      # are read from controller-requirements.txt: five jobs carry this pair
-      # byte-identically, and a literal repeated five times is five places a bump
-      # has to find. pyenv reads that file too, so a contributor gets the same
-      # interpreter without being told to.
+      # Python comes from .python-version (ansible-core needs 3.12+, #655); this pair
+      # is held byte-identical across five jobs, so no version literal here.
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -394,29 +310,9 @@ jobs:
           fi
           test ! -s "$self_test_log"
 
-      # --offline because ansible-lint does not lint alone: ansible-compat's
-      # prepare_environment walks REQUIREMENT_LOCATIONS and runs its own
-      # `ansible-galaxy collection install` on requirements.yml, from inside a
-      # library, with no --no-cache and nowhere to pass one. That is the second
-      # galaxy call in this job and the only one #704's flag cannot reach, so it
-      # carries the whole failure the toolchain step describes (#719). The flag is on
-      # the command rather than `offline: true` in .ansible-lint because the
-      # config file is read by a developer's bare `ansible-lint` too, where the
-      # self-healing install is the thing that makes a first run work; scoped
-      # here it costs them nothing. It is a CLI option with no environment
-      # fallback -- ANSIBLE_LINT_OFFLINE does not exist, and ANSIBLE_LINT_NODEPS,
-      # which would imply it, also suppresses the checks that need the
-      # collections ("far less violations will be reported").
-      #
-      # It turns off two things. The install: lint then resolves modules from the
-      # $HOME/.ansible/collections the toolchain step populated, rather than
-      # installing its own copy under <tree>/.ansible, and it refuses loudly --
-      # 18 syntax-check[unknown-module] and exit 2 -- if that step did not run,
-      # so the new dependency cannot fail quietly. And the schema refresh, which
-      # leaves the schemas bundled with the pinned ansible-lint in force, so this
-      # job's verdict stops depending on a network fetch. Measured on a fresh
-      # HOME with nothing cached, that costs nothing here: 387 files processed
-      # either way, 0 failures either way.
+      # --offline stops ansible-compat's own galaxy install, which no --no-cache reaches
+      # (#719), and the schema refresh. On the CLI rather than in .ansible-lint so a
+      # developer's bare ansible-lint still installs collections itself.
       - name: Lint Ansible
         run: ansible-lint --strict --offline
 
@@ -426,32 +322,9 @@ jobs:
           ansible-playbook generate-secrets.yml --syntax-check
           ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --syntax-check
 
-      # Nothing in this repository has ever validated renovate.json against
-      # Renovate's own schema, and #775 is what that cost. #771 shipped a
-      # matchPackageNames holding "*" alongside other patterns; Renovate refuses
-      # that, and it refuses the WHOLE config, so the bot stopped opening pull
-      # requests repository-wide -- its own dependency updates included -- the
-      # day after it landed. Both checks that read the file passed on it: JSON
-      # parsing only proves it parses, and tests/renovate_policy_test.rb asserts
-      # hand-written properties, one of which actively REQUIRED the spelling
-      # Renovate rejects. Only Renovate knows Renovate's schema.
-      #
-      # A lint step rather than a tests/validate-policy.sh manifest line, for the
-      # reason ansible-lint is not one either: the gate's manifest is for
-      # programs this repository owns, and it runs offline, while this one is
-      # npm's and resolves `extends` presets. It lands in this job rather than in
-      # `static` because its verdict cannot vary by shard, which is the whole
-      # reason this job exists.
-      #
-      # The pin is the only version literal in this file that is not an action
-      # SHA; a custom manager in renovate.json tracks it, and
-      # tests/renovate_policy_test.rb asserts that coupling so it cannot float.
-      # --strict, because a deprecation is only a warning and a warning exits
-      # zero: #842's schedule migration sat on the Dependency Dashboard
-      # with this step green over it. Strict reds the pull request that
-      # introduces one, or the Renovate bump whose release deprecates something.
-      # The #775 plant below stays non-strict on purpose, so it still proves that
-      # refusal is an ERROR rather than a warning strict would also catch.
+      # Only Renovate's own validator knows its schema (#775). --strict because a
+      # deprecation only warns; the #775 plant below stays non-strict to prove the
+      # refusal is still an error. A custom manager in renovate.json tracks the pin.
       - name: Validate the Renovate configuration
         run: |
           renovate_pin=renovate@44.116.1
@@ -479,12 +352,8 @@ jobs:
           fi
 
   docs:
-    # These checks read Markdown and the working tree and nothing else, so they
-    # run on a checkout and the Ruby the runner image ships rather than the
-    # fifteen minutes of Ansible toolchain `static` installs. They stay registered
-    # in tests/validate-policy.sh as well, and deliberately so: a link resolves
-    # against files the documents do not own, so a code rename has to keep running
-    # them too, and only `static` runs on a code rename.
+    # Markdown-only checks on the runner's Ruby. The gate runs them too, because a
+    # code rename can break a link.
     timeout-minutes: 10
     needs: changes
     if: ${{ needs.changes.outputs.docs == 'true' }}
@@ -503,24 +372,9 @@ jobs:
         run: ruby tests/secrets_docs_test.rb
 
   vault:
-    # Nothing in CI held the vault password, so nothing ever parsed the encrypted
-    # file and the gate could only prove it was still encrypted. Both variants of
-    # that blind spot shipped: an unparseable file (#555, #559) and a missing key
-    # (#172, #274). So this job runs the play the poller runs, with the poller's
-    # own arguments. A re-implemented parse-and-key-set check would be a second
-    # contract agreeing with itself while disagreeing with the host, so the step
-    # below mirrors scripts/production_auto_deploy.py's _vault_arguments, and
-    # tests/ci/workflow_test.rb imports that function and compares its output to
-    # this step's argv token for token.
-    #
-    # A real run, deliberately, and the reason is narrower than it reads. Measured
-    # on ansible-core 2.21.4, 2026-09-13: decryption happens at vars-load time, so
-    # --check does report #559's quote as rc=4 and a missing key as rc=2 -- it is
-    # not blind. --syntax-check is, exiting 0 on both, as do --list-tasks,
-    # --list-tags and --list-hosts. What rules --check out is that this job's whole
-    # claim is that the host's own command succeeded against this artifact, and a
-    # simulation cannot make that claim. Hence an argv pinned *exactly* rather than
-    # a denylist, which is what the next flag walks past.
+    # Runs the poller's own validate-vault.yml argv (_vault_arguments in
+    # scripts/production_auto_deploy.py; tests/ci/workflow_test.rb compares them).
+    # A real run, not --check: the claim is that the host's own command succeeds.
     timeout-minutes: 15
     needs: changes
     if: ${{ needs.changes.outputs.vault == 'true' }}
@@ -530,18 +384,8 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The venv below is built with whatever `python3` the runner image happens
-      # to ship, and controller-requirements.txt pins ansible-core 2.21.4, which
-      # requires Python 3.12 or newer. Nothing declared that floor, so a runner
-      # image moving its default interpreter -- in either direction -- silently
-      # changed the toolchain CI resolved, and a contributor on 3.11 met the
-      # documented `pip install -r controller-requirements.txt` with a resolver
-      # wall of text naming no cause (#655). The version is read from
-      # .python-version rather than written here, for the same reason the pins
-      # are read from controller-requirements.txt: five jobs carry this pair
-      # byte-identically, and a literal repeated five times is five places a bump
-      # has to find. pyenv reads that file too, so a contributor gets the same
-      # interpreter without being told to.
+      # Python comes from .python-version (ansible-core needs 3.12+, #655); this pair
+      # is held byte-identical across five jobs, so no version literal here.
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -634,21 +478,8 @@ jobs:
             validate-vault.yml
 
   mutation:
-    # Extracted from the policy gate, which it was the floor of;
-    # docs/ci-performance-history.md's "The `static` budget" section carries the measurement. Nothing about the
-    # mutations is routed more narrowly than the gate, because a mutation is
-    # planted in a copy of the whole repository and any file can change what the
-    # policy set says.
-    #
-    # The nightly and workflow_dispatch -- the two `--full` triggers -- run
-    # `--audit` instead of the narrow form: it re-derives every row's
-    # `detected_by` against all eight policy scripts, and until #727 it ran in
-    # no job at all, so drift accumulated behind a green gate (#715). It
-    # replaces the narrow run rather than sitting beside it, because its output
-    # includes the narrow run's. #727 measured it on two 4-core runners at 30.5
-    # and 34.5 minutes (CPU/elapsed 1.13-1.70); 60 is that maximum plus setup
-    # with room for the ~30% runner-to-runner spread. Drift reds the nightly,
-    # which blocks no deploy: the poller reads push runs only.
+    # Extracted from the policy gate (docs/ci-performance-history.md). The nightly and
+    # workflow_dispatch run `--audit` instead (#727); 60 covers its ~35 minutes plus spread.
     timeout-minutes: 60
     needs: changes
     if: ${{ needs.changes.outputs.static == 'true' }}
@@ -660,18 +491,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      # The venv below is built with whatever `python3` the runner image happens
-      # to ship, and controller-requirements.txt pins ansible-core 2.21.4, which
-      # requires Python 3.12 or newer. Nothing declared that floor, so a runner
-      # image moving its default interpreter -- in either direction -- silently
-      # changed the toolchain CI resolved, and a contributor on 3.11 met the
-      # documented `pip install -r controller-requirements.txt` with a resolver
-      # wall of text naming no cause (#655). The version is read from
-      # .python-version rather than written here, for the same reason the pins
-      # are read from controller-requirements.txt: five jobs carry this pair
-      # byte-identically, and a literal repeated five times is five places a bump
-      # has to find. pyenv reads that file too, so a contributor gets the same
-      # interpreter without being told to.
+      # Python comes from .python-version (ansible-core needs 3.12+, #655); this pair
+      # is held byte-identical across five jobs, so no version literal here.
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -730,13 +551,8 @@ jobs:
             sleep $((attempt * 10))
           done
 
-      # The harness syntax-checks a play in every sandbox it builds and renders
-      # role defaults through Ansible, so it needs the gate's toolchain.
-      #
-      # The event arrives through env rather than as an expression in the
-      # script. The bare form is written first on purpose: a mutation row plants
-      # its removal by rewriting the first mention of it in this file. An event
-      # this does not name fails rather than silently picking a form.
+      # Needs the gate's toolchain. The bare form is written first because a mutation
+      # row plants its removal at the first mention of it here; an unnamed event fails.
       - name: Check policy mutation coverage
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -755,17 +571,11 @@ jobs:
           esac
 
   reconciliation:
-    # The media acquisition reconciliation contract is 373 Ansible runs. One
-    # runner per file rather than one for all three: sharing a runner only moved
-    # the contention, since twelve worker threads still divided four cores. The
-    # contract now costs its slowest file rather than the sum of the three.
+    # One runner per file: the contract is 373 Ansible runs and costs its slowest file.
     timeout-minutes: 45
     name: reconciliation (${{ matrix.part }})
     needs: changes
-    # Routed, not gated on the policy flag: `static` is true whenever any lane
-    # runs at all, so a one-line change in roles/dozzle/ paid for all three legs.
-    # The classifier selects this from roles/arr/, roles/downloaders/ and the
-    # contract's own test files.
+    # Routed rather than gated on `static`, which is true whenever any lane runs.
     if: ${{ needs.changes.outputs.reconciliation == 'true' }}
     runs-on: ubuntu-26.04
     strategy:
@@ -779,18 +589,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      # The venv below is built with whatever `python3` the runner image happens
-      # to ship, and controller-requirements.txt pins ansible-core 2.21.4, which
-      # requires Python 3.12 or newer. Nothing declared that floor, so a runner
-      # image moving its default interpreter -- in either direction -- silently
-      # changed the toolchain CI resolved, and a contributor on 3.11 met the
-      # documented `pip install -r controller-requirements.txt` with a resolver
-      # wall of text naming no cause (#655). The version is read from
-      # .python-version rather than written here, for the same reason the pins
-      # are read from controller-requirements.txt: five jobs carry this pair
-      # byte-identically, and a literal repeated five times is five places a bump
-      # has to find. pyenv reads that file too, so a contributor gets the same
-      # interpreter without being told to.
+      # Python comes from .python-version (ansible-core needs 3.12+, #655); this pair
+      # is held byte-identical across five jobs, so no version literal here.
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -855,31 +655,12 @@ jobs:
         run: ruby "tests/media_acquisition_reconciliation_${PART}_test.rb"
 
   toolchain:
-    # The controller toolchain, built once and published to ghcr.io instead of
-    # installed inside every suite leg. The tag is a digest of the harness's pins,
-    # tests/integration.Dockerfile and requirements.yml, so a bumped pin is a new
-    # tag rather than a stale layer, and this job is a registry probe on every run
-    # that changes none of them. There is deliberately no actions/cache and no
-    # type=gha layer cache: a content-addressed tag only misses when its inputs
-    # changed, and then the layer cache would be cold too. The registry is the
-    # cache.
-    #
-    # Nothing depends on this succeeding. tests/integration.sh builds the image
-    # locally when it cannot pull one, and installs the toolchain inside the run
-    # when it cannot build one. That is why the suites matrix below drops the
-    # implicit success gate `needs` carries, and why tests/ci/validate_results.rb
-    # names this job non-blocking: a registry hiccup must cost time rather than a
-    # verdict, so the aggregate check reports the failure instead of failing on it.
+    # Publishes the controller toolchain to ghcr.io under a tag digesting its inputs;
+    # the registry is the cache. Non-blocking: tests/integration.sh builds locally
+    # when it cannot pull, and tests/ci/validate_results.rb reports the failure.
     timeout-minutes: 20
-    # No `needs`, so this starts with `changes` rather than behind it -- every
-    # lane's start is this job's finish, and it was ordering a registry probe
-    # behind a classification it barely reads. docs/ci-performance-history.md's
-    # "`toolchain` no longer waits for `changes`" carries the measurement and what dropping the
-    # `suites != '[]'` term costs.
-    #
-    # A fork's GITHUB_TOKEN is read-only, so no packages: write scope exists for it
-    # to publish with. Skipping is the honest outcome: the fork's suites then take
-    # the same local-build path a developer's machine takes.
+    # No `needs`, so it starts alongside `changes`. Skipped on forks, whose token
+    # cannot write packages; their suites build locally.
     if: ${{ github.event.pull_request.head.repo.fork != true }}
     runs-on: ubuntu-26.04
     permissions:
@@ -897,44 +678,29 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The harness owns the tag, the build arguments and the skip: naming them
-      # here as well is how the published image and the image the suites look for
-      # would drift apart.
+      # The harness owns the tag and build arguments; naming them here would drift.
       - name: Publish the controller toolchain image
         env:
           INTEGRATION_TOOLCHAIN_PUBLISH: '1'
         run: tests/integration.sh
 
   suites:
-    # 90 rather than 60 because idempotence-check's own work grew when its guard
-    # started doing its job, and a lane killed at its ceiling would read as the fix
-    # regressing rather than as the guard working. docs/ci-performance-history.md, "A guard
-    # that was green while proving 6% of what it claimed", carries the numbers.
+    # idempotence-check's work grew; docs/ci-performance-history.md has the numbers.
     timeout-minutes: 90
     name: ${{ matrix.suite }}
     needs:
       - changes
       - toolchain
-    # The toolchain is an optimization, never a precondition, so a lane still runs
-    # when publishing failed or was skipped -- it builds the image itself instead.
-    # Dropping the implicit success gate that `needs` carries is what forces the
-    # explicit changes result term: without it a failed classification would reach
-    # the matrix as an empty selection rather than as a skip.
+    # The toolchain is optional, so `needs`' implicit success gate is dropped; the
+    # changes-result term keeps a failed classification from reaching the matrix.
     if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.suites != '[]' }}
     runs-on: ubuntu-26.04
-    # A job-level block REPLACES the workflow-level one instead of merging with
-    # it, which is why contents: read is restated: without it actions/checkout
-    # loses the scope it needs. packages: read is intent rather than a functional
-    # requirement -- every ghcr.io image the plays pull is a third-party public
-    # package, which needs no token scope at all -- and is what keeps a future
-    # move to a package this repository owns from failing with a permissions
-    # error instead of working.
+    # A job-level block replaces the workflow one, so contents: read is restated.
+    # packages: read is intent: every ghcr.io image pulled today is public.
     permissions:
       contents: read
       packages: read
-    # Read at job level rather than inside the step because a step's `if` is
-    # evaluated before that step's own env block exists. This carries no secret
-    # value into the log: it is present-or-absent that the guard below reads.
+    # Job level because a step's `if` cannot see its own env; only presence is read.
     env:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     strategy:
@@ -944,40 +710,23 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Anonymous ghcr.io pulls draw on an allowance scoped to the runner's IP and
-      # shared with every other GitHub Actions job on that address, which is why a
-      # converge that pulls nothing unusual can still fail with "toomanyrequests"
-      # (PR #84, 2026-08-21). The job's own GITHUB_TOKEN moves the pulls onto a
-      # per-account allowance this repository is the only consumer of.
+      # Moves ghcr.io pulls off the anonymous per-IP allowance shared with other jobs.
       - name: Authenticate to GitHub Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # lscr.io is linuxserver.io's front door onto that same registry -- its
-      # challenge names realm="https://ghcr.io/token" service="ghcr.io", so a
-      # GitHub credential redeems it. The Docker CLI keys credentials by the host
-      # it was asked for, so the login above does not reach an lscr.io pull, and
-      # seven of the images the plays pull are lscr.io ones: every arr and every
-      # downloader. Without this they stay on the anonymous per-IP allowance.
+      # lscr.io redeems GitHub credentials, but Docker keys logins by host, so the
+      # arr and downloader images need their own login.
       - name: Authenticate to the linuxserver.io registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: lscr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # Eleven of the images the plays pull are docker.io ones. Anonymous Hub pulls
-      # are 100 per six hours scoped to the runner's IPv4 address or IPv6 /64 --
-      # the same shared bucket as above -- against 200 for a free account that only
-      # this repository spends, so the isolation matters more than the doubling.
-      # This is the one login needing a stored credential: GITHUB_TOKEN is not a
-      # Docker Hub account.
-      #
-      # Guarded on the secret being set. Authentication is an optimization over the
-      # anonymous allowance, never a precondition for it, so a checkout without the
-      # secret -- a fork PR, a clone -- pulls exactly as it did before this step
-      # existed instead of failing at login.
+      # A free Docker Hub account's allowance is ours alone, unlike the anonymous
+      # per-IP one. Skipped without the secret (forks, clones): they pull anonymously.
       - name: Authenticate to Docker Hub
         if: ${{ env.DOCKERHUB_USERNAME != '' }}
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -989,18 +738,11 @@ jobs:
         env:
           SUITE: ${{ matrix.suite }}
           SELECTED_TAGS: ${{ needs.changes.outputs.selected_tags }}
-          # The upgrade lane's two inputs. The classifier resolves them from the
-          # same diff it routes on, in the one job that checks out at
-          # fetch-depth 0 -- this job takes actions/checkout's default depth of
-          # 1, so the base revision is not readable from here. They are empty
-          # for every other lane, and the harness refuses the upgrade lane
-          # without both.
+          # The upgrade lane's inputs, resolved by `changes`: this job's shallow checkout
+          # cannot read the base. Empty for every other lane.
           INTEGRATION_UPGRADE_SERVICE: ${{ needs.changes.outputs.upgrade_service }}
           INTEGRATION_UPGRADE_BASE_IMAGE: ${{ needs.changes.outputs.upgrade_base_image }}
-          # The upgrade lane's tags are its SUBJECT's and not the run's:
-          # SELECTED_TAGS is the union of every tagged lane, and a fall-open
-          # empties it, which would converge the whole site twice for a
-          # one-service proof.
+          # The subject's tags, not the run's: a fall-open empties SELECTED_TAGS.
           UPGRADE_TAGS: ${{ needs.changes.outputs.upgrade_tags }}
         run: |
           case "$SUITE" in
@@ -1061,18 +803,7 @@ jobs:
             toolchain="${{ needs.toolchain.result }}" \
             suites="${{ needs.suites.result }}"
 
-      # DELIBERATE DUPLICATION -- do not remove this step because the same check
-      # already runs in the gate. That removal is the defect #480 filed. The
-      # other route is one line of shard 1 of the policy gate's manifest, whose
-      # preamble carries the other half of this comment.
-      #
-      # tests/ci/workflow_test.rb pins this workflow's shape, `static` included.
-      # Run only from the gate it is a check inside the job it guards: gate
-      # `static` on `if: false`, delete it, or empty its matrix, and the objection
-      # stops running along with the thing it objects to, leaving `static` as a
-      # legitimately-allowed `skipped` and the run green. It runs here because this
-      # job cannot be skipped, so no edit to another job's condition, matrix or
-      # existence can suppress it, and it costs a second. Each copy catches the
-      # loss of the other, and the check asserts both directions itself.
+      # DELIBERATE DUPLICATION (#480): the gate runs this too, but only here can no
+      # edit to `static` (if: false, deletion, empty matrix) suppress it. Keep both.
       - name: Pin the workflow's own shape
         run: ruby tests/ci/workflow_test.rb

@@ -1,41 +1,8 @@
 """Schema validation for the preference documents Immich sends back.
 
-`roles/immich/tasks/managed_users.yml` carried this as two byte-identical
-36-condition `assert` tasks — one before the batch creation boundary and one
-after it — differing only in the register they looped over. Both ran under
-`no_log` with a generic `fail_msg`, so an Immich release that changed one field's
-type reported only that the response was unsupported.
-
-**This is not `immich_preference_schema`, and the two must not be merged.** That
-module validates what the *operator declares*: profiles and per-email overrides
-authored in the vault, where every scope and every field is optional because the
-role reads them through `| default(...)`, and where an unknown key is a typo that
-must be refused. This module validates what the *Immich API returns*, and the
-rules are the opposite in three places:
-
-* **Every scope and every field is required.** The conditions read
-  `item.json.cast.gCastEnabled is boolean`; a missing key is Undefined, which
-  fails that test, so absence was already a rejection.
-* **Unknown keys are accepted.** The condition was `[...12 names...] |
-  difference(item.json.keys() | list) | length == 0`, which requires the twelve
-  to be present and says nothing about the rest. Immich adding a preference
-  field must not fail a converged deployment.
-* **`archiveSize`, `duration` and `minimumFaces` are integers, not positive
-  integers**, and there is no `avatar` scope: the avatar colour is a property of
-  the admin user document, guarded by a separate task.
-
-Unlike the declared-preference schema, every name this module can print is an
-Immich API literal from the table below, so paths name the field. The value is
-never printed and neither is anything drawn from the response, because the task
-that calls this loops over `uri` results whose `item` is a vault managed-user
-record; only `item.json` is ever passed in, and only these literal paths ever
-come out.
-
-Semantics are matched to Ansible's own Jinja tests, verified on ansible-core
-2.21.3: `is integer` rejects booleans, `is boolean` rejects integers, and `is
-string` rejects None. A non-string compared against an enum failed the original
-condition rather than erroring, since `42 in ['asc', 'desc']` is false, which is
-why an enum reports only the membership.
+Not `immich_preference_schema` (what the operator declares), and must not be
+merged with it: here every field is required, unknown keys are accepted, and
+only literal field paths are ever printed, never a value (the caller is no_log).
 """
 
 import runpy
@@ -58,9 +25,8 @@ ENUM = "enum"
 
 ASSET_ORDERS = ("asc", "desc")
 
-# The response contract, scope by scope. Every entry here is required; anything
-# absent from the table is ignored rather than refused, so a new Immich field
-# does not fail a run that never reads it.
+# Every entry is required; fields absent from the table are ignored, so a new
+# Immich field does not fail a run.
 SCOPES = {
     "albums": {"defaultAssetOrder": (ENUM, ASSET_ORDERS)},
     "cast": {"gCastEnabled": (BOOLEAN, None)},
@@ -85,11 +51,7 @@ ROOT_LABEL = "preferences"
 
 
 def _field(errors, path, value, kind, allowed):
-    # `==` rather than `is`, and an `else` that refuses: the kinds are module-level
-    # string literals, so CPython interning made identity work, and an unmatched
-    # kind fell off the end validating nothing at all. A table entry naming a kind
-    # this function does not implement is a mistake in the table, not a field the
-    # schema declines to check, so it raises the way its siblings do (#648).
+    # `==`, not `is`, and an `else` that refuses an unknown kind (#648).
     if kind == BOOLEAN:
         if not _GUARDS.is_boolean(value):
             errors.append(f"{path}: must be a boolean")
@@ -103,18 +65,12 @@ def _field(errors, path, value, kind, allowed):
         if not _GUARDS.is_string(value) or value not in allowed:
             errors.append(f"{path}: must be one of {', '.join(allowed)}")
     else:
-        # Safe to name: every kind reaching here is a literal from SCOPES, never
-        # a value Immich returned.
+        # Safe to name: every kind here is a literal from SCOPES.
         raise AnsibleFilterError(f"{path}: unknown field kind {kind!r}")
 
 
 def immich_preference_response_errors(response, label=ROOT_LABEL):
-    """Return every violation in one Immich preference response, as field paths.
-
-    Never includes a value, so the result is safe to print from the `fail_msg` of
-    a task that runs under `no_log`. An empty list means Immich returned a
-    document the role knows how to reconcile.
-    """
+    """Return every violation in one Immich preference response, as field paths (never values)."""
     errors = []
     if not _GUARDS.is_mapping(response):
         return [f"{label}: must be a mapping"]

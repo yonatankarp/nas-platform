@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Behaviour of the Audiobookshelf role's crash-resumable initial-scan stage.
+
 require "fileutils"
 require "json"
 require "open3"
@@ -16,8 +18,7 @@ include TestScaffold
 
 MAIN_TASKS = File.join(ROOT, "roles", "audiobookshelf", "tasks", "main.yml")
 SCAN_TASKS = File.join(ROOT, "roles", "audiobookshelf", "tasks", "initial_scan.yml")
-# The role's defaults, plus the one platform fact its task files read from
-# inventory/group_vars/all/main.yml, which this one-play harness never loads.
+# The role's defaults plus the one main.yml fact its tasks read.
 DEFAULTS = YAML.safe_load_file(
   File.join(ROOT, "roles", "audiobookshelf", "defaults", "main.yml"), aliases: false
 ).merge(
@@ -29,16 +30,8 @@ MARKER_NAME = ".nas-platform-initial-scan.json"
 LIBRARY_ID = "managed-library"
 LIBRARY_NAME = DEFAULTS.fetch("audiobookshelf_library_name")
 MEDIA_SENTINEL = "MEDIA_SECRET_SENTINEL"
-# How long one ansible-playbook boot is given before it is called hung. This is
-# not a performance assertion: every behavioural property below has its own
-# check. tests/validate-policy.sh runs its checks in a pool of `nproc` workers
-# and this check forks its own case pool of the same width, so on a four-core
-# runner sixteen boots can be resident at once and a play that takes two seconds
-# unloaded takes far longer. A literal 30 here reported the gate's own
-# contention as a scan-behaviour failure on three unrelated pull requests
-# (#462); 120 is what tests/media_acquisition_reconciliation_support.rb budgets
-# for the same operation, and its comment argues the same runner. Overridable
-# for anyone who wants it strict.
+# Not a performance assertion: the gate's nested pools make boots slow under
+# contention (#462). Overridable.
 PLAYBOOK_TIMEOUT_SECONDS = Float(ENV.fetch("AUDIOBOOKSHELF_PLAYBOOK_TIMEOUT", "120"))
 
 class FixtureTimeout < StandardError; end
@@ -75,32 +68,10 @@ def bounded_capture(stream, limit_bytes)
   bytes
 end
 
-# Timeout.timeout around Open3.capture3 interrupts open3's own reader thread
-# mid-read, so a contended boot is reported as "stream closed in another thread
-# (IOError)" rather than as a deadline, and the ansible child outlives the check
-# because nothing signals it. Only wait_thread.value is wrapped here, the
-# readers are ours, and the process group is killed on the way out -- the shape
-# the sibling fixtures in tests/immich_configured_password_test.rb and
-# tests/beszel_password_preservation_test.rb already carry.
-#
-# Every join on the timeout path is bounded, and must stay bounded. A reader
-# thread returns at EOF, EOF needs every write end of the pipe closed, and
-# terminate_process_group only reaches the process *group* -- anything that left
-# it (a detached ansible-connection, any grandchild that called setsid) survives
-# holding the pipe, so an unbounded join turns this check into the hang it exists
-# to detect. The _run docstring in scripts/production_auto_deploy.py records the
-# same lesson for the poller. The bound costs nothing: the statement after the
-# joins raises FixtureTimeout, which carries only the budget, so the output those
-# joins would wait for is discarded either way.
-#
-# The two report_on_exception lines belong to that same path. When a bounded join
-# returns nil the reader is still parked in IO#read, and popen3's block form
-# closes the pipe in its own ensure on the way out, so the thread dies with
-# "stream closed in another thread (IOError)" and prints a header and a stack
-# trace per reader into a gate whose failures are read by substring. Silencing
-# the report hides nothing: those values are never consumed on the timeout path,
-# and Thread#value still re-raises a thread's exception on the success path where
-# they are.
+# Only wait_thread.value is under the timeout (Timeout around capture3 kills
+# open3's own readers), and the process group is killed on the way out. Joins
+# stay bounded: a setsid grandchild can hold the pipe open forever. The
+# report_on_exception lines silence the IOError readers die with on that path.
 def capture3_with_timeout(environment, *command, chdir:, timeout_seconds:,
                           capture_limit_bytes: CAPTURE_LIMIT_BYTES)
   Open3.popen3(environment, *command, chdir: chdir, pgroup: true) do |stdin, stdout, stderr, wait_thread|
@@ -138,10 +109,7 @@ def capture3_with_timeout(environment, *command, chdir:, timeout_seconds:,
   end
 end
 
-# The crash-resumable unit this file drives: the role's initial-scan stage, whole.
-# The stage has its own file, so it is read as one; a role that still carries the
-# stage inline is read as the slice between its first and last task, which is the
-# same list.
+# The role's initial-scan stage, whole: its own file, or the inline slice.
 def scan_task_slice
   return YAML.safe_load_file(SCAN_TASKS, aliases: false) if File.file?(SCAN_TASKS)
 
@@ -153,12 +121,7 @@ def scan_task_slice
   tasks[first..last]
 end
 
-# Which task to interrupt at. Reading the slice and inserting the interruption
-# were one method, and its early return for the stage file happened before the
-# insertion -- so the day roles/audiobookshelf/tasks/initial_scan.yml existed,
-# every scenario below ran to completion uninterrupted and the twelve
-# crash-resume properties reported failures against a run that never crashed.
-# They are two methods now so that neither path can skip the other.
+# Kept separate from scan_task_slice so neither path can skip the interruption.
 def selected_scan_tasks(stop_after: nil, stop_before: nil)
   selected = scan_task_slice
   interruption = {
@@ -280,11 +243,7 @@ class ScanFixture
   end
 
   def respond(client, method, target, body)
-    # A responder that accepts the request and answers nothing, so the play
-    # cannot finish however fast the machine is. It is what makes the refusal
-    # case at the foot of this file deterministic rather than a bet on an
-    # ansible boot outlasting its budget. It waits for close rather than
-    # sleeping, so the serve loop still leaves through its own break.
+    # Answers nothing, so the refusal case below is deterministic.
     if @blocked
       IO.select([@shutdown_reader], nil, nil, nil)
       return
@@ -469,13 +428,8 @@ def pending_marker_failure(config_root)
 end
 
 
-# Each scenario below is a whole convergence: its own temporary config root, its
-# own stub Audiobookshelf on an OS-assigned port and its own ansible-playbook
-# runs, sharing nothing with the others but the failure list. Declaring one
-# rather than opening the temporary directory inline is what lets the pool at
-# the foot of the file place them side by side -- almost all of their wall time
-# is spent waiting on those playbook subprocesses -- while their failures are
-# still concatenated in the order the scenarios are written.
+# Each scenario is a whole, isolated convergence, declared so the pool at the
+# foot of the file can run them side by side.
 SCENARIOS = []
 def scenario(prefix, &body)
   SCENARIOS << lambda do |failures|
@@ -853,14 +807,7 @@ end
   end
 end
 
-# The refusal path of the wrapper above, proved the way the three sibling
-# fixtures prove theirs: a budget nothing can meet, driven against a fixture
-# that answers nothing. What this covers is the wrapper -- the process group is
-# signalled and the deadline is named in the diagnostic -- and not the detection
-# of a hung HTTP call: one second is shorter than an ansible boot on the runners
-# this gate uses, so the play is usually refused before it reaches the fixture
-# at all. The blocked responder is what makes the case deterministic on a
-# machine fast enough to boot inside the budget, rather than a bet on boot time.
+# The wrapper's refusal path: an unmeetable budget against a silent fixture.
 scenario("audiobookshelf-blocked-fixture-") do |config_root, failures|
   fixture = ScanFixture.new(advance_last_scan: true, library: nil, blocked: true)
   begin

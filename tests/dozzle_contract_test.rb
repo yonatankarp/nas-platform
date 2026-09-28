@@ -1,58 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 #
-# Behaviour of the Dozzle service contract's six Ruby programs.
-#
-# Until #147 all six lived in `<<'RUBY'` heredocs inside tests/contracts/dozzle.sh
-# -- 951 of that file's 1,116 lines, more heredocs than any other contract in the
-# repository. `sh -n` reads a quoted heredoc as opaque text, so nothing but an
-# integration lane with Docker, a converged Dozzle stack, a Pushover recorder and a
-# real vault ever executed most of them. They are files now, so all six are
-# reachable here.
-#
-# Six layers, because the contract has six kinds of property:
-#
-#   Group render -- what only the document Compose actually merges can decide:
-#   the friendly container name on every service and the Running Containers
-#   grouping. The wrapper renders eight stacks in three variants and hands each
-#   over in one environment variable, so the program fixtures completely: no
-#   Docker, no compose files, one canned render per row.
-#
-#   Labels -- the one property a rendered document cannot see. Compose keeps the
-#   last of two identical mapping keys, so a stack that spells `dev.dozzle.name`
-#   twice renders as one label and the render layer above agrees with it. Reading
-#   the source stream with Psych is where the second spelling is still visible.
-#
-#   Stack -- the Compose definition, the role's relay-state safety ordering and
-#   the rendered environment file. Rows are chosen so each of the five arguments
-#   the wrapper passes has a row that breaks only the file it names: an argument
-#   nothing reads is an argument that can be dropped without anything noticing.
-#
-#   Alerts -- the four managed rules, the dispatcher, and the mode-gated proofs
-#   that the integration lane and the Mac hooks still exercise them. The gate is
-#   pinned in both directions: a missing harness marker must refuse under
-#   `static` and must not refuse under a live mode.
-#
-#   Planned output -- the exact per-marker occurrence counts in a
-#   `--check --diff` transcript.
-#
-#   Runtime -- the live half, driven against a stub notification API and a stub
-#   `ansible-vault` on PATH. `verify` reaches its own success line here, which is
-#   the first time any of this contract's live assertions has been executable
-#   without a converged stack; the fixture modes that write artifacts are driven
-#   as sequences.
-#
-#   Wrapper -- tests/contracts/dozzle.sh is what turns a mode into one
-#   invocation per program plus one render per stack per platform variant, which
-#   is three times whatever services/manifest.yml declares and fifty-one today
-#   (it was twenty-seven, over nine of the seventeen stacks, until #656). Its
-#   rows prove every program is reached, that each
-#   is resolved from the script's own checkout while the tree to inspect is
-#   passed in, that the `-r` preload deliberately still names the inspected tree,
-#   and that none of the six can consume the caller's stdin.
-#
-# Run with --self-test to plant a regression in each program and prove the rows
-# above detect it.
+# Behaviour of the Dozzle service contract's six Ruby programs and its wrapper,
+# tests/contracts/dozzle.sh. Run with --self-test to plant a regression in each.
 
 require "digest"
 require "fileutils"
@@ -73,8 +23,7 @@ include TestScaffold
 include ContractTestSupport
 
 ROOT = File.expand_path("..", __dir__)
-# The prefix every refusal this file judges has to carry. Matching the
-# fragment alone accepted a backtrace or an echoed argument as a refusal.
+# Matching the fragment alone accepted a backtrace or an echoed argument as a refusal.
 DIAGNOSTIC_PREFIX = "Dozzle contract failed: "
 CONTRACT = File.join(ROOT, "tests", "contracts", "dozzle.sh")
 GROUP_RENDER_PROGRAM = File.join(ROOT, "tests", "contracts", "dozzle-group-render.rb")
@@ -84,24 +33,15 @@ ALERTS_PROGRAM = File.join(ROOT, "tests", "contracts", "dozzle-alerts.rb")
 PLANNED_OUTPUT_PROGRAM = File.join(ROOT, "tests", "contracts", "dozzle-planned-output.rb")
 RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "dozzle-runtime.rb")
 
-# The preloads tests/contracts/dozzle.sh carries, transcribed rather than
-# re-derived. -rjson and -ryaml are load-bearing: none of those bodies requires
-# the library it uses, so run bare each raises NameError on the first document it
-# looks at. The labels program's preload is a *path*, and it names the tree being
-# inspected rather than this checkout -- see the wrapper layer, which pins that
-# in both directions. The planned-output and runtime programs take no preloads:
-# the runtime half requires what it needs on its own first seven lines.
+# Transcribed from tests/contracts/dozzle.sh. -rjson/-ryaml are load-bearing: the
+# bodies do not require what they use. The labels preload names the inspected tree.
 GROUP_RENDER_COMMAND = [RbConfig.ruby, "-rjson"].freeze
 STACK_COMMAND = [RbConfig.ruby, "-ryaml"].freeze
 ALERTS_COMMAND = [RbConfig.ruby, "-ryaml"].freeze
 PLANNED_COMMAND = [RbConfig.ruby].freeze
 RUNTIME_COMMAND = [RbConfig.ruby].freeze
 
-# The seventeen base Compose files the labels program is handed, in the
-# wrapper's order. Stated here so a row can break exactly one of them and so the
-# wrapper layer can assert the list has not drifted from the wrapper's own
-# invocation, and held against services/manifest.yml below so it cannot go back
-# to naming a subset.
+# The wrapper's order; held against services/manifest.yml below.
 BASE_COMPOSE_FILES = %w[
   services/arr/compose.yml
   services/audiobookshelf/compose.yml
@@ -122,18 +62,9 @@ BASE_COMPOSE_FILES = %w[
   services/vaultwarden/compose.yml
 ].freeze
 
-# The stacks services/manifest.yml declares, read rather than restated. Both
-# lists above and below are held against this in both directions: a subset is
-# how the grouping rule came to be enforced for nine of seventeen stacks, and a
-# hand-maintained list of the services is exactly the sixtieth list nobody edits.
 MANIFEST_SERVICE_NAMES = YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))
                              .fetch("services").map { |entry| entry.fetch("name") }.sort.freeze
 
-# The six arguments the stack program receives, in the wrapper's order, each
-# with the shell variable the wrapper binds it to. The defaults file joined them
-# with #558: the publish endpoint and the three ceilings have one home apiece in
-# that file, and a template naming a variable proves only that the template
-# names it.
 STACK_ARGUMENT_VARIABLES = {
   "services/dozzle/compose.yml" => "compose",
   "roles/dozzle/tasks/main.yml" => "role",
@@ -143,7 +74,6 @@ STACK_ARGUMENT_VARIABLES = {
   "roles/dozzle/defaults/main.yml" => "defaults"
 }.freeze
 
-# The five file arguments the alerts program receives, in the wrapper's order.
 # The sixth argument is the mode, which is not a path.
 ALERTS_ARGUMENT_VARIABLES = {
   "roles/dozzle/defaults/main.yml" => "defaults",
@@ -155,10 +85,7 @@ ALERTS_ARGUMENT_VARIABLES = {
   "inventory/group_vars/all/service_dozzle.yml" => "service_vars"
 }.freeze
 
-# Exactly what the contract reads out of the tree it inspects. A fixture holding
-# only these is the proof that the list is the list the contract actually needs.
-# tests/policy_support.rb is here because the labels program's `-r` preload names
-# it inside the inspected tree.
+# Exactly what the contract reads out of the tree it inspects.
 FIXTURE_FILES = (BASE_COMPOSE_FILES + %w[
   services/dozzle/alert_relay.py
   roles/dozzle/tasks/main.yml
@@ -174,17 +101,11 @@ FIXTURE_FILES = (BASE_COMPOSE_FILES + %w[
   tests/policy_support.rb
 ]).uniq.freeze
 
-# Deliberately absent from that list: tests/contracts/dozzle.sh and all six of
-# its programs. None is read out of the inspected tree, and a fixture carrying
-# them would shadow the defect #251 shipped -- a program resolved from $repo_dir
-# finds a copy there and nothing looks wrong. The wrapper layer plants an
-# impostor at those paths inside the inspected tree instead.
+# Deliberately absent: tests/contracts/dozzle.sh and its programs. A copy here would
+# hide a program resolved from $repo_dir (#251); the wrapper layer plants impostors.
 
 
-# Substitutes text and asserts its own match count. Several literals planted here
-# occur more than once in the file they are planted in, so a plain sub can hit
-# the wrong copy, plant nothing and report a pass -- which is what a mutation row
-# that proves nothing looks like from the outside.
+# Asserts its own match count: a plain sub can hit the wrong copy and plant nothing.
 def substitute(text, from, to, count: 1)
   found = text.scan(from).length
   raise "#{from.inspect} matched #{found} times, expected #{count}" unless found == count
@@ -193,10 +114,6 @@ def substitute(text, from, to, count: 1)
 end
 
 # --- group render layer ----------------------------------------------------
-#
-# The canned render, built as a Hash so a row can break exactly one property of
-# the merged document -- which is what the program judges: `docker compose
-# config` output, not a compose file.
 
 PROBE_PORT = "53081"
 
@@ -243,9 +160,7 @@ GROUP_RENDER_ROWS = [
   { name: "an intact single-container render", stack: "komga", group: "", variant: "integration",
     config: -> { single_render("komga") }, expects: nil },
   {
-    # The behavioural assertion: the render is driven with a port the repository
-    # never contains, so a copy of the number anywhere in the alert-relay service
-    # renders as the deployed 8081 and disagrees with the probe.
+    # Driven with a port the repository never contains, so a literal copy disagrees.
     name: "a relay environment holding a literal port", stack: "dozzle", group: "dozzle",
     variant: "base",
     config: lambda {
@@ -277,8 +192,6 @@ GROUP_RENDER_ROWS = [
     expects: "dozzle base alert relay does not take its listener port from one variable"
   },
   {
-    # The relay guard is Dozzle's alone. A grouped stack whose services happen to
-    # include an `alert-relay` must not be judged by it -- and must not raise.
     name: "another stack that happens to carry an alert-relay", stack: "beszel",
     group: "beszel", variant: "base",
     config: lambda {
@@ -394,8 +307,6 @@ LABEL_ROWS = [
     expects: "base Compose has duplicate dev.dozzle.name labels"
   },
   {
-    # Narrow on purpose: another duplicated key is somebody else's check, and a
-    # row proving that is what keeps this program from growing into a linter.
     name: "an unrelated duplicated key",
     edit: lambda { |root| edit_text(root, "services/dozzle/compose.yml") { |source|
       substitute(source, "    container_name: dozzle_alert_relay\n",
@@ -511,9 +422,7 @@ STACK_ROWS = [
   {
     name: "a relay running as root", argument: "services/dozzle/compose.yml",
     edit: lambda { |root|
-      # Both services declare the same identity, so the anchor carries the line
-      # below it: a bare `user:` substitution would hit Dozzle's copy instead and
-      # the row would refuse for a reason it did not plant.
+      # Both services declare the same identity; the anchor keeps this off Dozzle's copy.
       edit_yaml_text(root, "services/dozzle/compose.yml",
                      "    user: \"${NAS_UID:?}:${NAS_GID:?}\"\n" \
                      "    command: [python, /app/alert_relay.py]\n",
@@ -532,10 +441,6 @@ STACK_ROWS = [
     expects: "alert relay environment differs"
   },
   {
-    # The ceiling reaches the relay as environment like everything else, so a
-    # ceiling key that stops being passed is a relay with no ceiling at all --
-    # it refuses to start, which is loud, but only after a deployment. This is
-    # the check that refuses it before one.
     name: "a relay handed no global ceiling",
     argument: "services/dozzle/compose.yml",
     edit: lambda { |root|
@@ -545,9 +450,7 @@ STACK_ROWS = [
     expects: "alert relay environment differs"
   },
   {
-    # The endpoint being a variable is what keeps a lane's own container churn
-    # off the household's phones; a literal here defeats every lane override at
-    # once and nothing downstream would notice.
+    # A literal endpoint defeats every lane override, keeping lane churn off phones.
     name: "a relay publishing at a literal Pushover endpoint",
     argument: "roles/dozzle/templates/env.j2",
     edit: lambda { |root|
@@ -581,9 +484,6 @@ STACK_ROWS = [
     expects: "the relay secret is not a credential of its own"
   },
   {
-    # The Containers application, not the Alerts one Beszel sends with: the
-    # two are separate channels on the phone, and a relay sending with the
-    # Alerts token files container churn under host problems.
     name: "a relay sending with the Alerts application token",
     argument: "roles/dozzle/templates/env.j2",
     edit: lambda { |root|
@@ -654,8 +554,7 @@ STACK_ROWS = [
     name: "deployment inputs that stop validating the relay",
     argument: "roles/deployment_bundle/tasks/inputs.yml",
     edit: lambda { |root|
-      # Not a suffix: the assertion is `include?`, so `alert_relay.pyx` would
-      # leave the pattern present and the row would prove nothing.
+      # Not a suffix: the assertion is `include?`, so `alert_relay.pyx` proves nothing.
       edit_yaml_text(root, "roles/deployment_bundle/tasks/inputs.yml",
                      "services/dozzle/alert_relay.py", "services/dozzle/relay_alert.py")
     },
@@ -821,8 +720,7 @@ ALERTS_ROWS = [
     expects: "missing Report planned unmanaged Dozzle dispatcher removal"
   },
   {
-    # The mode gate, in the direction that would silently over-reach: a live mode
-    # must not demand the harness text, because the harness is not deployed.
+    # A live mode must not demand the harness text; the harness is not deployed.
     name: "a renamed planned-change report task under verify", mode: "verify",
     edit: lambda { |root|
       edit_yaml_text(root, "roles/dozzle/tasks/main.yml",
@@ -870,7 +768,6 @@ ALERTS_ROWS = [
     name: "a Mac drift proof that stopped corrupting the friendly name", mode: "static",
     argument: "tests/mac/hooks/drift/20-dozzle.sh",
     edit: lambda { |root|
-      # Not a suffix, for the same reason as the deployment-inputs row above.
       edit_yaml_text(root, "tests/mac/hooks/drift/20-dozzle.sh",
                      "dev.dozzle.name: dozzle-contract-drift",
                      "dev.dozzle.name: dozzle-drift-contract")
@@ -895,10 +792,6 @@ ALERTS_ROWS = [
     },
     expects: "Mac runtime verification does not inspect Docker labels"
   },
-  # The other half of that assertion since #315 split the hook: the inspection is
-  # the hook's and the label names are the program's, so a row for each is what
-  # keeps both readable. With one file and one `mac_verify` this row would have
-  # been indistinguishable from the one above it.
   {
     name: "Mac verification that stopped naming the managed labels", mode: "static",
     argument: "tests/mac/hooks/verify/20-dozzle-labels.rb",
@@ -970,8 +863,6 @@ PLANNED_ROWS = [
     expects: "planned-change marker count differs for DOZZLE_PLAN_RULE_REMOVE"
   },
   {
-    # The word boundary earns its place: a longer token that merely starts with a
-    # marker is a different sentence, not another occurrence.
     name: "a longer token that begins with a marker", mode: "assert-check-mixed-output",
     body: -> { marker_transcript(0) + "DOZZLE_PLAN_RULE_CREATED_ALREADY\n" },
     expects: nil
@@ -1010,19 +901,11 @@ def planned_failures(program = PLANNED_OUTPUT_PROGRAM, rows = PLANNED_ROWS)
 end
 
 # --- runtime layer ----------------------------------------------------------
-#
-# The live half, against a stub notification API and a stub `ansible-vault`. Not
-# a replacement for the dozzle integration lane -- there is no relay, no Pushover
-# recorder and no Docker event here -- but the assertions the lane's `verify` phase makes on
-# what the API reports back are the ones this contract exists for, and until this
-# file none of them could be run without a converged stack.
 
 VAULT_FIXTURE = {
   "vault_dozzle_admin_username" => "dozzle-contract-admin",
   "vault_dozzle_admin_password" => "dozzle-contract-secret",
   "vault_dozzle_alert_relay_token" => "7f3c" * 16,
-  # The beszel-notify mode's: the hub identities it signs in with, and the
-  # Pushover pair it expects the relay to publish Beszel's alerts with.
   "vault_beszel_superuser_email" => "beszel-contract-superuser@example.invalid",
   "vault_beszel_superuser_password" => "beszel-contract-superuser-secret",
   "vault_beszel_app_user_email" => "beszel-contract-app@example.invalid",
@@ -1032,8 +915,6 @@ VAULT_FIXTURE = {
   "vault_pushover_user_key" => "dozzle-contract-user-key"
 }.freeze
 
-# What a converged Beszel hub stores, as far as beszel-notify reads it: the
-# relay's /beszel route. The token part is not compared there, only sent.
 BESZEL_STORED_WEBHOOK =
   "generic://alert-relay:8081/beszel?disabletls=yes&template=json&@Authorization=Bearer%20x"
 
@@ -1075,9 +956,6 @@ def desired_rules(dispatcher_id = "disp01")
   end
 end
 
-# A hand-rolled HTTP/1.1 responder rather than a library: the runtime program
-# opens one connection per request through Net::HTTP, so accept-respond-close is
-# the whole protocol it needs, and this way the stub has no dependency to pin.
 class StubApi
   def initialize(state)
     @state = state
@@ -1176,9 +1054,6 @@ class StubApi
     end
   end
 
-  # Beszel's hub, on the same port: none of its paths collide with Dozzle's.
-  # A delivering hub stands in for the hub, the bridge and the relay together.
-  # It POSTs the form the relay would to the recorder the mode listens with.
   def beszel_route(method, path, headers)
     authorization = headers.fetch("authorization", "")
     case [method, path]
@@ -1237,9 +1112,6 @@ VAULT_STUB = <<~STUB
   cat "$DOZZLE_STUB_VAULT"
 STUB
 
-# `docker ps` names one Dozzle container and `docker logs` prints the line the
-# contract reads as proof the platform's agent TLS pair was loaded, unless a row
-# asks for the image's silent fallback instead.
 RUNTIME_DOCKER_STUB = <<~STUB
   #!/bin/sh
   case $1 in
@@ -1254,11 +1126,8 @@ STUB
 
 def with_runtime_stub(state, relay_port: 8081, recorder: false)
   merged = { dispatchers: [desired_dispatcher(relay_port)], rules: desired_rules }.merge(state)
-  # Only the beszel-notify rows open the recorder, and they get a real free port.
   # Reserved rather than sampled, and released just above the yield: the binder
-  # is the runtime subprocess the caller's block spawns, so holding the socket
-  # across the yield would refuse every one of those rows with the very message
-  # #736 is about.
+  # is the subprocess the block spawns (#736).
   recorder_reservation = ReservedLocalPort.new if recorder
   merged[:recorder_port] = recorder_reservation.number if recorder_reservation
   stub = StubApi.new(merged)
@@ -1277,17 +1146,12 @@ def with_runtime_stub(state, relay_port: 8081, recorder: false)
     File.chmod(0o755, File.join(bin, "ansible-vault"))
     File.write(File.join(bin, "docker"), RUNTIME_DOCKER_STUB)
     File.chmod(0o755, File.join(bin, "docker"))
-    # Everything above is setup the runtime subprocess must not race; from here
-    # the port belongs to whatever the block spawns.
     recorder_reservation&.release_to_binder
     yield({
       "PATH" => "#{bin}:#{ENV.fetch('PATH')}",
       "DOZZLE_STUB_VAULT" => vault,
       "PLATFORM_DOZZLE_PORT" => dozzle_port.to_s,
-      # The wrapper exports this in every mode, so these direct invocations
-      # supply it in every mode too. Deliberately a port nothing here binds:
-      # none of these rows reaches the notify mode, and a row that started to
-      # would have to say so by listening rather than by inheriting a socket.
+      # Deliberately a port nothing binds: none of these rows reaches the notify mode.
       "PLATFORM_DOZZLE_PUSHOVER_PORT" => merged.fetch(:recorder_port, 1).to_s,
       "PLATFORM_BESZEL_PORT" => dozzle_port.to_s,
       "PLATFORM_REPORT_ROOT" => reports,
@@ -1298,7 +1162,6 @@ def with_runtime_stub(state, relay_port: 8081, recorder: false)
   end
 ensure
   stub&.stop
-  # Cleanup for a failure that never reached the release above.
   recorder_reservation&.release_to_binder
 end
 
@@ -1309,9 +1172,6 @@ RUNTIME_ROWS = [
     state: {}, environment: { "DOZZLE_STUB_TLS_LOG" => "absent" },
     expects: "Dozzle did not load the platform's agent TLS pair" },
   {
-    # The dispatcher URL is built from the role default's declared port, not from
-    # a number repeated in the contract. A deployment on a different port must
-    # therefore be accepted when its dispatcher agrees with that default.
     name: "a deployment on a different declared listener port", mode: "verify",
     relay_port: 9091, state: {}, expects: nil, prints: "Dozzle contract passed"
   },
@@ -1384,10 +1244,7 @@ RUNTIME_ROWS = [
     expects: "Recovery rule differs"
   },
   {
-    # Every identifier the API hands back is filtered before it reaches a
-    # diagnostic, an artifact or a URL. duplicate-dispatcher-verify is the
-    # earliest mode that reaches the filter: it maps safe_id over the managed
-    # identities before it reads the artifact it compares them against, so the
+    # duplicate-dispatcher-verify is the earliest mode that reaches safe_id, so the
     # refusal is the filter's and not the artifact's.
     name: "an API identifier that is not safe to echo", mode: "duplicate-dispatcher-verify",
     state: { dispatchers: [desired_dispatcher.merge("id" => "../../etc/passwd")] },
@@ -1421,8 +1278,7 @@ RUNTIME_ROWS = [
     expects: "contract report root is unavailable"
   },
   # --- beszel-notify ------------------------------------------------------
-  # A short delivery budget on every row that could wait, for the #319 reason:
-  # a row that reaches the deadline sits out the whole of it.
+  # A short delivery budget: a row that reaches the deadline sits out the whole of it.
   {
     name: "a Beszel test notification the relay published with the Alerts token",
     mode: "beszel-notify", recorder: true, state: { beszel_delivers: true },
@@ -1456,8 +1312,6 @@ RUNTIME_ROWS = [
     expects: "Beszel's stored webhook is not the alert relay's /beszel route"
   },
   {
-    # A test notification links the bare app URL, which is no system page, so
-    # a button here would mean the relay's link validation had loosened.
     name: "a Beszel test notification that arrived with a button",
     mode: "beszel-notify", recorder: true,
     state: { beszel_delivers: true,
@@ -1487,12 +1341,8 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
   end
 end
 
-# The fixture modes are sequences, not single invocations: one mode creates a
-# duplicate and records its opaque identifiers under PLATFORM_REPORT_ROOT, the
-# play is expected to refuse, and later modes read those identifiers back. The
-# artifacts are the part worth pinning -- they are what carries an API identifier
-# between processes, and they are written mode 0600 under a directory this
-# contract refuses to follow a symlink into.
+# The fixture modes are sequences: one mode records identifiers in 0600 artifacts
+# under PLATFORM_REPORT_ROOT and later modes read them back.
 def runtime_sequence_failures(program = RUNTIME_PROGRAM)
   failures = []
   with_runtime_stub({}) do |env, _root, state|
@@ -1510,9 +1360,7 @@ def runtime_sequence_failures(program = RUNTIME_PROGRAM)
       failures << "runtime sequence: #{File.basename(path)} was not written" unless File.file?(path)
       next unless File.file?(path)
 
-      # Derived from the umask rather than pinned: the mode a fresh file gets is
-      # the OS's business, and 0o600 is what File::CREAT with 0o600 leaves after
-      # masking. A literal here would assert this machine's umask.
+      # Derived from the umask; a literal would assert this machine's umask.
       expected = 0o600 & ~File.umask
       actual = File.stat(path).mode & 0o777
       failures << "runtime sequence: #{File.basename(path)} is mode " \
@@ -1526,8 +1374,6 @@ def runtime_sequence_failures(program = RUNTIME_PROGRAM)
     failures << "runtime sequence: duplicate-dispatcher-verify rejected the fixture it created" unless
       status.success?
 
-    # The diagnostic a refusing play must print, built from the artifact rather
-    # than from a literal, which is the whole point of writing the artifact.
     ids = File.readlines(matching, chomp: true).sort
     transcript = File.join(reports, "play.txt")
     File.write(transcript,
@@ -1589,13 +1435,8 @@ WRAPPER_PROGRAM_SOURCES = {
   "dozzle-runtime.rb" => -> { File.read(RUNTIME_PROGRAM) }
 }.freeze
 
-# The stacks the wrapper renders, and the group each is required to carry. Kept
-# here so the wrapper layer can assert the wrapper still renders exactly these.
-# The *set* is not a choice -- it is held against MANIFEST_SERVICE_NAMES in both
-# directions -- but the group each stack carries is, because the manifest does
-# not record one and deriving it from the Compose file being judged would make
-# the expectation agree with whatever it found. An empty string is the
-# expectation that the stack stays single-container and carries no group at all.
+# The set is held against MANIFEST_SERVICE_NAMES; the group is stated, since deriving
+# it from the Compose file judged would agree with anything. "" means no group.
 RENDERED_STACKS = {
   "arr" => "arr", "beszel" => "beszel", "downloaders" => "downloaders",
   "dozzle" => "dozzle", "paperless-ngx" => "paperless",
@@ -1644,19 +1485,8 @@ def with_contract_copy(programs: {}, wrapper: File.read(CONTRACT))
   end
 end
 
-# The recorder port has three homes and they must be one number.
-#
-# tests/contracts/dozzle.sh declares it; the two lane libraries redirect
-# dozzle_pushover_api_url at it when they converge the relay. The endpoint is
-# rendered into the relay's environment file at converge time, long before the
-# notify mode runs, so a disagreement here is not a failed assertion -- it is a
-# relay POSTing at a port nothing listens on, the alerts silently lost to a 502
-# Dozzle does not retry, and the notify mode failing for a reason that names
-# none of this.
-#
-# Read out of the real tree rather than the fixture, because these two lane
-# libraries are not files the contract inspects; they are files that have to
-# agree with it.
+# The recorder port has three homes and they must be one number: a mismatch is a
+# relay POSTing at nothing, alerts silently lost. Read from the real tree.
 PUSHOVER_PORT_SOURCES = {
   "tests/contracts/dozzle.sh" => /PLATFORM_DOZZLE_PUSHOVER_PORT:=([0-9]+)\}/,
   "tests/integration_controller_lib.sh" =>
@@ -1687,28 +1517,13 @@ end
 
 # --- the notify mode's recorder, executed against the real relay -----------
 #
-# The recorder is the one half of the notify mode that no other check reaches:
-# the runtime rows above all run modes that never open it, and the mode that
-# does needs Docker, a converged Dozzle and twenty minutes. What it has to be
-# right about is a protocol boundary between two languages -- Python's
-# urllib.parse.urlencode on one side and Ruby's URI.decode_www_form on the
-# other, with a message carrying newlines and spaces that quote_plus turns into
-# `+` -- and reasoning about that is exactly the kind of claim this repository
-# keeps finding to be false.
-#
-# So the helpers are read out of the shipped program and eval'd, never copied.
-# A hand-copied recorder would test a second implementation and report the
-# shipped one working; the same trap tests/contracts/dozzle.sh's two-roots rule
-# exists for. The relay on the other end is the deployed script, run the way its
-# container runs it.
+# The helpers are read out of the shipped program and eval'd, never copied: a copy
+# would test a second implementation (urlencode vs decode_www_form boundary).
 RECORDER_SECTION_START = "# --- the Pushover stand-in ---"
 RECORDER_SECTION_END = "\nrequest(\"get\", endpoint(DOZZLE,"
 RELAY_SCRIPT = File.join(ROOT, "services", "dozzle", "alert_relay.py")
 
-# Just enough of the runtime program's surroundings for the extracted section to
-# load: its two references out are fail_contract and CALLBACK_HOST, and the
-# recorder binds 0.0.0.0 rather than the callback host, so the host only has to
-# be a string.
+# Just enough for the extracted section to load: fail_contract and CALLBACK_HOST.
 RECORDER_PRELUDE = <<~RUBY
   def fail_contract(message)
     raise "Dozzle contract failed: \#{message}"
@@ -1733,34 +1548,9 @@ def recorder_module(port)
   holder
 end
 
-# A loopback port held by a listening socket until whoever is about to bind it
-# is ready to take it.
-#
-# What this replaces is `free_local_port`, which asked the kernel for a port and
-# closed the socket before returning the number. The port was then back in the
-# kernel's free pool for the whole of the caller's setup, and the callers here
-# spend a long time there: `recorder_failures` builds a module out of the
-# runtime program, makes a temporary directory, spawns the relay and then waits
-# up to twenty seconds for it to listen, all between the sample and the bind.
-# `tests/validate-policy.sh` packs its checks into `nproc` workers and several
-# of them allocate ports the same way, so that window is contended by
-# construction rather than by bad luck. On `43fc2ed9` something took one:
-# `main` went red on a Renovate digest bump that touches nothing near Dozzle,
-# with `Pushover recorder could not listen on 35039: Errno::EADDRINUSE` reported
-# as a wrong-reason refusal in a self-test row, and the deployment poller stopped
-# advancing until the leg was re-run by hand (#736).
-#
-# Holding the socket is only half the fix. The port exists here for a bind the
-# caller is about to make, so the reservation has to be given up at the instant
-# before that bind and not a statement earlier -- which is what
-# `release_to_binder` names, and why it is a separate call rather than something
-# this class could do for itself. Where the binder runs in this process there is
-# then nothing at all between the release and the bind; where it is a child, the
-# gap is the spawn.
-#
-# The socket binds the wildcard address because that is what the binders claim:
-# the runtime program's recorder listens on `0.0.0.0`, so a reservation on
-# `127.0.0.1` would be a narrower claim than the one it has to win.
+# A loopback port held by a listening socket until the binder is ready to take it.
+# Sampling-then-closing lost the port to a pooled check (#736); release_to_binder
+# runs immediately before the bind. Wildcard, because the recorder binds 0.0.0.0.
 class ReservedLocalPort
   attr_reader :number
 
@@ -1769,9 +1559,7 @@ class ReservedLocalPort
     @number = @holder.addr[1]
   end
 
-  # Gives the port up to whoever binds it next. Call it immediately before that
-  # bind. Idempotent, so an error path that never reached a binder can call it
-  # as plain cleanup.
+  # Call immediately before the bind. Idempotent, so it doubles as cleanup.
   def release_to_binder
     @holder.close unless @holder.closed?
     @number
@@ -1782,13 +1570,7 @@ class ReservedLocalPort
   end
 end
 
-# A second process that binds +port+ and keeps it, which is what a pooled check
-# on the same machine is. Returns [bound, pid]; the caller reaps the pid.
-#
-# A second process rather than a second socket here: the thing #736 lost the
-# port to was another program on the machine, and a claim about what the kernel
-# refuses across processes is worth nothing if it is only ever tested within
-# one.
+# A second process that binds +port+ and keeps it. Returns [bound, pid].
 PORT_THIEF_PROGRAM = <<~'RUBY'
   require "socket"
   begin
@@ -1828,33 +1610,15 @@ rescue Errno::ECHILD
   nil
 end
 
-# Proves ReservedLocalPort reserves, against a real second process and in both
-# directions, rather than asserting that a helper with the right name exists.
-#
-# The two directions are not symmetrical and the case is built around the
-# difference. A held port being REFUSED is a kernel property: the refusal is
-# certain, so that direction races nothing and is where the detection lives. A
-# released port being TAKEN is a race the thief has to win, so that direction is
-# the control and is retried. A check whose failing path needs a race won is the
-# defect this whole issue is about, and writing one into the gate to prove the
-# fix would red an unrelated pull request exactly the way #736 did.
-#
-# The control is not decoration. Without it, the detecting direction passes on a
-# `steal_port` that has stopped binding anything at all -- a spawn that fails, a
-# verdict that stops being parsed -- and reports a reservation that reserves.
-# Retrying it cannot mask a defect either: a ReservedLocalPort that stopped
-# holding fails the detecting direction whatever the control does afterwards.
-#
-# What this case does NOT prove is that the window it closed was ever lost in
-# anger. That is history, and #736 has it.
+# Proves ReservedLocalPort reserves, against a real second process. A held port being
+# refused is certain (the detection); a released port being taken is a race (the
+# retried control, which catches a steal_port that stopped binding anything).
 PORT_CONTROL_ATTEMPTS = 5
 
 def port_reservation_failures
   failures = []
   thief = nil
 
-  # The detecting direction. No retry: if the reservation holds, the refusal is
-  # certain, and if it does not, one attempt is enough to say so.
   reservation = ReservedLocalPort.new
   begin
     stolen, thief = steal_port(reservation.number)
@@ -1869,11 +1633,6 @@ def port_reservation_failures
   failures << "port reservation: the reservation released its port before anyone asked " \
               "for it" unless reservation.held?
 
-  # The control, and the handover in the same breath: a port given up through
-  # release_to_binder is one a second process can take. Losing an attempt means
-  # something outside this check took the port first, which is a statement about
-  # the machine and not about the reservation, so it is retried rather than
-  # reported.
   bound = false
   attempts = 0
   while attempts < PORT_CONTROL_ATTEMPTS && !bound
@@ -1906,10 +1665,7 @@ end
 
 def recorder_failures
   failures = []
-  # Both ports are held from here until the statement before the bind that needs
-  # them, because everything between the two -- the module build, the temporary
-  # directory, the spawn and the relay's start-up wait -- is setup neither bind
-  # may race. See ReservedLocalPort.
+  # Both ports held until the statement before each bind. See ReservedLocalPort.
   recorder_reservation = ReservedLocalPort.new
   relay_reservation = ReservedLocalPort.new
   recorder_port = recorder_reservation.number
@@ -1938,8 +1694,6 @@ def recorder_failures
       "ALERT_STATE_PATH" => File.join(state_directory, "alert-relay.json"),
       "PYTHONDONTWRITEBYTECODE" => "1"
     }
-    # Released on the line before the spawn: the relay is the binder, and what
-    # is left of the window is the fork itself.
     relay_reservation.release_to_binder
     relay = spawn(environment, "python3", RELAY_SCRIPT,
                   out: File::NULL, err: File::NULL)
@@ -1958,16 +1712,9 @@ def recorder_failures
 
       captured = nil
       begin
-      # The recorder binds in this process, so releasing here leaves nothing
-      # between the reservation and the bind. This is the line #736 was about:
-      # until it existed, the port had been free since before the spawn above
-      # and the twenty-second wait beneath it.
       recorder_reservation.release_to_binder
       helpers.with_pushover_recorder(pushover_token, pushover_user_key) do |reader|
-        # A container name carrying the characters that separate the two
-        # encodings: a space becomes `+` under quote_plus, and the message
-        # itself carries newlines. A recorder that decoded with anything but
-        # decode_www_form reads `svc+one` here.
+        # A space becomes `+` under quote_plus and the message carries newlines.
         response = post_through_relay(relay_port, {
           "version" => 1, "rule" => "Unhealthy",
           "containerId" => "a" * 64, "container" => "svc one & two",
@@ -1982,18 +1729,11 @@ def recorder_failures
         ) { |messages| messages.first }
       end
       rescue RuntimeError => error
-        # The recorder refuses and times out through fail_contract, which the
-        # prelude turns into a raise. Reported rather than propagated, so a
-        # recorder that never listened reads as this check failing rather than
-        # as the whole program dying somewhere in its middle.
         failures << "recorder: #{error.message}"
       end
       return failures if captured.nil?
 
-      # The credential verdict, in the direction a hardcoded `true` cannot
-      # satisfy. Without this the whole check passes on a recorder that reports
-      # every request as carrying the managed pair -- measured, not assumed: the
-      # plant was placed and this file stayed green.
+      # The direction a hardcoded `true` cannot satisfy (measured: it stayed green).
       mismatched = helpers.redact_credentials(
         { "form" => { "token" => "wrong", "user" => "wrong", "title" => "x" } },
         pushover_token, pushover_user_key
@@ -2033,9 +1773,7 @@ def recorder_failures
   end
   failures
 ensure
-  # Cleanup, not a handover: the early returns above leave by a path where no
-  # binder ever arrived, and a held socket outliving this method would take a
-  # port away from every other check in the pool.
+  # Cleanup: a held socket outliving this method would starve the pool.
   recorder_reservation&.release_to_binder
   relay_reservation&.release_to_binder
 end
@@ -2043,10 +1781,7 @@ end
 def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures = []
 
-  # The wrapper's own bindings must agree with what this file drives directly.
-  # Every path argument is bound to the inspected tree; every program comes from
-  # the checkout. Both halves are asserted, because #251 shipped one direction of
-  # this wrong and #291 found a site where the convention inverts.
+  # Paths bind to the inspected tree; programs come from the checkout (#251, #291).
   (STACK_ARGUMENT_VARIABLES.merge(ALERTS_ARGUMENT_VARIABLES)).each do |relative, variable|
     failures << "wrapper: does not bind #{variable} to #{relative} in the inspected tree" unless
       wrapper_source.include?("#{variable}=$repo_dir/#{relative}")
@@ -2055,17 +1790,11 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     failures << "wrapper: does not resolve #{name} from its own checkout" unless
       wrapper_source.include?("=$contract_repo_dir/tests/contracts/#{name}\n")
   end
-  # The `-r` preload is the one path that must stay bound to the inspected tree,
-  # and it is the site where following the two-roots convention would be wrong.
+  # The `-r` preload is the one path that must stay on the inspected tree.
   failures << "wrapper: the labels preload must name the inspected tree" unless
     wrapper_source.include?(%(ruby -r"$repo_dir/tests/policy_support.rb" "$labels_program"))
-  # Closed against services/manifest.yml in both directions, which is the half
-  # that was missing until #656: the wrapper rendered nine of seventeen stacks,
-  # so the rule that a multi-container stack groups every one of its containers
-  # was enforced for immich and paperless and unenforced for arr and
-  # downloaders, whose seven containers carried names and no group. A rendered
-  # subset cannot fail for a stack it never renders, and nothing said which
-  # subset it was supposed to be.
+  # Closed against services/manifest.yml both ways: a rendered subset cannot fail
+  # for a stack it never renders (#656).
   missing = MANIFEST_SERVICE_NAMES - RENDERED_STACKS.keys
   surplus = RENDERED_STACKS.keys - MANIFEST_SERVICE_NAMES
   failures << "wrapper: services/manifest.yml declares #{missing.inspect}, which the " \
@@ -2097,19 +1826,14 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     passed == ALERTS_ARGUMENT_VARIABLES.values + ["mode"]
 
   with_contract_copy(wrapper: wrapper_source) do |contract, root, stub_env|
-    # Static mode against the fixture tree: every program has to be found and
-    # every assertion has to pass.
     environment = stub_env.merge("PLATFORM_CONTRACT_REPO_DIR" => root)
     stdout, stderr, status = Open3.capture3(environment, contract, "static")
     unless status.success? && stdout.include?("Dozzle static contract passed")
       failures << "wrapper: static mode failed against the fixture tree: #{(stdout + stderr).strip}"
     end
 
-    # The mode guard, which prints nothing. It is recognised by that silence
-    # rather than by its exit 2 alone: without it an unknown mode runs on to a
-    # bare ${VAR:?} refusal, which dash also exits 2 on. No vault is named, so a
-    # mode past the guard stops there instead of reaching a program. Each mode
-    # is a near miss of one the guard dispatches.
+    # The mode guard prints nothing; recognised by that silence, since a bare
+    # ${VAR:?} refusal also exits 2 under dash.
     %w[bogus --help static-x drift_verify beszel_notify].each do |mode|
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => root }, contract, mode
@@ -2122,8 +1846,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
                   "#{output.strip.inspect}" unless output.strip.empty?
     end
 
-    # A break in the inspected tree must be judged by the programs in the
-    # checkout, and named.
     broken = File.join(root, "roles/dozzle/templates/env.j2")
     original = File.read(broken)
     File.write(broken, substitute(original, "ALERT_RELAY_PORT={{ dozzle_alert_relay_port }}\n", ""))
@@ -2136,10 +1858,8 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     end
     File.write(broken, original)
 
-    # An impostor at the sibling paths inside the inspected tree must never run.
-    # Absence cannot decide this: the fixture deliberately carries no
-    # tests/contracts, so a program resolved from $repo_dir would simply be
-    # missing. A different program there is what separates the two roots.
+    # The fixture carries no tests/contracts, so only an impostor there separates
+    # the two roots.
     impostors = File.join(root, "tests", "contracts")
     FileUtils.mkdir_p(impostors)
     WRAPPER_PROGRAM_SOURCES.each_key do |name|
@@ -2155,9 +1875,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
                 "#{output.strip.inspect}" unless status.success?
     FileUtils.rm_rf(impostors)
 
-    # The `-r` preload really does read the inspected tree. Proven by taking that
-    # one file out of it and requiring the failure to name it -- the direction
-    # that would have gone silent had the preload been rerooted to the checkout.
     support = File.join(root, "tests/policy_support.rb")
     support_source = File.read(support)
     FileUtils.rm_f(support)
@@ -2171,8 +1888,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     end
     File.write(support, support_source)
 
-    # The planned-output program is reached, and prints its own success line --
-    # which the wrapper does not own, unlike the static one.
     transcript = File.join(root, "ansible-output.txt")
     File.write(transcript, marker_transcript(0))
     stdout, stderr, status = Open3.capture3(
@@ -2183,13 +1898,8 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
                   "#{(stdout + stderr).strip}"
     end
 
-    # Three `:?` guards refuse before the runtime program can start. The wording
-    # of that refusal belongs to the shell -- bash says "parameter null or not
-    # set" and dash says "parameter not set or null" -- so only the portable
-    # prefix is asserted, and the substantive property is stated separately: the
-    # runtime program must never have run. Set to the empty string rather than
-    # removed, because `${VAR:?}` refuses null as well as unset and a removed key
-    # would pass silently for a developer who has the variable exported.
+    # The refusal wording is the shell's, so only the prefix is asserted. Empty
+    # rather than removed: `:?` refuses null too, and an exported var would mask it.
     guards = %w[
       PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE PLATFORM_REPORT_ROOT
     ]
@@ -2214,12 +1924,8 @@ end
 
 # --- stdin ------------------------------------------------------------------
 #
-# A heredoc consumes the caller's stdin by construction; a sibling program does
-# not, so each of the six invocations carries `</dev/null`. None of the six reads
-# stdin today -- `grep -nE 'STDIN|\$stdin|ARGF|\bgets\b'` over all six returns
-# nothing -- so dropping a redirect changes no outcome, which is exactly why the
-# rule cannot be proven by the contract passing. Each row swaps in a probe that
-# does read.
+# None of the six reads stdin today, so dropping `</dev/null` changes no outcome.
+# Each row swaps in a probe that does read.
 
 PROBE = <<~'PROBE'
   payload = $stdin.read
@@ -2233,8 +1939,6 @@ end
 
 def stdin_failures(wrapper_source: File.read(CONTRACT))
   failures = []
-  # Every probe keeps the real program's bytes below it. The first four have to
-  # finish their run; the planned-output and runtime probes report and stop.
   probes = WRAPPER_PROGRAM_SOURCES.to_h do |name, default|
     half = name.delete_prefix("dozzle-").delete_suffix(".rb")
     tail = if %w[dozzle-planned-output.rb dozzle-runtime.rb].include?(name)
@@ -2281,10 +1985,7 @@ end
 
 # --- planted regressions ----------------------------------------------------
 #
-# Each entry removes one guard from one program and names the rows that must
-# catch it. A row that survives its own guard being deleted is proving nothing.
-# Every plant asserts its own match count, so a substitution that hits nothing
-# aborts instead of reporting a pass.
+# Each entry removes one guard from one program and names the rows that must catch it.
 
 PROGRAM_MUTATIONS = [
   {
@@ -2378,11 +2079,8 @@ PROGRAM_MUTATIONS = [
     from: "  [dozzle, relay].any? do |service|\n",
     to: "  [].any? do |service|\n",
     rows: ["the Docker socket mounted into the relay"],
-    # A cascade, recorded rather than tolerated: the relay's mount list is
-    # compared exactly a few lines below, so a socket added to the relay is
-    # refused as `alert relay mounts differ` once the containment check is gone.
-    # The containment check still earns its place -- it is what catches a socket
-    # mounted into the Dozzle service, whose volumes nothing else pins.
+    # A cascade: the relay's mount list is compared exactly below. The check still
+    # catches a socket mounted into the Dozzle service.
     detects: "refused for the wrong reason"
   },
   {
@@ -2615,9 +2313,7 @@ PROGRAM_MUTATIONS = [
     to: "    true ||\n",
     rows: ["Mac verification that stopped reading Docker labels"]
   },
-  # The half that moved to the sibling program in #315. Deleting it leaves the
-  # hook's own half standing, so only the row that plants its defect in the
-  # program can see it -- which is the point of having two rows.
+  # The half that moved to the sibling program in #315.
   {
     label: "the Mac verification managed-label proof",
     program: :alerts,
@@ -2640,9 +2336,7 @@ PROGRAM_MUTATIONS = [
     from: "  actual = output.scan(/\\b#{'#'}{Regexp.escape(marker)}\\b/).length\n",
     to: "  actual = output.scan(/#{'#'}{Regexp.escape(marker)}/).length\n",
     rows: ["a longer token that begins with a marker"],
-    # The only mutation in this file whose row expects *success*: dropping the
-    # boundary makes the program refuse a transcript it must accept, so the row
-    # reports the opposite sentence to every other plant here.
+    # The only mutation whose row expects *success*.
     detects: "expected success"
   },
   {
@@ -2653,11 +2347,7 @@ PROGRAM_MUTATIONS = [
     rows: ["a transcript reached through a symlink"]
   },
   {
-    # The same plant, its other row, and a different sentence -- which is why it
-    # is a second entry rather than a looser `detects`. `File.file?` is the guard
-    # that makes the `File.read` below it safe, so without it an absent path
-    # raises Errno::ENOENT instead of producing the contract's own refusal. A
-    # cascade, recorded rather than tolerated.
+    # Without `File.file?` an absent path raises Errno::ENOENT. A cascade.
     label: "the transcript path safety check, against an absent file",
     program: :planned,
     from: "  File.file?(output_path) && !File.symlink?(output_path)\n",
@@ -2696,9 +2386,6 @@ PROGRAM_MUTATIONS = [
     from: "fail_contract(\"expected exactly one dispatcher\") unless dispatchers.length == 1\n",
     to: "",
     rows: ["a second managed dispatcher"],
-    # `dispatcher = dispatchers.first` picks the managed original, so with the
-    # cardinality check gone every assertion below it passes and a duplicated
-    # managed identity is simply accepted. That is the check's whole job.
     detects: "accepted what it must refuse"
   },
   {
@@ -2745,8 +2432,6 @@ PROGRAM_MUTATIONS = [
     from: "    File.directory?(REPORT_ROOT) && !File.symlink?(REPORT_ROOT)\n",
     to: "    true\n",
     rows: ["a report root reached through a symlink"],
-    # Without the guard the artifact is simply written through the symlink and
-    # the mode succeeds -- which is the property, stated the other way round.
     detects: "accepted what it must refuse"
   },
   {
@@ -2763,16 +2448,10 @@ PROGRAM_MUTATIONS = [
     from: "  fail_contract(\"dispatcher drift changed\") unless dispatchers.length == 1 &&\n",
     to: "  fail_contract(\"dispatcher drift changed\") unless true ||\n",
     rows: ["a drift fixture the run reverted"],
-    # A cascade: the OOM rule's four drifted fields are checked immediately
-    # below, and a run that reverted the dispatcher reverted the rule too, so the
-    # mode still refuses -- with the rule's sentence rather than the
-    # dispatcher's. Recorded rather than tolerated; the dispatcher check is what
-    # names the dispatcher, which is what a reader of the lane's log needs.
+    # A cascade: the OOM rule check below refuses first.
     detects: "refused for the wrong reason"
   },
   {
-    # The end-to-end mode passing without a recorded request: the match is
-    # replaced by a delivery nobody made.
     label: "the Beszel end-to-end recorder requirement",
     program: :runtime,
     from: "      messages.find { |message| message.fetch(\"form\")[\"title\"] == \"Test Alert\" }\n",
@@ -2793,8 +2472,6 @@ PROGRAM_MUTATIONS = [
     from: "      answer.is_a?(Hash) && answer[\"err\"] == false\n",
     to: "      true\n",
     rows: ["a hub that reports the relay refused the test notification"],
-    # Nothing is delivered after the refusal, so the recorder wait refuses
-    # instead, naming the recorder rather than the hub's answer.
     detects: "refused for the wrong reason"
   },
   {
@@ -2814,22 +2491,9 @@ PROGRAM_MUTATIONS = [
   }
 ].freeze
 
-# Three assertions are deliberately left unpinned rather than given a row, and
-# each is recorded here where its row would have gone.
-#
-#   * dozzle-stack.rb's `role does not prepare an isolated private relay state
-#     directory` has five conjuncts before the mode comparison, and the three
-#     task-existence ones are unreachable: the parsed-task lookups above them
-#     raise NoMethodError on a tree missing any of those tasks, because
-#     `role_at.call(...)` returns nil and nil cannot be compared. A row expecting
-#     that crash would freeze it as the intended diagnostic.
-#   * dozzle-runtime.rb's `#{name} rule is absent or duplicated` is unreachable
-#     through the API stub: `expected exactly four alert rules` refuses first for
-#     any count but four, and four rules with a duplicated name cannot also carry
-#     all four expected names.
-#   * dozzle-runtime.rb's `unique exit event was delivered without incrementing
-#     its managed rule` needs a real Docker event and a real relay, so it belongs
-#     to the dozzle integration lane rather than here.
+# Deliberately unpinned: the stack program's three task-existence conjuncts (they
+# raise NoMethodError first), the runtime's `rule is absent or duplicated` (the
+# count check refuses first), and the exit-event increment (needs real Docker).
 
 def canonical_program(kind)
   {
@@ -2850,10 +2514,7 @@ def with_mutant(mutation)
 end
 
 if ARGV.include?("--self-test")
-  # Accumulated rather than aborted on the first, which is this suite's own
-  # convention: a plant whose rows report a different sentence than expected is
-  # information about the program, and finding them one interpreter run at a time
-  # costs a run per plant.
+  # Accumulated rather than aborted, so one run reports every plant.
   problems = in_parallel_case_results(PROGRAM_MUTATIONS) do |mutation|
     with_mutant(mutation) do |mutant|
       rows = mutation.fetch(:rows)
@@ -2879,15 +2540,12 @@ if ARGV.include?("--self-test")
     abort "#{problems.length} self-test failure(s)"
   end
 
-  # The six stdin redirects, one per invocation. The last two are `exec`ed and
-  # cannot be covered by any of the others.
+  # The last two are `exec`ed and cannot be covered by any of the others.
   planted_redirects = 0
   [
     ["\"$stack\" \"$variant\" \"$expected_group\" \"$relay_probe_port\" </dev/null\n",
      "\"$stack\" \"$variant\" \"$expected_group\" \"$relay_probe_port\"\n"],
-    # The labels invocation's redirect sits on its last argument, so the plant
-    # is taken from the list rather than restated: #656 took that list from nine
-    # compose files to seventeen and moved which one is last.
+    # Taken from the list rather than restated, since the last file moves.
     ["\"$repo_dir/#{BASE_COMPOSE_FILES.last}\" </dev/null\n",
      "\"$repo_dir/#{BASE_COMPOSE_FILES.last}\"\n"],
     ["\"$deployment_inputs\" \"$deployment_bundle\" \"$defaults\" </dev/null\n",
@@ -2898,8 +2556,6 @@ if ARGV.include?("--self-test")
      "exec ruby \"$planned_output_program\" \"$mode\" \"$@\"\n"],
     ["exec ruby \"$runtime_program\" \"$mode\" \"$@\" </dev/null\n",
      "exec ruby \"$runtime_program\" \"$mode\" \"$@\"\n"],
-    # Not a dropped redirect but a drained stdin ahead of an exec, which only the
-    # check that the caller's input survived can see.
     ["exec ruby \"$runtime_program\" \"$mode\" \"$@\" </dev/null\n",
      "cat >/dev/null\nexec ruby \"$runtime_program\" \"$mode\" \"$@\" </dev/null\n"]
   ].each do |from, to|
@@ -2910,10 +2566,7 @@ if ARGV.include?("--self-test")
     planted_redirects += 1
   end
 
-  # The defect #251 shipped one version of, at every site dozzle has: the six
-  # program paths, which must come from the checkout, and the paths bound to the
-  # inspected tree on purpose -- including the `-r` preload, which is the site
-  # where the convention inverts and where a reflexive fix would go silent.
+  # #251's defect at every site, including the `-r` preload where it inverts.
   planted_roots = 0
   program_plants = WRAPPER_PROGRAM_SOURCES.keys.map do |name|
     variable = name.delete_prefix("dozzle-").delete_suffix(".rb").tr("-", "_")
@@ -2936,9 +2589,7 @@ if ARGV.include?("--self-test")
     planted_roots += 1
   end
 
-  # The mode guard, deleted. Its rows must be what catches it, which is checked
-  # by name: wrapper_failures holds dozens of rows, and any one of them failing
-  # for another reason would satisfy a bare non-empty check.
+  # Checked by name: any other row failing would satisfy a bare non-empty check.
   unguarded = substitute(File.read(CONTRACT), "  *) exit 2 ;;\n", "  *) ;;\n")
   caught = wrapper_failures(wrapper_source: unguarded)
   abort "self-test failed: a deleted mode guard was accepted" if caught.empty?

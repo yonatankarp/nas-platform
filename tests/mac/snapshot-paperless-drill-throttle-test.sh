@@ -1,45 +1,14 @@
 #!/bin/sh
-# Regression proof for the Paperless rollback drill's login budget.
-#
-# The drill deletes the seeded documents and then waits for the deletion to
-# settle by re-reading the catalogue every two seconds for up to two minutes.
-# That poll used to authenticate on every pass, which is roughly sixty POSTs to
-# /api/token/ inside one loop, on top of the logins fixture seeding has already
-# spent. Paperless rate-limits that endpoint, and request dies on any status it
-# did not expect, so the drill aborted the whole suite with "POST /api/token/
-# returned HTTP 429" before it ever reached the restore it exists to prove.
-#
-# It only bites on a warm environment, which is what makes it worth proving here
-# rather than trusting a green run: whether the throttle is reached depends on how
-# much of its allowance the run before it spent, so the same code passes cold and
-# fails warm. Driving the real script against a stub API with a fixed login
-# allowance turns that into a deterministic check.
-#
-# The allowance is three, because a correct drill authenticates exactly three
-# times: once to read the catalogue it is about to snapshot, once to authorize the
-# deletion, and once after the restore, whose database roll-back may have removed
-# the token issued after the dump. A fourth login means something is logging in
-# inside a loop again, and the stub answers it the way Paperless does.
-#
-# Three is deliberately the exact number a correct drill needs rather than a copy
-# of the real rate. Paperless caps /api/token/ at five a minute by default
-# (PAPERLESS_TOKEN_THROTTLE_RATE), and a per-pass login is thirty a minute, so
-# reproducing the rate would prove the defect too but would make the assertion
-# about wall-clock timing. The count is the property worth pinning: it holds
-# whatever the endpoint in front of the drill is configured to allow.
-#
-# Restore mode is already covered by snapshot-paperless-recovery-test.sh; this
-# test is the drill, so it needs an API as well as a docker stub. Both stubs are
-# process-local, and the whole run costs a few seconds.
+# Regression proof for the Paperless drill's login budget: a per-pass login in the
+# deletion poll hit HTTP 429 on warm runs. The stub allows exactly the three logins
+# a correct drill needs, so the check is a count rather than wall-clock timing.
 set -eu
 set +x
 umask 077
 
 mac_test_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 fixture=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-paperless-throttle.XXXXXX")
-# Resolved physically because the script under test refuses any snapshot
-# directory whose realpath differs from the path it was given, and on macOS
-# TMPDIR sits under the /var symlink.
+# Resolved physically: the script refuses a snapshot dir whose realpath differs (macOS /var).
 fixture=$(CDPATH= cd -- "$fixture" && pwd -P)
 stub_pid=
 
@@ -91,9 +60,7 @@ vault_paperless_admin_password: throttle
 YAML
 STUB
 
-# The psql restore is what brings the deleted rows back, so the stub records it
-# where the API stub can see it: after the restore the catalogue has to match the
-# snapshot again, exactly as it does against a real Postgres.
+# The psql stub records the restore so the API stub's catalogue matches again after it.
 cat > "$fixture/bin/docker" <<'STUB'
 #!/bin/sh
 set -eu
@@ -128,13 +95,8 @@ exit 0
 STUB
 chmod 0700 "$fixture/bin/ansible-vault" "$fixture/bin/docker"
 
-# A Paperless whose login endpoint has a fixed allowance, and whose deletion is
-# asynchronous the way the real one is: the documents stay in the catalogue for
-# STUB_POLLS_BEFORE_EMPTY reads after the delete, so the poll loop under test
-# really does iterate rather than break on its first pass.
-#
-# Every request is appended to the ledger with its status, which is what makes the
-# login count and the throttle observable from the assertions below.
+# A Paperless stub with a fixed login allowance and asynchronous deletion, so the
+# poll really iterates; every request is logged with its status.
 cat > "$fixture/bin/paperless-api-stub.rb" <<'STUB'
 require "json"
 require "socket"
@@ -248,9 +210,7 @@ env PATH="$fixture/bin:$PATH" \
 drill_status=$?
 set -e
 
-# grep -c prints its zero and then exits non-zero when nothing matched, so the
-# status is discarded rather than substituted for: printing a second zero here
-# would make every count unparseable.
+# grep -c prints 0 and exits non-zero on no match; discard the status, not the count.
 ledger_count() {
   grep -c "$1" "$api_ledger" || true
 }
@@ -262,17 +222,13 @@ grep -qF 'Paperless coordinated snapshot created' "$fixture/stdout" ||
 grep -qF 'Paperless coordinated snapshot restored' "$fixture/stdout" ||
   fail 'the drill did not report the restore it exists to prove'
 
-# The login count is the assertion the defect fails, and it is exact on purpose:
-# a fourth login is the loop authenticating again, whether or not the endpoint in
-# front of it happens to be throttling that day.
+# Exact on purpose: a fourth login is the loop authenticating again.
 logins=$(ledger_count '^POST /api/token/ ')
 [ "$logins" -eq 3 ] ||
   fail "the drill spent $logins login(s) rather than one per phase that needs one"
 [ "$(ledger_count ' 429$')" -eq 0 ] ||
   fail 'the drill tripped the login throttle'
 
-# Without these the same pass would be reported by a drill that had deleted its
-# poll, or its deletion, altogether.
 deletes=$(ledger_count '^DELETE /api/documents/')
 [ "$deletes" -eq 2 ] ||
   fail "the drill deleted $deletes document(s) rather than the seeded two"

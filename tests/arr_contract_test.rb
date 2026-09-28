@@ -1,31 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#
-# Behaviour of the Arr service contract's Ruby program.
-#
-# Until #147 the whole program lived in a `<<'RUBY'` heredoc inside
-# tests/contracts/arr.sh. `sh -n` reads a quoted heredoc as opaque text, so the
-# only thing that ever executed it was `tests/contracts/arr.sh static` -- and a
-# contract that passes says nothing about which of its twenty-six assertions
-# still bite. tests/contracts/arr-static.rb is a file now, so each one can be
-# moved on its own.
-#
-# Two layers, because the contract has two kinds of property:
-#
-#   Static -- build a fixture repository from the files the program reads, break
-#   exactly one thing in it, and require the program to name that thing. The
-#   assertion text is the interface: a guard that fails for the wrong reason has
-#   stopped guarding what it names, so every row pins the exact diagnostic.
-#
-#   Wrapper -- tests/contracts/arr.sh is what turns a mode into an invocation.
-#   Its rows prove the mode guard, that the program is actually reached, that the
-#   program comes from the checkout while the tree it inspects does not, and that
-#   it cannot consume the caller's stdin.
-#
-# Run with --self-test to plant a regression in the program and in the wrapper
-# and prove the rows above detect each one. It accumulates its mismatches rather
-# than aborting on the first: at two files and forty-odd plants, learning them
-# one at a time is the expensive habit.
+# Behaviour of the Arr contract's static program and its wrapper: each row breaks one
+# thing and pins the exact diagnostic. --self-test plants a regression in each.
 
 require "fileutils"
 require "open3"
@@ -48,14 +24,8 @@ DIAGNOSTIC_PREFIX = "Arr contract failed: "
 CONTRACT = File.join(ROOT, "tests", "contracts", "arr.sh")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "arr-static.rb")
 
-# Exactly what the program reads, plus the shared flatten_tasks it requires
-# through PLATFORM_CONTRACT_REPO_DIR. A fixture holding only these is the proof
-# that the list the program *declares* is narrower than the list it actually
-# needs: `required` names eleven paths, and the program then goes on to read
-# five more -- configarr.yml, reconcile_prowlarr_application.yml,
-# reconciliation_fingerprints.yml and both acquisition filters. Those five are
-# absent from the existence sweep, so removing one of them is a crash rather
-# than a diagnostic. Recorded here rather than fixed: this change moves code.
+# Exactly what the program reads. `required` names eleven paths but the program reads five
+# more, so removing one of those is a crash rather than a diagnostic.
 FIXTURE_FILES = %w[
   roles/arr/defaults/main.yml
   roles/arr/tasks/main.yml
@@ -88,10 +58,8 @@ def build_fixture_repository(root)
   end
 end
 
-# Every substitution states how many matches it expects. A replacement that
-# still contains its own pattern plants nothing, and a bare `sub` cannot tell
-# that from a plant that worked: the row then reports a pass, or a failure with
-# the wrong diagnostic.
+# Every substitution states its expected match count: a replacement containing its own
+# pattern plants nothing.
 def mutate_text(root, relative, pattern, replacement, occurrences: 1)
   path = File.join(root, relative)
   body = File.read(path)
@@ -146,12 +114,7 @@ STATIC_ROWS = [
     expects: "Prowlarr applications must use full sync"
   },
   {
-    # A *second* activation rather than none, so this row moves only the
-    # exactly-one assertion. Turning both activations into something else would
-    # also empty `activation_task` and produce the gate diagnostic below, and a
-    # row whose output carries two sentences no longer says which one it pins.
-    # The stop task's own `when` still mentions the gate as a substring, so the
-    # gate assertion stays satisfied.
+    # A second activation rather than none, so only the exactly-one assertion moves.
     name: "a project activated twice",
     break: lambda { |root|
       mutate_text(root, "roles/arr/tasks/main.yml",
@@ -161,10 +124,7 @@ STATIC_ROWS = [
     expects: "Arr role must deploy through docker_compose_v2"
   },
   {
-    # #537 moved this gate onto the block that now wraps the deployment -- the
-    # block whose rescue records the message roles/container_health is handed --
-    # so the `when` to remove is the block's, and the anchor is the last line of
-    # its rescue rather than the deploy's own arguments.
+    # #537 moved this gate onto the block wrapping the deployment, so the `when` removed is the block's.
     name: "an activation no longer gated on the Usenet switch",
     break: lambda { |root|
       mutate_text(root, "roles/arr/tasks/main.yml",
@@ -245,10 +205,7 @@ STATIC_ROWS = [
     expects: "Servarr reconciliation must own only the SABnzbd clients"
   },
   {
-    # Two rows, not one, because this diagnostic covers three clauses and a
-    # single break that moved two of them could not say which one was doing the
-    # work. Renaming the endpoint moves only the positive clause; the row below
-    # adds a /command request and moves only the negative one.
+    # Two rows: this one moves only the positive clause, the next only the negative one.
     name: "root folders that are never created",
     break: lambda { |root|
       mutate_text(root, "roles/arr/tasks/reconcile_servarr.yml",
@@ -312,9 +269,7 @@ STATIC_ROWS = [
   },
   {
     name: "a Bazarr link to one Arr service only",
-    # All four tokens live only in filter_plugins/acquisition_bazarr.py -- the
-    # task files spell none of them, which is why the program reads that filter
-    # as source text beside the task files it reads as tasks.
+    # These tokens live only in filter_plugins/acquisition_bazarr.py, read as source text.
     break: lambda { |root|
       mutate_text(root, "filter_plugins/acquisition_bazarr.py",
                   '"settings-general-use_sonarr": "true"',
@@ -369,22 +324,14 @@ def static_failures(program, rows = STATIC_ROWS)
 end
 
 # --- wrapper layer ---------------------------------------------------------
-#
-# tests/contracts/arr.sh resolves its program from its own checkout rather than
-# from the tree it is inspecting, so a copy of the two files into a throwaway
-# tests/contracts/ is a whole working contract. That is what lets a row point
-# PLATFORM_CONTRACT_REPO_DIR at a broken fixture and still exercise the real
-# wrapper. The copy is laid into a fixture repository so it is also a valid tree
-# to inspect, which is what the unset-variable row needs.
+# The wrapper resolves its program from its own checkout, so a copy into a throwaway
+# tests/contracts/ is a whole working contract.
 
 def with_contract_copy(static: File.read(STATIC_PROGRAM), wrapper: File.read(CONTRACT), &block)
   with_contract_sandbox("arr", wrapper, { "static" => static }, &block)
 end
 
-# Reports what the program saw on stdin and what the caller still has, which is
-# the only way the redirect is observable: the real program never reads stdin,
-# so the redirect is what keeps that true rather than something that changes an
-# outcome today.
+# The real program never reads stdin, so the redirect is observable only through this probe.
 def stdin_failures(wrapper_source: File.read(CONTRACT))
   with_contract_copy(static: STDIN_PROBE, wrapper: wrapper_source) do |contract|
     stdin_probe_failures(contract, %w[static], { "PLATFORM_CONTRACT_REPO_DIR" => ROOT })
@@ -416,8 +363,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
         stdout.include?(SUCCESS_LINE)
     end
 
-    # The row that proves the wrapper still runs the program at all: the tree
-    # under inspection is broken, the wrapper's own checkout is not.
     Dir.mktmpdir("nas-platform-arr-broken.") do |raw|
       broken = File.realpath(raw)
       build_fixture_repository(broken)
@@ -431,10 +376,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     end
   end
 
-  # The branch every deployment actually takes. Neither tests/integration.sh nor
-  # run_contracts.rb --execute sets PLATFORM_CONTRACT_REPO_DIR, so the default is
-  # the only path in production -- and it is the one where resolving the program
-  # from the script's own checkout is load-bearing rather than shadowed.
+  # The production path: PLATFORM_CONTRACT_REPO_DIR unset.
   with_contract_copy do |contract, copy_root|
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => nil }, contract, "static"
@@ -444,8 +386,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     failures << "wrapper: static mode did not report the property it proved" unless
       stdout.include?(SUCCESS_LINE)
 
-    # ... and it read that checkout rather than some other tree: break the copy
-    # and the same unset invocation must now refuse.
     FileUtils.rm(File.join(copy_root, "roles/arr/templates/config.xml.j2"))
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => nil }, contract, "static"
@@ -458,11 +398,8 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures
 end
 
-# The two-roots property, stated as an outcome rather than as the wrapper's text.
-# An inspected tree with no tests/contracts at all must still pass, because the
-# program comes from the checkout; and the program must still require
-# tests/policy_support.rb out of the inspected tree, because that is the tree
-# whose task files it is flattening.
+# The two-roots property, as an outcome: the program comes from the checkout, and
+# policy_support.rb from the inspected tree.
 def two_roots_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   with_contract_copy(wrapper: wrapper_source) do |contract|
@@ -479,10 +416,7 @@ def two_roots_failures(wrapper_source: File.read(CONTRACT))
         stdout.include?(SUCCESS_LINE)
     end
 
-    # The other direction. The inspected tree's own flatten_tasks is what the
-    # program must use, so a tree whose policy_support.rb refuses to load has to
-    # take the contract down with it. Reading the checkout's copy instead would
-    # pass here, silently.
+    # The inspected tree's own policy_support.rb must be the one the program loads.
     Dir.mktmpdir("nas-platform-arr-support.") do |raw|
       inspected = File.realpath(raw)
       build_fixture_repository(inspected)
@@ -509,10 +443,7 @@ PROGRAM_MUTATIONS = [
     from: 'failures << "missing #{relative}" unless File.file?(File.join(root, relative))',
     to: "failures << relative if false",
     rows: ["a declared file that is gone"],
-    # The existence sweep is also what keeps the reads below it from meeting an
-    # absent file, so removing it does not merely accept the repository: it
-    # crashes on the first YAML load. The row still refuses, and now says why in
-    # a stack trace instead of a sentence, which is the regression.
+    # Without the existence sweep the reads crash on the first YAML load: a stack trace instead of a sentence.
     detects: "refused for the wrong reason"
   },
   {
@@ -546,10 +477,7 @@ PROGRAM_MUTATIONS = [
     rows: ["a project activated twice"]
   },
   {
-    # The whole condition, not the predicate inside the block: with the `when`
-    # removed the block never runs, `any?` on an empty array is already false,
-    # and a plant inside the block changes nothing. Measured, not reasoned --
-    # the self-test reported this one as "was accepted" first time round.
+    # The whole condition: with the `when` removed the block never runs and `any?` is already false.
     label: "the Usenet activation gate",
     from: 'activation_gate && Array(activation_gate["when"]).any? do |condition|
       condition.to_s.include?("media_usenet_enabled | bool")
@@ -588,8 +516,6 @@ PROGRAM_MUTATIONS = [
     rows: ["authentication that is not on before first start"]
   },
   {
-    # Restores the substring search the line-oriented read replaced, which is
-    # the form a second live assignment satisfies while only one may exist.
     label: "the exactly-once CPU set read",
     from: 'env_assignments.select { |name, _value| name == "PLATFORM_CONTAINER_CPUSET" } ==
       [["PLATFORM_CONTAINER_CPUSET", "{{ platform_effective_container_cpuset }}"]]',
@@ -673,8 +599,6 @@ PROGRAM_MUTATIONS = [
   }
 ].freeze
 
-# The wrapper's own regressions. Each one is a line that today changes no
-# outcome, which is exactly why it needs a plant rather than a passing contract.
 WRAPPER_MUTATIONS = [
   {
     label: "a dropped stdin redirect",
@@ -706,12 +630,7 @@ if ARGV.include?("--self-test")
   mismatches = []
   planted = 0
 
-  # Every plant is prepared on the main thread, before the pool. `plant` and
-  # `rows_named` abort with a sentence naming what they could not find, and an
-  # abort inside a worker raises SystemExit there: the thread dies without
-  # recording its result and the pool's own `collected.fetch` then reports a
-  # KeyError instead of that sentence. Nine copies of this helper are coming, so
-  # the ordering is the fix rather than a rescue.
+  # Plants are prepared before the pool: an `abort` in a worker surfaces as a KeyError.
   program_cases = PROGRAM_MUTATIONS.map do |mutation|
     [mutation,
      plant(File.read(STATIC_PROGRAM), mutation),

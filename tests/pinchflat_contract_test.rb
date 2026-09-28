@@ -1,31 +1,10 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 #
-# Behaviour of the Pinchflat service contract's two Ruby programs.
-#
-# Until #147 both lived in `<<'RUBY'` heredocs inside tests/contracts/pinchflat.sh.
-# `sh -n` reads a quoted heredoc as opaque text, so the only thing that ever
-# executed either one was an integration lane with Docker, a converged Pinchflat
-# and a real vault. tests/contracts/pinchflat-static.rb and
-# tests/contracts/pinchflat-runtime.rb are files now, so both are reachable here.
-#
-# Three layers, because the contract has three kinds of property:
-#
-#   Static -- build a fixture repository from the files the contract reads,
-#   break exactly one thing in it, and require the program to name that thing.
-#   The assertion text is the interface: a guard that fails for the wrong reason
-#   has stopped guarding what it names, so every row pins the exact diagnostic.
-#
-#   Runtime -- serve the interface from an HTTP fixture and put `docker` and
-#   `ansible-vault` stubs on PATH, so the health, identity and persistence
-#   outcomes can each be moved one at a time. This half had no test at all.
-#
-#   Wrapper -- tests/contracts/pinchflat.sh is what turns a mode into an
-#   invocation. Its rows prove the mode guard, that both programs are actually
-#   reached, and that neither can consume the caller's stdin.
-#
-# Run with --self-test to plant a regression in each program and prove the rows
-# above detect it.
+# Behaviour of the Pinchflat contract's programs (#147) in three layers: static (break
+# one fixture file, require the exact diagnostic), runtime (HTTP fixture plus docker and
+# ansible-vault stubs), and wrapper (mode guard, both programs reached, stdin untouched).
+# Run with --self-test to plant a regression in each and prove the rows detect it.
 
 require "fileutils"
 require "open3"
@@ -42,16 +21,13 @@ include TestScaffold
 include ContractTestSupport
 
 ROOT = File.expand_path("..", __dir__)
-# The prefix every refusal this file judges has to carry. Matching the
-# fragment alone accepted a backtrace or an echoed argument as a refusal.
+# The fragment alone would accept a backtrace or echoed argument as a refusal.
 DIAGNOSTIC_PREFIX = "Pinchflat contract failed: "
 CONTRACT = File.join(ROOT, "tests", "contracts", "pinchflat.sh")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "pinchflat-static.rb")
 RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "pinchflat-runtime.rb")
 
-# Exactly what the static half reads, plus the shared flatten_tasks it requires
-# through PLATFORM_CONTRACT_REPO_DIR. A fixture holding only these is the proof
-# that the list the contract declares is the list it actually needs.
+# Exactly what the static half reads: proves the declared list is the list it needs.
 FIXTURE_FILES = %w[
   roles/pinchflat/defaults/main.yml
   roles/pinchflat/meta/argument_specs.yml
@@ -86,8 +62,6 @@ def edit_text(root, relative)
   File.write(path, yield(File.read(path)))
 end
 
-# Reaches a task wherever it sits, a block's rescue and always paths included,
-# because that is the shape the contract's own flatten_tasks reads.
 def each_task(document, &block)
   Array(document).each do |task|
     next unless task.is_a?(Hash)
@@ -206,9 +180,7 @@ STATIC_ROWS = [
     },
     expects: "Pinchflat env must render the CPU set exactly once"
   },
-  # The row the line-oriented environment read exists for: a commented-out sample
-  # of the right assignment satisfies a substring search while the live line
-  # beside it exports something else entirely.
+  # A commented-out sample of the right assignment must not satisfy the check.
   {
     name: "the vault identity surviving only in a comment",
     break: lambda { |root|
@@ -341,9 +313,6 @@ STATIC_ROWS = [
   }
 ].freeze
 
-# The three moving parts of the runtime half that are not the HTTP interface:
-# what Docker reports about the container, what ansible-vault decrypts, and
-# whether the database landed beneath the declared config root.
 RUNTIME_DEFAULTS = {
   docker_status: "healthy",
   docker_exit: 0,
@@ -440,8 +409,7 @@ def build_runtime_sandbox(root, options)
   bin
 end
 
-# Answers the three interface outcomes the runtime half asserts, keyed by the
-# credential each request carries, so a row moves exactly one of them.
+# Keyed by the credential each request carries, so a row moves exactly one outcome.
 def runtime_responder(options)
   expected = "Basic #{["#{USERNAME}:#{PASSWORD}"].pack('m0')}"
   lambda do |_method, target, headers, _body|
@@ -502,24 +470,16 @@ def runtime_failures(program, rows = RUNTIME_ROWS)
   end
 end
 
-# --- wrapper layer ---------------------------------------------------------
-#
-# tests/contracts/pinchflat.sh resolves its two programs from its own checkout
-# rather than from the tree it is inspecting, so a copy of the three files into
-# a throwaway tests/contracts/ is a whole working contract. That is what lets a
-# row point PLATFORM_CONTRACT_REPO_DIR at a broken fixture and still exercise
-# the real wrapper. The copy is laid into a fixture repository so it is also a
-# valid tree to inspect, which is what the unset-variable row needs.
+# --- wrapper layer ---
+# The wrapper resolves its programs from its own checkout, so a copy into a throwaway
+# tests/contracts/ is a whole working contract.
 
 def with_contract_copy(static: File.read(STATIC_PROGRAM), runtime: File.read(RUNTIME_PROGRAM),
                        wrapper: File.read(CONTRACT), &block)
   with_contract_sandbox("pinchflat", wrapper, { "static" => static, "runtime" => runtime }, &block)
 end
 
-# Reports what the program saw on stdin and what the caller still has, which is
-# the only way the redirect is observable: neither real program reads stdin, so
-# the redirect is what keeps that true rather than something that changes an
-# outcome today.
+# Neither program reads stdin, so only this makes the redirect observable.
 def stdin_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   with_contract_copy(static: STDIN_PROBE, wrapper: wrapper_source) do |contract|
@@ -527,8 +487,7 @@ def stdin_failures(wrapper_source: File.read(CONTRACT))
                                          subject: "the static program"))
   end
 
-  # The runtime invocation, which is `exec`ed and so is the last thing the script
-  # does -- its redirect needs its own row because the static one cannot cover it.
+  # The runtime invocation is `exec`ed, so its redirect needs its own row.
   with_contract_copy(runtime: STDIN_PROBE, wrapper: wrapper_source) do |contract, copy_root|
     environment = { "PLATFORM_CONTRACT_REPO_DIR" => ROOT,
                     "PLATFORM_CONTRACT_VAULT_FILE" => File.join(copy_root, "vault.yml"),
@@ -558,13 +517,8 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     failures << "wrapper: an unknown mode was refused without its diagnostic" unless
       (stdout + stderr).include?("pinchflat contract accepts only static or run")
 
-    # The run-mode environment contract, as tests/bindery_contract_test.rb holds
-    # it. Each name is set to "" rather than deleted, because ${VAR:?} refuses
-    # null as well as unset and a deleted key would pass for a developer who
-    # exports it; the Mac names are cleared so their `:=` fallback cannot stand
-    # in. The wrapper's own message is asserted, never the shell's wording. The
-    # port is unparseable so a guard planted as `:=` fails fast in the runtime
-    # program rather than polling a port nothing listens on.
+    # Each name set to "" (${VAR:?} refuses null too); Mac names cleared so `:=` cannot stand
+    # in. The port is unparseable so a planted `:=` fails fast.
     full = {
       "PLATFORM_CONTRACT_REPO_DIR" => ROOT,
       "PLATFORM_CONTRACT_VAULT_FILE" => File.join(copy_root, "vault.yml"),
@@ -590,8 +544,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     failures << "wrapper: static mode did not report the property it proved" unless
       stdout.include?("pinchflat static contract: authenticated YouTube writer ownership holds")
 
-    # The row that proves the wrapper still runs the static program at all: the
-    # tree under inspection is broken, the wrapper's own checkout is not.
     Dir.mktmpdir("nas-platform-pinchflat-broken.") do |raw|
       broken = File.realpath(raw)
       build_fixture_repository(broken)
@@ -605,11 +557,8 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     end
   end
 
-  # The branch every deployment actually takes. Neither tests/integration.sh nor
-  # run_contracts.rb --execute sets PLATFORM_CONTRACT_REPO_DIR, and
-  # tests/mac/run.sh:42 refuses to start when it is set, so the default is the
-  # only path in production -- and it is the one where resolving the programs
-  # from the script's own checkout is load-bearing rather than shadowed.
+  # The production path: nothing sets PLATFORM_CONTRACT_REPO_DIR, so programs resolve from
+  # the script's own checkout.
   with_contract_copy do |contract, copy_root|
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => nil }, contract, "static"
@@ -619,8 +568,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     failures << "wrapper: static mode did not report the property it proved" unless
       stdout.include?("pinchflat static contract: authenticated YouTube writer ownership holds")
 
-    # ... and it read that checkout rather than some other tree: break the copy
-    # and the same unset invocation must now refuse.
     FileUtils.rm(File.join(copy_root, "services/pinchflat/compose.mac.yml"))
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => nil }, contract, "static"
@@ -642,10 +589,7 @@ PROGRAM_MUTATIONS = [
     from: 'failures << "missing #{relative}" unless File.file?(File.join(root, relative))',
     to: "failures << relative if false",
     rows: ["a declared file that is gone"],
-    # The existence sweep is also what keeps the reads below it from meeting an
-    # absent file, so removing it does not merely accept the repository: it
-    # crashes on the first YAML load. The row still refuses, and now says why in
-    # a stack trace instead of a sentence, which is the regression.
+    # Without the existence sweep, later reads crash; the row requires a sentence, not a trace.
     detects: "refused for the wrong reason"
   },
   {
@@ -670,9 +614,6 @@ PROGRAM_MUTATIONS = [
     rows: ["a credential that deployment no longer requires"]
   },
   {
-    # Restores the substring search the line-oriented read replaced, which is the
-    # form a commented-out sample satisfies while the live line exports something
-    # else.
     label: "the line-oriented environment read",
     program: :static,
     from: "].all? { |assignment| env_assignments.include?(assignment) }",
@@ -765,11 +706,8 @@ if ARGV.include?("--self-test")
     end
   end
 
-  # The redirects' own regression, one per invocation. Neither real program reads
-  # stdin, so dropping `</dev/null` changes no outcome today -- which is exactly
-  # why it needs a program that does read, and why the rule cannot be proven by
-  # the contract passing. The third drains the caller's stdin before the runtime
-  # exec, which only the check that the caller's input survived can see.
+  # One per invocation: dropping `</dev/null` changes no outcome today, so it needs a
+  # program that reads stdin.
   planted_redirects = 0
   [
     ['ruby "$contract_repo_dir/tests/contracts/pinchflat-static.rb" "$repo_dir" </dev/null',
@@ -787,8 +725,6 @@ if ARGV.include?("--self-test")
     planted_redirects += 1
   end
 
-  # Each run-mode requirement weakened to a default, and caught by its own row:
-  # every row names its variable, so any other failure is the wrong assertion.
   planted_requirements = 0
   REQUIRED_RUN_ENV.each do |name|
     from = %(: "${#{name}:?#{name} is required}")

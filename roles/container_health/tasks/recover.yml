@@ -1,65 +1,23 @@
 ---
-# The orchestration around the mechanism in main.yml: detect without refusing,
-# spend exactly one bounded force-recreate, then take the verdict. #509 built the
-# mechanism and #537 wired thirteen roles into it, but left this sequence written
-# out in each of them; six carried it byte-identically over 114 lines, rationale
-# comments included, with nothing holding them in agreement (#646).
-#
-# It is NOT the plain deployment, which stays in the calling role, and that is a
-# constraint rather than a preference. tests/policy_deployment_test.rb requires
-# the role that starts a stack out of the installed release to be the role that
-# declared those five paths to roles/deployment_bundle and rendered that .env,
-# and it reads that off a Compose task naming the release directory, both Compose
-# files and the rendered .env literally -- which only a task in the role itself
-# can carry. Measured in #646: with the plain deploy left behind, that check
-# stays green with the force-recreate here, because it asks whether SOME such
-# task exists and not whether every one of them does. So the force-recreate takes
-# the same four values as parameters, which keeps it addressing exactly the
-# release the caller declared.
-#
-# The file is `recover.yml` rather than `deploy.yml` because four roles already
-# carry a `tasks/deploy.yml` of their own meaning the service's whole deploy
-# stage, and because nothing here deploys.
+# Detect without refusing, spend one bounded force-recreate, then the verdict (#646).
+# The plain deploy stays in the calling role, which must own the release paths.
 
-# Play scope, and that is the whole reason this task exists. set_fact writes a
-# fact that SURVIVES INTO THE NEXT ROLE, and the per-role names this sequence
-# used to carry made a leak between services impossible. One shared name does
-# not: a recreate that fails in the first of six callers would otherwise still be
-# set when the fifth takes its verdict, and that caller would refuse naming
-# another service's failure. The two other values crossing this boundary clear
-# themselves -- container_health_stuck_services is rewritten by the detect pass
-# immediately below, and container_health_wedged_recreate re-registers even when
-# its task is skipped -- so this message is the only one that has to be reset,
-# and it is reset unconditionally rather than in a rescue that may not run.
+# set_fact survives into the next role, so a recreate failure from an earlier
+# service would otherwise be reported by a later one.
 - name: Clear any recreate failure carried by an earlier service
   ansible.builtin.set_fact:
     container_health_recreate_failure_message: ""
 
-# Immediately after the deployment and before everything that trusts it. A
-# container in `Restarting` still appears in `docker container ls --quiet`, so
-# the CPU verification below would sail straight past one and the readiness probe
-# after it would fail on a timeout that names nothing (#510).
-#
-# This pass detects, prints the evidence and publishes
-# container_health_stuck_services WITHOUT refusing, because the recreate below
-# has to happen before the verdict. It still re-raises a deployment failure that
-# no stuck container explains.
+# Before anything that trusts the deployment: a `Restarting` container still passes
+# the CPU check and fails readiness on an unnamed timeout (#510).
 - name: Detect a container that runs but never serves in {{ container_health_service_name }}
   ansible.builtin.include_role:
     name: container_health
   vars:
     container_health_refuse: false
 
-# EXACTLY ONE force-recreate, of only the services Docker says are stuck.
-# FORCED, because `up -d` against an unchanged specification keeps the same
-# container and recreates nothing; `dependencies: false` renders as --no-deps, so
-# a healthy sibling in the same project is not taken down to repair one container.
-# CONDITIONAL, and that condition is the whole idempotence argument: the list is
-# empty on a converged host and empty under --check, so this task is skipped on
-# every run that has nothing to repair. BOUNDED AT ONE PER RUN by being a single
-# task rather than a loop, with the verdict below re-checking, so a container
-# looping for a reason a recreate cannot fix never goes green and never becomes
-# an invisible retry loop.
+# One forced recreate of only the stuck services (--no-deps spares siblings);
+# skipped when the list is empty, which keeps it idempotent and never a loop.
 - name: Recreate a container that runs but never serves in {{ container_health_service_name }}
   block:
     - name: Force-recreate the stuck services of {{ container_health_service_name }}
@@ -77,18 +35,15 @@
       when: container_health_stuck_services | default([]) | length > 0
       register: container_health_wedged_recreate
   rescue:
-    # Carried rather than re-raised here. `--wait` fails a container that came
-    # back unhealthy, which the re-check below diagnoses far better than Compose
-    # can; a recreate that failed for any OTHER reason left no stuck container
-    # behind, and the second pass re-raises this message unchanged for that case.
+    # Carried, not re-raised: the verdict pass diagnoses an unhealthy result better,
+    # and re-raises this message when nothing is stuck.
     - name: Record the recreate that did not recover {{ container_health_service_name }}
       ansible.builtin.set_fact:
         container_health_recreate_failure_message: >-
           The force-recreate reported: {{ ansible_failed_result.msg
           | default('no message') }}
 
-# Whether a recreate was actually spent, recorded before the second pass
-# overwrites the list it was decided from.
+# Recorded before the second pass overwrites the list.
 - name: Record whether a recreate was spent for {{ container_health_service_name }}
   ansible.builtin.set_fact:
     container_health_recreate_spent: >-
@@ -105,9 +60,6 @@
       health, so check mode cannot reach that path and recreates nothing.
   when: ansible_check_mode
 
-# The verdict. Nothing stuck here means the recreate worked, or that there was
-# never anything to repair; either way the run continues. Anything still stuck
-# fails, and says the retry has already been spent.
 - name: Refuse a container that stayed wedged after its recreate in {{ container_health_service_name }}
   ansible.builtin.include_role:
     name: container_health

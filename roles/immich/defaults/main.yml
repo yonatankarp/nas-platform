@@ -17,12 +17,8 @@ immich_restore_backup_gid: >-
   {{ ansible_facts.get('user_gid', 0)
      if platform_kind == 'mac' and not (platform_manage_linux_ownership | bool)
      else 0 }}
-# Empty and zero mean "derive from the pinned Compose images", which is the only
-# way these stay true. Immich stamps its own version into the dump filename it
-# writes, so the expected version is the version of the image about to run --
-# restating it here made every image bump refuse the backup the previous image
-# had just written, which is what happened to #560. Set either explicitly only
-# to pin both sides of the comparison, as the negative restore fixtures do.
+# Empty/zero derive from the pinned images: Immich stamps its version into the
+# dump filename, so a restated version refused every fresh backup (#560).
 immich_restore_expected_immich_version: ""
 immich_restore_expected_postgres_major: 0
 immich_restore_verify_limit: 25
@@ -30,38 +26,27 @@ immich_restore_verify_limit: 25
 immich_originals_verify_sample_size: 50
 immich_restore_database_wait_timeout: 300
 
-# Immich brings up PostgreSQL, Redis, machine learning and the server together,
-# and the machine learning image loads its models before it answers, so the
-# stack takes far longer than the platform default to report healthy. The API
-# then answers before it has finished initializing, so the readiness poll needs
-# more attempts than the platform default too.
+# The ML image loads models before answering, and the API answers before it
+# finishes initialising, so both waits exceed the platform default.
 immich_compose_wait_timeout: 600
 immich_initialization_retries: 60
 
-# Deliberately small and explicit, and every entry is grounded in the deployed
-# stack rather than in taste. Immich stores hundreds of settings; this role owns
-# only the ones the Compose definition already commits to, so an operator can
-# change anything else through the UI without the next converge undoing it.
+# Only settings the Compose definition commits to; everything else stays
+# operator-owned in the UI.
 immich_managed_settings:
   # The NAS is not permitted to phone home for release announcements.
   newVersionCheck:
     enabled: false
-  # The stack runs a machine learning container; leaving inference disabled
-  # would mean paying for it and getting no search.
   machineLearning:
     enabled: true
-  # The Compose definition mounts a dedicated backups volume for exactly this.
   backup:
     database:
       enabled: true
 
-# The identity the contract and the role both authenticate as. Immich records
-# the creating account as the sole administrator, so this is created once and
-# only ever reconciled afterwards.
+# Immich makes the creating account the sole administrator: created once, then reconciled.
 immich_admin_name: NAS Platform Administrator
 
-# Safe standalone defaults mirror the portable normal-inventory policy. These
-# values remain outside the encrypted managed-user records.
+# These values stay outside the encrypted managed-user records.
 immich_managed_user_preference_profile_default: standard
 immich_managed_user_preference_profile_by_email: {}
 immich_managed_user_preference_overrides: {}
@@ -104,67 +89,50 @@ immich_managed_user_preference_profiles:
       enabled: false
       sidebarWeb: false
 
-# Immich's half of roles/managed_users. tasks/managed_users.yml maps these onto
-# that role's parameters one for one; roles/komga, roles/audiobookshelf,
-# roles/beszel and roles/jellyfin carry the blocks to compare it against.
-#
-# The four relative paths are asserted against config/managed-user-capabilities.yml
-# on the deployed release before any request is sent.
+# Immich's half of roles/managed_users; compare roles/komga and roles/audiobookshelf.
+# The relative paths are asserted against config/managed-user-capabilities.yml.
 immich_managed_users_identity_attribute: email
 immich_managed_users_id_attribute: id
 immich_managed_users_list_path: admin/users?withDeleted=true
 immich_managed_users_authenticate_path: auth/login
 immich_managed_users_create_path: admin/users
 immich_managed_users_reconcile_interface: admin/users/{id}
-# A successful login creates a session, and Immich answers it 201.
 immich_managed_users_authenticate_status: 201
 immich_managed_users_create_status: [201]
 immich_managed_users_repair_status: [200]
-# Immich user ids are UUIDs. Narrower than platform_safe_api_identifier_pattern,
-# so it is kept rather than widened.
+# UUIDs; narrower than platform_safe_api_identifier_pattern.
 immich_managed_users_id_pattern: '^[0-9A-Fa-f-]{36}$'
 
-# The Immich-only reads and refusals roles/managed_users runs between its own
-# steps: the existing preference targets before creation, the effective ones
-# before the repair, and the preference and avatar verdicts before the exact
-# verification. Relative to roles/managed_users/tasks.
+# Immich-only reads and refusals the shared role runs between its own steps.
+# Relative to roles/managed_users/tasks.
 immich_managed_users_before_create_tasks: ../../immich/tasks/managed_users_existing_targets.yml
 immich_managed_users_before_repair_tasks: ../../immich/tasks/managed_users_effective_targets.yml
 immich_managed_users_before_verify_tasks: ../../immich/tasks/managed_users_preference_verification.yml
 
-# Evaluated inside the shared role's loops, against its own names: the listing it
-# registered, the single match it bound, `item`, and the declared user it binds
-# as managed_users_authenticating_user for both authenticate requests.
+# Evaluated inside the shared role's loops, against its own names.
 immich_managed_users_list_json: "{{ managed_users_listing.json }}"
 immich_managed_users_authenticate_body:
   email: "{{ managed_users_authenticating_user.email }}"
   password: "{{ managed_users_authenticating_user.password }}"
 immich_managed_users_authenticate_identity: "{{ item.json.userEmail | default('') }}"
-# The user id a successful login returns; the shared role requires it to be the
-# listed record's id, and refuses a repair whose record is not it.
+# The shared role requires this to be the listed record's id.
 immich_managed_users_authenticated_id: "{{ item.json.userId | default('') }}"
 immich_managed_users_reconcile_path: >-
   admin/users/{{ managed_users_match[managed_users_id_attribute] | urlencode }}
-# Creation grants nothing beyond the account itself; quota is set by repair,
-# after the new credential is proved.
+# Quota is set by repair, after the new credential is proved.
 immich_managed_users_create_body:
   email: "{{ item.email }}"
   password: "{{ item.password }}"
   name: "{{ item.name }}"
   shouldChangePassword: false
-# Nothing password-shaped may appear here: the capability register declares an
-# existing identity's password update forbidden, and the shared role refuses a
-# repair body carrying one.
+# Nothing password-shaped here: an existing identity's password update is forbidden.
 immich_managed_users_repair_body:
   name: "{{ item.name }}"
   quotaSizeInBytes: "{{ item.quota_size }}"
 immich_managed_users_repair_condition: >-
   {{ managed_users_match.name != item.name or
      managed_users_match.quotaSizeInBytes != item.quota_size }}
-# Brace-free; the first condition is what makes the rest safe, because
-# managed_users_match is an empty mapping for an identity with no match. The last
-# two compare against the ids this phase's own authentication proved and the
-# first one proved in this play.
+# Brace-free; the first condition guards the rest (the match is {} when absent).
 immich_managed_users_verify_conditions:
   - managed_users_matches[item.email] | length == 1
   - managed_users_match.email | trim | lower == item.email | trim | lower

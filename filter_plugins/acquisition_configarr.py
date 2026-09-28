@@ -1,26 +1,9 @@
 """Configarr quality profiles, quality definitions and custom formats.
 
-Configarr is a job, not a service: it reads one YAML declaration, writes to the
-Radarr and Sonarr APIs and exits. Nothing it writes is readable in the shape it
-was declared in, so every filter here exists to make a declaration and a
-readback comparable.
-
-That comparison is done in three stages, and the filter names follow them:
-
-* `acquisition_configarr_owned_projection` reduces a strict readback of both
-  services to the resources this platform owns.
-* `acquisition_configarr_declared_projection` turns that into the form a
-  declaration can be compared against — quality names rather than the numeric
-  identities Radarr and Sonarr generate, and the sort order those identities
-  imply.
-* `acquisition_configarr_desired_projection` materializes the declaration the
-  same way Configarr v1.28.0 does, including the qualities it adds, the order it
-  reverses and the cutoff fields it derives.
-
-Quality definitions are separated out because Configarr owns only three of their
-fields; `..._quality_definition_invariants` keeps the rest as opaque context so
-Servarr's own metadata is carried rather than invented. `..._profile_repair_bodies`
-is the write side: a conservative full PUT built from an immediate readback.
+Makes a Configarr declaration and a Radarr/Sonarr readback comparable, in three
+stages: owned projection (readback reduced to what the platform owns), declared
+projection (by quality name and order), desired projection (the declaration
+materialized the way Configarr v1.28.0 does).
 """
 
 from __future__ import annotations
@@ -42,9 +25,7 @@ from ansible.errors import AnsibleFilterError
 _MODULE_UTILS = Path(__file__).resolve().parents[1] / "module_utils"
 _SCHEMA = SimpleNamespace(**runpy.run_path(str(_MODULE_UTILS / "acquisition_schema.py")))
 
-# The shared primitives, under the names the bodies below use. Only these are
-# shared: every rule about what a Prowlarr field, a Bazarr setting or a Configarr
-# profile may contain lives in the file that owns that domain.
+# Only these primitives are shared; each domain's rules live in the file that owns it.
 _mapping = _SCHEMA.mapping
 _sequence = _SCHEMA.sequence
 _strict_boolean = _SCHEMA.strict_boolean
@@ -1296,14 +1277,9 @@ def acquisition_configarr_desired_projection(
 ) -> dict[str, Any]:
     """Materialize the declaration into the shape a readback is comparable in.
 
-    Configarr v1.28.0 materializes every quality, reverses configured API order,
-    resets unmatched scores, and derives disabled-upgrade cutoff fields:
-    https://github.com/raydak-labs/configarr/blob/v1.28.0/src/quality-profiles.ts
-
-    The current projection is an argument because two of those derivations are
-    not knowable from the declaration alone: which qualities exist to be left
-    disabled, and which numeric identity the owned custom format was created
-    with.
+    Mirrors Configarr v1.28.0 (src/quality-profiles.ts). The current projection is
+    an argument because existing qualities and the custom format's numeric id are
+    not knowable from the declaration alone.
     """
     config = _configarr_declaration(config_source)
     current_projection = _mapping(
@@ -1370,12 +1346,7 @@ def acquisition_configarr_missing_custom_format_bodies(
 ) -> dict[str, dict[str, Any]]:
     """Return exact create bodies only for globally preflighted missing targets.
 
-    The desired projection is taken already materialized rather than parsed
-    again from the declaration source: the play materializes it once before it
-    mutates anything, and materializing it a second time from the same two
-    inputs re-ran the whole of `acquisition_configarr_desired_projection` for a
-    result that cannot differ. Do not re-add the source parse for convenience —
-    pass the fact the play already holds.
+    Takes the already-materialized desired projection; do not re-parse the source.
     """
     desired = _mapping(desired_projection, "Configarr desired owned projection")
     current_projection = _mapping(

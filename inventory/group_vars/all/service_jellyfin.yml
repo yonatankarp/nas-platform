@@ -3,9 +3,8 @@
 # Cross-cutting facts live in main.yml; secrets in vault_jellyfin.yml.
 
 nas_storage_jellyfin:
-  # Jellyfin. Its configuration holds users, libraries and playback state and is
-  # critical; the transcode cache is regenerable working space. The media tree
-  # itself is NAS-owned user media mounted read-only here.
+  # Configuration (users, libraries, playback state) is critical; the transcode
+  # cache is regenerable. Media is NAS-owned and mounted read-only.
   - path: "{{ nas_docker_root }}/jellyfin/config"
     owner: "{{ nas_uid }}"
     group: "{{ nas_gid }}"

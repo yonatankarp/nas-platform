@@ -1,20 +1,7 @@
 ---
-# Immich's managed-user reconciliation is roles/managed_users, parameterised,
-# the way roles/komga/tasks/managed_users.yml is. The opening assert stays
-# because it is what makes immich_managed_users_phase a gated variable:
-# include_tasks never applies meta/argument_specs.yml, so tests/policy_test.rb
-# holds main.yml's callers to exactly the phases named here.
-#
-# Every Immich-specific value of the account lifecycle lives in defaults/main.yml
-# as immich_managed_users_*, so the include below is a one-to-one map. The
-# exceptions are the admin header, which reads the token the caller resolved, and
-# the literals that say this service authenticates in a request body, matches
-# folded emails and binds each credential to the record it authenticates as.
-#
-# The preference profiles are Immich's own and stay here and in three task files
-# roles/managed_users runs through its hooks: the effective profiles are resolved
-# before the role (they read no listing), the targets are read and refused inside
-# it, and the preference and avatar repairs follow the account repair after it.
+# roles/managed_users, parameterised from defaults/main.yml. The opening assert
+# gates the phase because include_tasks never applies meta/argument_specs.yml.
+# Preference profiles are Immich's own and run through the shared role's hooks.
 - name: Validate the Immich managed-user phase
   ansible.builtin.assert:
     that:
@@ -145,15 +132,11 @@
     managed_users_verify_fail_msg: "{{ immich_managed_users_verify_fail_msg }}"
     managed_users_plan_create_message: "{{ immich_managed_users_plan_create_message }}"
     managed_users_plan_repair_message: "{{ immich_managed_users_plan_repair_message }}"
-    # What managed_users_preference_verification.yml compares in the verify
-    # phase, where the before-verify hook reaches it: the reads the before-repair
-    # hook registered, since verify repairs and re-reads nothing.
+    # Verify repairs and re-reads nothing, so it compares the before-repair reads.
     immich_managed_user_preference_checks: "{{ immich_managed_user_preference_reads }}"
     immich_managed_user_avatar_checks: "{{ immich_managed_user_avatar_reads }}"
 
-# The preference and avatar repairs follow the account repair, in reconcile only,
-# from the reads managed_users_effective_targets.yml registered inside the role.
-# managed_users_matches is the set of records that repair targeted.
+# Preference and avatar repairs follow the account repair, in reconcile only.
 - name: Report planned Immich managed user preference repair
   ansible.builtin.debug:
     msg: IMMICH_PLAN_MANAGED_USER_PREFERENCE_REPAIR

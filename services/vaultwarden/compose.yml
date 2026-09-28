@@ -1,9 +1,6 @@
 ---
-# Platform fragments. Compose resolves a YAML anchor only inside the file that
-# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
-# copies equal and records there why cross-file sharing was not taken. A
-# container needing different health-check timing overrides only the fields it
-# changes, so a deviation reads as a deviation.
+# Platform fragments: an anchor resolves only in its own file, so each stack
+# carries a copy; tests/policy_test.rb keeps the copies equal.
 x-logging: &default-logging
   driver: json-file
   options:
@@ -24,172 +21,51 @@ x-healthcheck-defaults: &healthcheck-defaults
   start_period: 60s
 
 services:
-  # Vaultwarden, the household password manager. It calls no other platform
-  # service and none calls it, so it stays off the media-control network for the
-  # same reason Komga does.
+  # Calls no other service and none calls it, so it stays off media-control.
   vaultwarden:
     <<: *service-defaults
     container_name: vaultwarden
-    # THE PIN HAS A SECURITY FLOOR, NOT JUST A VALUE. CVE-2026-27801 is a
-    # two-factor bypass on protected actions through faulty rate-limit
-    # enforcement, letting an authenticated attacker reach API keys or delete
-    # vaults and organizations. It affects everything up to and INCLUDING
-    # 1.34.3 and is fixed in 1.35.0, so no pin below 1.35.0 may ever be
-    # deployed here -- a rollback is not merely a lost feature, it is that CVE
-    # back in force.
-    #
-    # VAULTWARDEN MIGRATES ITS OWN SQLITE STORE WHEN IT STARTS, but it is not in
-    # #511's hazard class, and that is why its minors and patches automerge
-    # while Bindery's, Immich's, Paperless-ngx's and Nextcloud's do not. Bindery
-    # refuses a store newer than itself. Vaultwarden does not: src/db/mod.rs
-    # calls diesel's run_pending_migrations, which applies what the binary knows
-    # is missing and checks nothing else, and every SQLite migration from 1.35.0
-    # to 1.37.3 was additive -- the archives table and two nullable sso_auth
-    # columns -- so an older image still starts on a newer store. Vaultwarden
-    # has stayed on 1.x, so a Renovate minor is its feature release; withholding
-    # minors would withhold every release. What that gives up: a future
-    # migration that drops or renames a column would break a rollback, and
-    # nothing reads the migration before the merge. Two controls still cover
-    # that release. roles/image_downgrade_guard refuses a pin older than one
-    # that has already run against this store, which also keeps the CVE floor
-    # above from coming back; it is included by roles/vaultwarden before the
-    # deployment. And roles/pre_upgrade_backup, included just after it, copies the
-    # store and rsa_key* before a pinned upgrade.
+    # SECURITY FLOOR: CVE-2026-27801 (2FA bypass) affects <= 1.34.3, so never
+    # deploy a pin below 1.35.0. It migrates its own SQLite store, but additively,
+    # so minors automerge; image_downgrade_guard and pre_upgrade_backup cover rollbacks.
     image: docker.io/vaultwarden/server:1.37.3@sha256:1587c45feaa479f1f5e8af3b00eded36bff77bcf1880cf8dbf0541706dd470e0
     cpus: 0.5
     labels:
       dev.dozzle.name: vaultwarden
-    # The image ships no PUID/PGID handling at all -- there is no entrypoint
-    # that drops privileges -- so the container takes the shared platform
-    # identity directly, the way services/pinchflat/compose.yml does. Verified
-    # against this pin: a full start as uid 1000 with /data writable creates
-    # db.sqlite3, its -shm and -wal siblings, rsa_key.pem and tmp/.
+    # No PUID/PGID handling or privilege-dropping entrypoint, so run as the platform identity.
     user: "${NAS_UID:?}:${NAS_GID:?}"
     ports:
-      # LOOPBACK ONLY, AND IT IS THIS PLATFORM'S SECOND SUCH BINDING RATHER THAN
-      # ITS FIRST: services/beszel/compose.yml publishes its socket proxy as
-      # 127.0.0.1:2375 for the same kind of reason. Every other service here
-      # publishes on 0.0.0.0 and is reachable from the whole LAN, and every one
-      # of them demands a credential. This one hands out ACCOUNTS to anyone who
-      # asks -- SIGNUPS_ALLOWED is true by decision -- so a wildcard publication
-      # makes "the tailnet is the perimeter" false, which is the entire argument
-      # inventory/group_vars/all/service_vaultwarden.yml gives for leaving the door
-      # open.
-      #
-      # Measured before the prefix was added, against this pin with the rendered
-      # environment: `docker port` reported `0.0.0.0:8086` AND `[::]:8086`, and a
-      # POST to /identity/accounts/register from a non-loopback address created
-      # the account. The bare `127.0.0.1:` prefix is v4-only, which is what is
-      # wanted: the v6 wildcard was half the exposure and a prefix that reached
-      # only one family would leave the other open.
-      #
-      # NOTHING THAT SHOULD REACH THIS SERVICE LOSES IT. Tailscale Serve runs on
-      # the host and proxies to http://127.0.0.1:8086, so the tailnet path is
-      # untouched; roles/vaultwarden addresses 127.0.0.1 like every other role;
-      # and the Docker integration lane runs its controller with --network host,
-      # so its probes share this namespace. A Bitwarden client was never meant to
-      # arrive here directly -- it needs the secure context Serve terminates.
-      #
-      # 8086 on both sides, and the container side is the load-bearing half.
-      # The image's own ExposedPorts is 80/tcp, which a container running as uid
-      # 1000 cannot bind without CAP_NET_BIND_SERVICE; ROCKET_PORT below moves
-      # the listener to an unprivileged port so the platform identity above
-      # stays possible. AdGuard's container-side 5353 was the same decision for
-      # the same reason, until #577 removed that stack.
+      # LOOPBACK ONLY: signups are open, so a wildcard publication would make "the
+      # tailnet is the perimeter" false (measured: a LAN registration succeeded, #547).
+      # Serve proxies to 127.0.0.1:8086. Container side 8086 via ROCKET_PORT because
+      # uid 1000 cannot bind 80.
       - "127.0.0.1:8086:8086"
     volumes:
-      # The whole of DATA_FOLDER: db.sqlite3 and its write-ahead log,
-      # attachments/, sends/ and rsa_key.pem. recovery: critical in
-      # inventory/group_vars/all/service_vaultwarden.yml, and irreplaceable -- see
-      # the note
-      # there.
+      # The whole DATA_FOLDER; irreplaceable, see service_vaultwarden.yml.
       - ${VAULTWARDEN_DATA_PATH:?}:/data
     environment:
       TZ: ${TZ:?}
       ROCKET_PORT: "8086"
       DATA_FOLDER: /data
-      # THE FULL https:// ORIGIN, SCHEME INCLUDED AND NO PORT. Tailscale Serve
-      # terminates TLS on 443 inside the tailnet, so the origin a browser sees
-      # carries no port; WebAuthn and the two-factor flows bind their
-      # credentials to exactly this string, and a DOMAIN that disagrees with the
-      # address bar breaks them in ways that read as client faults rather than
-      # as configuration. roles/vaultwarden derives it from
-      # platform_public_host and refuses a value whose host is a bare IPv4
-      # literal, because a LAN address here produces precisely that breakage.
+      # Full https:// origin, no port: WebAuthn and 2FA bind to exactly this string.
       DOMAIN: ${VAULTWARDEN_DOMAIN:?}
-      # REGISTRATION IS OPEN, and that is a decision rather than an oversight.
-      # inventory/group_vars/all/service_vaultwarden.yml sets it true and
-      # carries the argument; the role default ships false and group_vars wins.
-      # Closed, this stack would have no route to a first account at all --
-      # there is no /admin panel (see below) and no SMTP, so nothing could
-      # create one and nothing could deliver an invitation that would.
-      #
-      # What contains that is not this line but the `127.0.0.1:8086:8086`
-      # publication twenty lines above: Tailscale Serve is the only route to the
-      # registration page, so the tailnet is the whole of the control. This
-      # service shipped as a wildcard and took an uninvited registration from a
-      # LAN address (#547) -- restoring that binding restores an open password
-      # manager on the LAN.
-      #
-      # roles/vaultwarden/tasks/verify.yml proves the observed door against
-      # whichever value is declared, in both directions, on every converge.
+      # Open by decision (service_vaultwarden.yml): with no /admin and no SMTP a
+      # closed door leaves no route to a first account. The 127.0.0.1 binding above
+      # is the containment; tasks/verify.yml proves the door both ways.
       SIGNUPS_ALLOWED: ${VAULTWARDEN_SIGNUPS_ALLOWED:?}
-      # True, and independent of the door above rather than an alternative to
-      # it: invitation is how an ORGANIZATION OWNER adds a member, not a route a
-      # stranger can take. With no SMTP on this platform the invitation is
-      # completed by hand rather than by mail.
+      # Independent of the door: how an organization owner adds a member.
       INVITATIONS_ALLOWED: ${VAULTWARDEN_INVITATIONS_ALLOWED:?}
-      #
-      # NEITHER ADMIN_TOKEN NOR DISABLE_ADMIN_TOKEN APPEARS HERE, AND THAT IS
-      # THE WHOLE OF THIS SERVICE'S CONFIGURATION SAFETY.
-      #
-      # Opening /admin and saving anything writes config.json into DATA_FOLDER,
-      # and from then on that file takes precedence over every environment
-      # variable set here. A converge would render .env correctly, the container
-      # would ignore it, and nothing would report a difference -- the exact
-      # failure this repository exists to prevent, arriving through a door no
-      # policy check watched.
-      #
-      # THE FOUR STATES, MEASURED AGAINST THIS PIN rather than read about, since
-      # only one of them is safe:
-      #
-      #   ADMIN_TOKEN absent          /admin serves 85 bytes, "the admin panel
-      #                               is disabled, please configure the
-      #                               'ADMIN_TOKEN' variable to enable it"
-      #   ADMIN_TOKEN=<value>         /admin serves a 6.4 KB login page
-      #   ADMIN_TOKEN=                /admin serves the same 85-byte disabled
-      #                               body, and the log carries two warnings
-      #                               plus `[NOTICE] You are using a plain text
-      #                               ADMIN_TOKEN which is insecure`
-      #   DISABLE_ADMIN_TOKEN=true    /admin serves the 140 KB ADMIN PANEL, with
-      #                               no authentication of any kind
-      #
-      # So the empty value is not the trap it would be on an older release -- it
-      # does disable the panel here -- but it is still a declared value whose
-      # meaning belongs to the release rather than to this file, and the
-      # platform's `${VAR:?}` convention makes rendering an optional value empty
-      # the obvious thing to reach for. And the last row is the one that
-      # matters: guarding only ADMIN_TOKEN would leave open the very variable
-      # Vaultwarden's own warning recommends in its place.
-      #
-      # roles/vaultwarden/tasks/deploy.yml refuses all three keys in the
-      # deployed Compose files, and asserts config.json absent on every converge
-      # as well, because "the panel is the only writer" is an upstream claim
-      # rather than a property this platform can see.
+      # NEITHER ADMIN_TOKEN NOR DISABLE_ADMIN_TOKEN APPEARS HERE. Saving in /admin
+      # writes config.json, which then silently outranks this environment, and
+      # DISABLE_ADMIN_TOKEN=true serves the panel unauthenticated. deploy.yml refuses
+      # all three keys and asserts config.json absent on every converge.
     healthcheck:
       <<: *healthcheck-defaults
-      # /alive is unauthenticated and returns a JSON timestamp string. The image
-      # ships curl and a /healthcheck.sh of its own; this asks the port this
-      # file pins rather than the one that script derives, so a ROCKET_PORT that
-      # stopped agreeing with the publication above fails here instead of
-      # passing against itself.
+      # Probes the pinned port, so a drifted ROCKET_PORT fails here.
       test:
         - CMD-SHELL
         - >-
           curl --fail --silent --show-error
           http://127.0.0.1:8086/alive >/dev/null
-    # The vault is a SQLite database in write-ahead-logging mode under a
-    # recovery: critical directory with no backup behind it. 30s commits the log
-    # and closes the database rather than leaving a -wal beside it for the next
-    # start to recover.
+    # SQLite in WAL mode with no backup: 30s lets it checkpoint and close cleanly.
     stop_grace_period: 30s

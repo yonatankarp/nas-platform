@@ -45,9 +45,8 @@
       it as the target interpreter.
     success_msg: "Python {{ ansible_facts['python_version'] }} is usable"
 
-# check_mode: false because command is skipped under --check, which would leave
-# these registers empty and make every assertion below fail during a dry run.
-# Both are read-only, so running them in check mode is safe and necessary.
+# check_mode: false because command is skipped under --check, which would
+# leave these registers empty; both reads are safe to run.
 - name: Confirm the Docker daemon is reachable
   ansible.builtin.command:
     argv: [docker, version, --format, json]
@@ -95,10 +94,8 @@
   vars:
     preflight_compose_version: "{{ preflight_compose.stdout | trim | regex_replace('^v', '') }}"
 
-# Checked through /proc/mounts rather than the mounts fact, which is not
-# populated on every platform and raises instead of failing cleanly when absent.
-# Only applied to real NAS volumes: the integration sandbox puts the storage
-# roots under a temporary directory, where a mount check would be meaningless.
+# /proc/mounts rather than the mounts fact, which is not populated everywhere.
+# Real NAS volumes only: the sandbox puts storage roots under a temp directory.
 - name: Require the NAS volumes to be mounted
   ansible.builtin.command:
     argv:
@@ -122,9 +119,7 @@
     - platform_kind == 'nas'
     - item is match('^/volume')
 
-# A capable host must also expose the declared path. This keeps the inventory
-# contract explicit without pretending that a missing device is usable. Shared
-# with verify.yml, which needs the same fact without running all of preflight.
+# Shared with verify.yml, which needs the same fact without all of preflight.
 - name: Resolve hardware acceleration availability
   ansible.builtin.include_tasks: gpu.yml
 
@@ -147,17 +142,14 @@
   delegate_to: localhost
   run_once: true
 
-# A probe, not a state change, so it reports unchanged. Otherwise every run looks
-# changed and the idempotence check could never be clean.
 - name: Inspect the deterministic write probe path
   ansible.builtin.stat:
     path: "{{ nas_docker_root }}/.nas-platform-preflight-probe"
     follow: false
   register: preflight_write_probe
 
-# An interrupted run leaves the probe directory behind, so the empty-directory
-# case is the role's own debris rather than pre-existing data. Anything else at
-# that path could be real, so it is still refused.
+# An empty probe directory is debris from an interrupted run; anything else
+# there could be real data, so it is refused.
 - name: Look for content inside a pre-existing write probe directory
   ansible.builtin.find:
     paths: "{{ nas_docker_root }}/.nas-platform-preflight-probe"

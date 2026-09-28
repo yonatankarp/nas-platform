@@ -1,20 +1,7 @@
 ---
-# trusted_domains, and it is reconciled with occ because it is the one setting
-# this platform owns that neither mechanism in the image can carry.
-#
-# NEXTCLOUD_TRUSTED_DOMAINS is consumed by the installer alone -- the entrypoint
-# reads it inside the branch gated on an empty volume -- so a domain added to
-# the vault or the inventory afterwards never reaches a converged deployment.
-# And the NC_ environment override, which is what makes every other install-only
-# setting in this stack push-able, cannot express it: a system setting whose
-# value is an array becomes a scalar when it arrives as an environment string,
-# and Nextcloud then answers HTTP 400 to every request, /status.php included,
-# whatever Host header it carries. That was measured; do not reintroduce it.
-#
-# So this stage reads the live array and appends what is missing. It does not
-# remove anything: an entry an operator added by hand is not drift this role can
-# distinguish from a deliberate addition, and removing a trusted domain is how
-# an instance stops answering for somebody.
+# Reconciled with occ: NEXTCLOUD_TRUSTED_DOMAINS is read only on install, and an NC_
+# override turns the array into a scalar, after which every request gets HTTP 400.
+# Append-only: an operator's own entry is indistinguishable from drift.
 
 - name: Read the reconciled Nextcloud trusted domains
   community.docker.docker_compose_v2_exec:
@@ -30,15 +17,7 @@
   when:
     - nextcloud_deployment_enabled | bool
     - not ansible_check_mode
-  # A missing key exits non-zero and prints nothing, which is a state rather
-  # than an error: it means every managed domain is missing and the loop below
-  # adds all of them.
-  #
-  # And read this line as documentation, not as the requirement it looks like.
-  # docker_compose_v2_exec sets check_rc only when `detach` is true, so deleting
-  # it would not make this task fail on the missing key -- it would leave the
-  # same tolerance in force with nothing stating it, which is how the repair
-  # below went unguarded for as long as it did.
+  # A missing key exits non-zero with no output: every domain is then missing.
   failed_when: false
   changed_when: false
   check_mode: false
@@ -49,29 +28,8 @@
     nextcloud_trusted_domains_missing: >-
       {{ nextcloud_trusted_domains | difference(nextcloud_trusted_domains_live_value) }}
   vars:
-    # splitlines(), and the split('\n') it replaces is what #500's second
-    # converge failed on. A backslash escape inside a `{{ }}` expression is
-    # never an escape under Ansible: AnsibleLexer pre-escapes every backslash in
-    # an expression's string constants so that YAML is the only layer that
-    # processes them, which is what makes regex_replace('^(.*)_x$', '\1') mean a
-    # backreference here rather than the byte \x01 Jinja alone would produce.
-    # The cost of that is this defect. '\n' stayed the two characters backslash
-    # and n, so the split found no separator anywhere, the live list read as a
-    # single blob holding every domain at once, difference() reported all three
-    # missing, and the loop below re-set them on every converge -- a clean
-    # PLAY RECAP and a wrong answer, the same shape as #492.
-    #
-    # Measured on ansible-core 2.21.4 against "a\nb\nc": split('\n') -> 1
-    # element, splitlines() -> 3. The YAML quoting is not what decides it, which
-    # is worth knowing before reaching for a different quote to fix it -- folded,
-    # single-quoted and double-quoted scalars all read 1 -- and `{% %}`
-    # statements are exempt from the pre-escaping, which is the reason the guard
-    # in tests/contracts/nextcloud-static.rb scopes itself to `{{ }}` regions
-    # rather than to every string this role writes.
-    #
-    # splitlines() is also the better answer where split() would have worked: it
-    # is not told a separator, so it stays right about output this role did not
-    # write whether the container ends its lines with \n, \r\n or \r.
+    # splitlines(), not split('\n'): inside `{{ }}` Ansible pre-escapes backslashes, so
+    # '\n' stays two characters and the list read as one blob (#500). It also handles \r\n.
     nextcloud_trusted_domains_live_value: >-
       {{ (nextcloud_trusted_domains_current.stdout | default('')).splitlines()
          | map('trim') | select | list }}
@@ -79,26 +37,9 @@
     - nextcloud_deployment_enabled | bool
     - not ansible_check_mode
 
-# Appended at the first free index, which is why the live list is read rather
-# than assumed. `occ config:system:set trusted_domains N` writes position N, so
-# starting anywhere inside the existing array would overwrite a domain that is
-# already trusted rather than adding one.
-#
-# `length` is the first free index while the live array is dense, and it is
-# scoped that way rather than stated flatly because the read above drops blanks
-# with `select`. Measured against Nextcloud 34.0.3: setting index N == length
-# appends and setting an N inside the array overwrites, so the arithmetic is
-# right on a dense array -- but `occ config:system:delete trusted_domains 1`
-# leaves PHP's unset behind, config:system:get prints only the survivors, and on
-# an array of four that makes `length` 3 while index 3 is still live. The next
-# converge would then write a managed domain over it. An empty-string entry
-# undercounts the same way. Nothing this role does creates either.
-#
-# The task runs only for domains that are genuinely absent, so a converged
-# deployment skips the loop entirely and reports no change. Setting the same
-# index to the same value is idempotent and exits 0 -- measured -- but it would
-# still report changed, and a converge that claims a change it did not make is
-# what the platform's idempotence check exists to catch.
+# `occ config:system:set trusted_domains N` writes index N, so appending starts at the
+# live length. That assumes a dense array (a deleted index would be overwritten).
+# Runs only for missing domains, so a converged run reports no change.
 - name: Reconcile the platform-owned Nextcloud trusted domains
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/nextcloud"
@@ -120,19 +61,8 @@
   loop_control:
     index_var: index
   changed_when: true
-  # Stated rather than inherited, and the pairing with the line above is the
-  # point. docker_compose_v2_exec sets check_rc only when `detach` is true, so
-  # until this line a `config:system:set` occ refused reported success and this
-  # task then asserted a change it had not made -- once per missing domain, on
-  # every five-minute poller tick, behind a clean recap, while Nextcloud went on
-  # answering HTTP 400 to every request carrying the Host it was told to trust.
-  #
-  # occ writes its refusals to stdout, not stderr: measured for `app:disable` in
-  # reconcile_apps.yml and recorded in docs/dossier-nextcloud.md. So read stdout
-  # first in the failed result. No message is written here that could quote the
-  # wrong stream -- this task carries no no_log, its argv holds an index and a
-  # domain rather than a credential, and the module returns rc, stdout and
-  # stderr together.
+  # docker_compose_v2_exec checks rc only with detach, so this line is the only thing
+  # that fails a refused write. occ writes refusals to stdout, not stderr.
   failed_when: nextcloud_trusted_domains_repair.rc | default(1) | int != 0
   when:
     - nextcloud_deployment_enabled | bool

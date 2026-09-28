@@ -9,27 +9,9 @@ cleanup_sandbox_repo_dir=$mac_repo_dir
 . "$mac_repo_dir/tests/sandbox_cleanup.sh"
 . "$mac_repo_dir/tests/integration_lock.sh"
 
-# The Compose projects one Mac run owns, which is what every discovery and every
-# emptiness check below is filtered by, and what mac_projects_are_owned refuses
-# an observed label outside of.
-#
-# It was a literal list of the original eight and it had fallen eight services
-# behind: arr, downloaders, bindery, kapowarr, pinchflat, trailarr and seerr were
-# all promoted, all deployed by this lane, and none of them named here. That is
-# not a leak, it is a refusal -- mac_projects_are_owned sees `<project>-seerr`,
-# finds it in no known list, and returns 1 -- so preflight_mac_resources fails and
-# the cleanup phase declines to remove anything at all. Adding a ninth literal
-# per service would have left the same eight-service hole with one more entry.
-#
-# tests/sandbox_cleanup.sh already holds the authoritative roster, and this file
-# already sources it for cleanup_sandbox_contents. Read
-# it rather than restating it: the two lists are the same fact, and only one of
-# them was ever kept current. The Mac alias of paperless-ngx is `paperless` in
-# both, which is what makes them the same list rather than two that nearly agree.
-#
-# The legacy loop stays literal. It is a closed historical set -- the project
-# names this harness used before the namespace derivation landed -- so it does
-# not grow with the platform and deriving it would be wrong rather than tidy.
+# The Compose projects one Mac run owns, read from tests/sandbox_cleanup.sh's roster
+# rather than restated: a stale literal list made cleanup refuse to remove anything.
+# The legacy loop stays literal; it is a closed historical set.
 mac_owned_project_labels() {
   mac_label_project=$1
   for mac_label_suffix in $cleanup_sandbox_projects; do
@@ -270,13 +252,8 @@ force_final_rmdir_failure() {
   mac_failure_name=$2
   mac_failure_preserve=$3
   mac_failure_program=$(mktemp "$mac_failure_parent/mac-cleanup-program.XXXXXX") || return 1
-  # The sandbox-clearing program is a file rather than a heredoc-producing shell
-  # function since #315, so this copies it instead of calling it. Getting that
-  # wrong is silent in the wrong direction: `cleanup_sandbox_program >
-  # "$mac_failure_program"` against a missing function leaves an empty program,
-  # the forcing harness below execs nothing, the final rmdir is never reached and
-  # this reports "did not authenticate final rmdir failure" -- which reads as a
-  # broken rmdir contract rather than as a broken copy.
+  # Copy the program file: a missing source would leave an empty program and misreport
+  # as a broken rmdir contract (#315).
   cp "$cleanup_sandbox_program_path" "$mac_failure_program" || return 1
   [ -s "$mac_failure_program" ] || {
     printf 'cleanup self-test could not stage the sandbox program\n' >&2
@@ -382,10 +359,8 @@ cleanup_self_test() {
     *) mac_marker_gid=$(stat -c '%g' "$mac_owned/.nas-platform-mac-owned") ;;
   esac
   printf 'payload removed before final rmdir\n' > "$mac_owned/payload"
-  # The forced-failure probe runs the sandbox program inside a container, and the
-  # call below discards its output to keep the proof quiet. Without a reachable
-  # daemon the probe cannot report its authentication status at all, which would
-  # otherwise be indistinguishable from a genuinely broken rmdir contract.
+  # Without a daemon the probe cannot report authentication status, which would
+  # look like a broken rmdir contract.
   command -v docker >/dev/null 2>&1 || {
     printf 'cleanup self-test requires Docker to authenticate the final rmdir failure\n' >&2
     exit 1

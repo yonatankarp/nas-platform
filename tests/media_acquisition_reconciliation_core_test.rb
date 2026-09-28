@@ -60,10 +60,8 @@ partial_accepted = partial_api.accepted_client_count
 partial_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 partial_api.close
 partial_elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - partial_started
-# Reported separately because these fail for different reasons, and a single
-# sentence covering all three cost a CI run to tell apart: the client never
-# arriving is a scheduling problem, a slow shutdown is the reader not being
-# woken, and a recorded error is the fixture server itself failing.
+# Reported separately: each has a different cause (scheduling, reader not woken,
+# fixture server failure).
 failures << "HARNESS partial client was never accepted within its deadline" if
   partial_accepted.zero?
 failures << "HARNESS partial-client shutdown exceeded its deadline " \
@@ -309,9 +307,8 @@ if fingerprint_tasks_available?
       failures << "dedicated loader/recorder did not create exact private owned fingerprints" unless valid
     end
   end
-  # The dedicated production probe above establishes the algorithm. The matrix
-  # can seed equivalent private baselines without running another setup playbook
-  # before every scenario.
+  # The production probe above establishes the algorithm; the matrix seeds
+  # equivalent baselines without another setup playbook per scenario.
   FINGERPRINT_BASELINE_CACHE["enabled"] = true
 end
 
@@ -344,10 +341,8 @@ with_api(deep_copy(clean_production_client_state)) do |api|
     failures << "clean production-order Servarr clients did not converge Sonarr" unless
       download_client_projection(api.state.fetch("sonarr_download_clients").first) ==
       download_client_projection(SONARR_DOWNLOAD_CLIENT)
-    # The downloaders role records both of the digests it owns, so the expected
-    # set is two. The claim is still closed-world: every fingerprint file outside
-    # that set must be absent, so a stray Configarr, indexer or Bazarr digest
-    # written by a download-client run fails here exactly as it did before.
+    # Closed-world: the two downloaders digests exist and every other fingerprint
+    # file must be absent.
     owned_files = DOWNLOADER_FINGERPRINT_SUBSET.map do |input|
       input == "servarr_sabnzbd" ? FINGERPRINT_FILE_BY_KIND.fetch(:download_client)
                                  : DOWNLOADER_USENET_FINGERPRINT_FILE
@@ -372,13 +367,8 @@ with_api(deep_copy(clean_production_client_state)) do |api|
   end
 end
 
-# The state that broke a production converge, and that nothing tested: the
-# operator owns no Usenet subscription, so all six provider credentials are
-# empty and SABnzbd answers `get_config` with no `servers` key at all. The claim
-# is not merely that the run exits zero -- a run where both owned-server branches
-# skipped would also exit zero. It is that the undeclared branch executed, the
-# declared branch skipped, and both digests were still recorded, so the
-# undeclared state converges with something asserted about it.
+# No Usenet subscription: empty provider credentials and no `servers` key. Proves
+# the undeclared branch ran, the declared one skipped, and both digests recorded.
 undeclared_provider_state = deep_copy(clean_production_client_state).merge(
   "sabnzbd" => deep_copy(SABNZBD_WITHOUT_SERVERS)
 )
@@ -409,11 +399,8 @@ with_api(undeclared_provider_state) do |api|
       input == "servarr_sabnzbd" ? FINGERPRINT_FILE_BY_KIND.fetch(:download_client)
                                  : DOWNLOADER_USENET_FINGERPRINT_FILE
     end
-    # A digest over six empty strings is still a digest, so the undeclared state
-    # records both of them exactly as a declared one does. That is what keeps a
-    # later verify-only run from comparing a real desired digest against an
-    # absent installed one, and what makes declaring a provider move the digest
-    # and force a reconcile.
+    # A digest over empty strings is still a digest, so declaring a provider later
+    # moves it and forces a reconcile.
     failures << "undeclared Usenet provider did not record the downloaders-owned digests" unless
       DOWNLOADER_FINGERPRINT_SUBSET.zip(owned_files).all? do |input, filename|
         entry = result.fetch("fingerprints").fetch(filename)
@@ -423,10 +410,8 @@ with_api(undeclared_provider_state) do |api|
   end
 end
 
-# The same undeclared declaration against a SABnzbd that still carries the owned
-# server. Emptying the vault values does not delete what the platform created, so
-# the undeclared branch has to fail rather than converge over it -- that failure
-# is the whole reason the branch is not a shape check.
+# Emptying the vault does not delete the owned server, so the undeclared branch
+# must fail rather than converge over it.
 with_api(deep_copy(clean_production_client_state)) do |api|
   result = run_tasks(
     :download_client_production, api, deep_copy(UNDECLARED_USENET_PROVIDER),
@@ -509,7 +494,6 @@ servarr_global_ownership_cases.each do |label, state|
     end
   end
 end
-
 
 with_api(
   deep_copy(clean_production_client_state), fail_client_service: "sonarr"
@@ -659,7 +643,6 @@ Dir.mktmpdir("media-acquisition-fingerprint-tags-") do |directory|
     fingerprint_snapshot(runtime) == fingerprints_before
 end
 
-
 Dir.mktmpdir("media-acquisition-downloader-tags-") do |directory|
   runtime = File.join(directory, "runtime")
   FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
@@ -703,7 +686,6 @@ Dir.mktmpdir("media-acquisition-downloader-tags-") do |directory|
       fingerprint_snapshot(runtime).values.compact.empty?
   end
 end
-
 
 [true, false].each do |stale|
   Dir.mktmpdir("media-acquisition-arr-verify-only-") do |directory|

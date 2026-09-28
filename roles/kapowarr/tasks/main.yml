@@ -9,30 +9,19 @@
     deployment_target_extra_paths:
       - "{{ platform_current_dir }}/services/kapowarr/tasks.py"
       - "{{ kapowarr_config_host_path }}"
-      # The comics library is named because the volume folder migration below
-      # moves directories inside it. Naming it here is what runs this role's
-      # containment check against it before anything moves: a symlink anywhere
-      # between the media root and the library, or a library that canonically
-      # resolves outside the media root, refuses the run rather than letting a
-      # rename follow the link out of the tree the platform owns.
+      # Named so the containment check refuses a symlink or escape before the volume folder
+      # migration moves anything inside it.
       - "{{ kapowarr_comics_host_path }}"
 
-# The ComicVine key is the one Kapowarr credential this platform authors but
-# does not push. Kapowarr validates `comicvine_api_key` by calling
-# comicvine.gamespot.com before it will store the value, so a converge that set
-# it would depend on a third party being reachable and un-rate-limited, and
-# could not be proved in any disposable lane. The vault is still its authority:
-# it is where the operator's key is recorded and recovered from. Guarding its
-# shape here refuses a truncated or multi-line value at the top of the run
-# instead of at the point the operator pastes it into the application.
+# Authored but not pushed: Kapowarr validates the ComicVine key against a third party
+# before storing it. The vault stays its authority; its shape is checked here.
 - name: Require a well-formed Kapowarr ComicVine credential
   ansible.builtin.assert:
     that:
       - vault_kapowarr_comicvine_api_key is match('^[^\r\n]+$')
     fail_msg: The Kapowarr ComicVine credential must be a nonempty single-line value.
 
-# Redacted: the conditions name the two halves of the Kapowarr administrator
-# identity, which the platform submits to the application as JSON.
+# Redacted: the two halves of the administrator identity.
 - name: Require env-safe Kapowarr administrator credentials
   ansible.builtin.assert:
     that:
@@ -41,11 +30,8 @@
     fail_msg: Kapowarr administrator credentials must be nonempty single-line values.
   no_log: true
 
-# The carried task handler patch (#696) is bind-mounted, and a changed bind
-# source is not a changed container: Compose would leave the old patch loaded.
-# Its sha256 reaches a container label through the environment, so a changed
-# patch is a changed definition and Compose recreates. services/dozzle carries
-# alert_relay.py to its relay the same way.
+# The patch (#696) is bind-mounted; its sha256 goes into a label so a changed patch
+# recreates the container.
 - name: Inspect the carried Kapowarr task handler patch
   ansible.builtin.stat:
     path: "{{ platform_current_dir }}/services/kapowarr/tasks.py"
@@ -54,10 +40,8 @@
     checksum_algorithm: sha256
   register: kapowarr_task_patch
 
-# Under --check the release is staged nowhere, so `current` is still the
-# previous release, and the deploy that introduces the patch finds no file there.
-# Only then is the controller's copy hashed instead: it is the byte-identical
-# source deployment_bundle copies into the release on a real run.
+# Under --check `current` is the previous release, so the controller's identical copy
+# is hashed instead.
 - name: Require the carried Kapowarr task handler patch to be a regular file
   ansible.builtin.assert:
     that:
@@ -87,12 +71,7 @@
     dest: "{{ platform_runtime_dir }}/services/kapowarr/.env"
     mode: "0600"
 
-# Before Compose, because recreating the container from an older image is the
-# act being refused. Kapowarr migrates its own SQLite store on start and the
-# migration is one-way: v1.3.2 takes a v1.3.1 store from database version 45 to
-# 51 (#671), the #511 shape roles/bindery carries the long form of. The five
-# paths this reads are the ones the containment re-include at the top of this
-# file already declared through deployment_target_service.
+# Before Compose: the store migrates one-way on start (#671, #511).
 - name: Refuse a Kapowarr image older than the store on disk
   ansible.builtin.include_role:
     name: image_downgrade_guard
@@ -102,33 +81,9 @@
     image_downgrade_guard_project_name: "{{ kapowarr_compose_project_name }}"
     image_downgrade_guard_store_description: "{{ kapowarr_config_host_path }}"
 
-# After the downgrade guard and before the deployment, the only window in which
-# either control is worth anything: the guard refuses a pin older than the store,
-# and this copies the store aside so a pin newer than it is reversible at all.
-# roles/pre_upgrade_backup carries the argument for the stop, the copy and the
-# rescue, and roles/vaultwarden/tasks/deploy.yml says why it is included rather
-# than imported.
-#
-# WHY A FILE COPY OF A STOPPED CONTAINER. Bindery's application takes a
-# `VACUUM INTO` of its own live store through an API. Kapowarr v1.3.1 has no
-# backup route at all, v1.3.2's own backup runs on a weekly schedule rather than
-# on demand, and neither image ships a sqlite3 binary -- measured. Measured
-# against v1.3.1, a clean stop leaves Kapowarr.db alone with no -wal beside it.
-# Unpatched, v1.3.2 did not: with an unstarted task at the head of its queue its
-# shutdown handler raised, and on the NAS Docker SIGKILLed it at the grace
-# deadline (#696). The carried patch that services/kapowarr/compose.yml mounts
-# lets that stop finish and exit 0, and the deploy that lands the patch
-# recreates Kapowarr with it mounted, so the container this stops has the patch.
-# The one exception is an image bump landing in the same deploy as the patch:
-# this runs before that deploy's Compose, so it would stop the unpatched
-# container. The copy reads the store's -wal and -shm rather than Kapowarr.db
-# alone for that case, and because a stop cut short for any other reason leaves
-# them too. v1.3.2's own dated backups beside the store
-# (Kapowarr_YYYY_MM_DD_HH_MM.db) are not the store and are not copied.
-#
-# The role reads Kapowarr's pin from Kapowarr's own compose.yml itself (#858).
-# Ownership follows the host_prep and roles/dozzle form: set on the NAS or where
-# Linux ownership is managed.
+# Copies the store aside between the guard and the deployment (roles/pre_upgrade_backup).
+# Kapowarr has no on-demand backup and no sqlite3, so a stopped-container file copy it is;
+# -wal/-shm are carried in case the stop was cut short.
 - name: Guard the Kapowarr store before a pinned upgrade
   ansible.builtin.include_role:
     name: pre_upgrade_backup
@@ -141,13 +96,8 @@
     pre_upgrade_backup_path: "{{ kapowarr_pre_upgrade_backup_path }}"
     pre_upgrade_backup_manage_ownership: "{{ platform_kind == 'nas' or (platform_manage_linux_ownership | bool) }}"
 
-# The block exists for one thing the rescue does with the failure: it hands the
-# deployment's own message to roles/container_health, which either explains it in
-# terms of the container state Docker reports or re-raises it unchanged.
-# Compose's `--wait` fails a crash-looping container with "container ... is
-# unhealthy", which says nothing about why. roles/bindery/tasks/main.yml carries
-# the long form of this argument; #509 built the mechanism and #537 wired the
-# remaining eleven single-`up` roles into it.
+# The rescue hands the failure to roles/container_health, which explains it from
+# Docker's state or re-raises it unchanged (#509, #537).
 - name: Deploy Kapowarr, catching a container that runs but never serves
   block:
     - name: Deploy Kapowarr
@@ -161,24 +111,15 @@
         wait_timeout: "{{ platform_compose_wait_timeout }}"
       register: kapowarr_deploy
   rescue:
-    # First, and before anything else can rebind it: ansible_failed_result
-    # belongs to whichever rescue is running.
+    # First, before anything else rebinds ansible_failed_result.
     - name: Record the failed Kapowarr deployment
       ansible.builtin.set_fact:
         kapowarr_deploy_failure_message: >-
           {{ ansible_failed_result.msg
              | default('the Kapowarr deployment failed and reported no message') }}
 
-# Immediately after the deployment and before everything that trusts it. A
-# container in `Restarting` still appears in `docker container ls --quiet`, so
-# the CPU verification below would sail straight past one and the readiness probe
-# after it would fail on a timeout that names nothing (#510).
-#
-# Detect without refusing, one bounded force-recreate of only what Docker says is
-# stuck, then the verdict. roles/container_health/tasks/recover.yml is the one
-# copy of that sequence and carries the argument for each of its three properties;
-# the deployment above stays here because it is what declares the release this
-# repairs (#646).
+# Right after deploy: a `Restarting` container would pass later checks (#510). The
+# sequence lives in roles/container_health/tasks/recover.yml (#646).
 - name: Recover Kapowarr from a container that runs but never serves
   ansible.builtin.include_role:
     name: container_health
@@ -198,13 +139,7 @@
     tasks_from: report
   vars:
     deployment_report_service: Kapowarr
-    # Both Compose results, because a force-recreate that repaired a wedged
-    # container changed the deployment as surely as the deploy above did, and a
-    # report gated on the deploy alone would say nothing on the one converge an
-    # operator most wants to hear about. It is registered even when skipped, and
-    # `default({})` covers the paths that never reach it at all.
-    # The pre-upgrade copy's rescue start is named for completeness: that path
-    # fails the run before this report, so it never decides the verdict here.
+    # Both Compose results: a recreate that repaired a wedged container is a change too.
     deployment_report_changed: >-
       {{ (kapowarr_deploy is changed)
          or ((container_health_wedged_recreate | default({})) is changed)
@@ -217,10 +152,7 @@
     container_cpu_service_name: kapowarr
     container_cpu_project_name: "{{ kapowarr_compose_project_name }}"
 
-# /api/public is the only route Kapowarr leaves outside its API-key decorator,
-# and it reports which authentication mode the deployed database holds: 0 for
-# none, 1 for a bare password, 2 for the username and password pair this
-# platform authors.
+# /api/public is unauthenticated and reports the auth mode: 0 none, 1 password, 2 pair.
 - name: Wait for Kapowarr application readiness
   ansible.builtin.uri:
     url: "{{ kapowarr_api }}/api/public"
@@ -236,12 +168,8 @@
   changed_when: false
   check_mode: false
 
-# Kapowarr stores no credential outside its own database, so the deployed
-# identity can only be learned by presenting the authored one. A successful
-# login answers with the application's API key, which is what every other route
-# demands; that is why both probes stay redacted even though only the first
-# carries a credential in its request.
-# Redacted: the request is the vault-authored administrator identity.
+# The identity can only be learned by presenting it; a login returns the API key, so both
+# probes are redacted.
 - name: Probe the vault-authored Kapowarr administrator
   ansible.builtin.uri:
     url: "{{ kapowarr_api }}/api/auth"
@@ -258,18 +186,8 @@
   check_mode: false
   no_log: true
 
-# Redacted: an unprotected Kapowarr answers this credential-free request with
-# the API key that authorizes every other route.
-#
-# The probe is conditional because Kapowarr records a credential-free auth POST
-# as a failed login, and at mode 2 its outcome is already known: the authored
-# pair is in force, so an empty body can only be refused. Asking anyway spent a
-# WARNING in the application's own security log on every converge, which is what
-# made that log useless for finding a real one. The gate leaves the probe for the
-# only case where it can answer anything, an instance that is genuinely open. Do
-# not drop it as redundant: the 401 at mode 2 is Confirmed against a running
-# container in docs/dossier-kapowarr.md and is proved live in every disposable
-# lane by tests/contracts/kapowarr.sh.
+# Redacted: an open Kapowarr returns its API key. Gated off at mode 2, where a refusal is
+# certain, so the security log is not spammed; tests/contracts/kapowarr.sh proves the 401.
 - name: Probe Kapowarr for an unprotected application interface
   ansible.builtin.uri:
     url: "{{ kapowarr_api }}/api/auth"
@@ -286,12 +204,8 @@
   check_mode: false
   no_log: true
 
-# A bare password (mode 1) accepts any username, so the authored pair is only
-# actually in force at mode 2; reconciliation is required below that.
-# A skipped anonymous probe carries no status, so it defaults to 0 and the key
-# falls through to the empty string: at mode 2 the authored login is the only way
-# to hold one, and failing to hold it is the unrecoverable case asserted below.
-# Redacted: the resolved API key is the application's own authorization secret.
+# Mode 1 accepts any username, so only mode 2 is converged. A skipped probe defaults to 0.
+# Redacted: the resolved API key.
 - name: Resolve the Kapowarr administrator reconciliation
   ansible.builtin.set_fact:
     kapowarr_identity_current: >-
@@ -324,11 +238,8 @@
     - ansible_check_mode
     - not kapowarr_identity_current | bool
 
-# Kapowarr hashes both halves with a salt it generated at first start and keeps
-# private, so the platform cannot precompute the stored value and has to submit
-# the clear pair. Submitting it again is harmless but is not a converged state,
-# so the write only runs when the probes above proved it is missing.
-# Redacted: this request is where the administrator identity enters the target.
+# Salted hashes cannot be precomputed, so the clear pair is sent, only when missing.
+# Redacted: the administrator identity enters the target here.
 - name: Declare the vault-authored Kapowarr administrator
   ansible.builtin.uri:
     url: "{{ kapowarr_api }}/api/settings?api_key={{ kapowarr_settings_api_key }}"
@@ -344,7 +255,7 @@
   changed_when: true
   no_log: true
 
-# Redacted: the request carries the application API key in its query string.
+# Redacted: the API key is in the query string.
 - name: Read the declared Kapowarr library roots
   ansible.builtin.uri:
     url: "{{ kapowarr_api }}/api/rootfolder?api_key={{ kapowarr_settings_api_key }}"
@@ -356,9 +267,7 @@
   check_mode: false
   no_log: true
 
-# Kapowarr stores a root folder with a trailing separator, and refuses a second
-# root that is a parent or child of an existing one, so the comparison is on the
-# separator-free form and the create below is the only reachable mutation.
+# Compared without the trailing separator Kapowarr stores.
 - name: Resolve whether Kapowarr owns the declared comics library root
   ansible.builtin.set_fact:
     kapowarr_library_root_present: >-
@@ -366,15 +275,8 @@
          map('regex_replace', '/+$', '') | select('equalto', kapowarr_library_root) |
          list | length == 1 }}
 
-# Every root the deployment holds that is not the declared one, which on a
-# deployment that predates the parent mount is the single superseded `/comics`.
-# It is derived from what the deployment holds rather than compared against a
-# stored constant, so a Kapowarr carrying any other undeclared root falls to the
-# same refusal. It is separate from the presence check above because the two
-# states those two separate are not the same failure: a Kapowarr with no root
-# folders at all is a fresh one and gets the declared root created below, while a
-# Kapowarr holding a different one already owns a library under a prefix that no
-# longer exists inside the container.
+# Any undeclared root (on an old deployment, `/comics`). Separate from the presence
+# check: no roots is a fresh install; a different root is an unmigrated library.
 - name: Resolve the Kapowarr library roots the declared one supersedes
   ansible.builtin.set_fact:
     kapowarr_library_root_migrations: >-
@@ -382,30 +284,9 @@
          map('regex_replace', '/+$', '') | reject('equalto', kapowarr_library_root) |
          list }}
 
-# The refusal, and it precedes every mutation this role performs against the
-# library. Without it the create below would add the declared root *beside* the
-# superseded one, leaving a Kapowarr with two roots, every volume still attached
-# to the dead one and a platform that reported success.
-#
-# It is unconditional, with no one-convergence input to open it, and that is a
-# decision rather than an omission. The obvious flag would authorize the platform
-# to relabel the stored prefix itself, and Kapowarr v1.3.1 exposes no route that
-# can: RootFolders.rename() moves every file with shutil.move, which fails on
-# rows whose paths no longer resolve in the container, and the only repair for
-# the file rows a caller would have to delete first is refresh_and_scan, which
-# needs ComicVine -- the one dependency roles/kapowarr already refuses to take on
-# for the ComicVine key itself, because it cannot be proved in any disposable
-# lane. A flag that ends in a second root folder and a failed verification would
-# instruct the operator into a worse state than refusing does.
-#
-# The failure is worded for the symptom, which is alarming and self-inflicted:
-# Kapowarr fabricates a missing root folder on read --
-# RootFolders.__gather_extra_data() calls create_folder() when the stored path is
-# not a directory -- so the read above has already created an empty /comics in
-# the container's writable layer, and the web interface now shows a library with
-# nothing in it. Nothing on the host moved. The message says so, because an
-# operator seeing an empty library after a deployment will otherwise reach for a
-# restore.
+# Refused before any library mutation, with no override: Kapowarr cannot relabel a stored
+# prefix safely. Kapowarr fabricates a missing root on read, so the message says the empty
+# library is harmless and nothing on the host moved.
 - name: Refuse a Kapowarr deployment still holding a superseded library root
   ansible.builtin.assert:
     that:
@@ -436,7 +317,7 @@
     - ansible_check_mode
     - not kapowarr_library_root_present | bool
 
-# Redacted: the request carries the application API key in its query string.
+# Redacted: the API key is in the query string.
 - name: Declare the Kapowarr comics library root
   ansible.builtin.uri:
     url: "{{ kapowarr_api }}/api/rootfolder?api_key={{ kapowarr_settings_api_key }}"
@@ -451,14 +332,7 @@
   changed_when: true
   no_log: true
 
-# Kapowarr's settings interface is a partial merge: a request carrying two keys
-# changes those two and drops nothing, which is what lets this platform declare
-# the subset it owns without restating the application's whole configuration.
-# Nothing in that subset may name a credential. The application masks its stored
-# credentials on read -- both halves of the administrator identity come back as
-# literal asterisks -- so a declaration carrying one could never match what is
-# read back, and the write below would run on every converge and never report a
-# converged state.
+# Settings are a partial merge; a credential key could never converge (read back masked).
 - name: Refuse a Kapowarr settings declaration that names a credential
   ansible.builtin.assert:
     that:
@@ -473,7 +347,7 @@
       GetComics indexer and is declared as a partial ordering in
       kapowarr_service_preference instead (#671).
 
-# Redacted: the request carries the application API key in its query string.
+# Redacted: the API key is in the query string.
 - name: Read the deployed Kapowarr application settings
   ansible.builtin.uri:
     url: "{{ kapowarr_api }}/api/settings?api_key={{ kapowarr_settings_api_key }}"
@@ -485,20 +359,13 @@
   check_mode: false
   no_log: true
 
-# The settings declaration is submitted as declared. Until v1.3.2 this fact also
-# merged the service order into it; that key is gone from the settings interface
-# (a PUT naming it answers 400 KeyNotFound) and the order is reconciled on the
-# GetComics indexer below.
+# The service order moved to the GetComics indexer in v1.3.2 (PUT here answers 400).
 - name: Resolve the declared Kapowarr application settings
   ansible.builtin.set_fact:
     kapowarr_settings_declared: "{{ kapowarr_settings }}"
 
-# Every declared pair the application already holds verbatim is converged, so
-# the difference is the declared pairs that are not among the deployed ones. The
-# interface reports nothing about what it changed -- a no-op write and a real
-# write are answered identically -- so this comparison is what a changed result
-# is computed from, and the key names it yields are what check mode reports.
-# Only the names: the values were read back through a redacted request.
+# The API reports nothing about what changed, so drift is computed here; only key names
+# are reported.
 - name: Resolve which declared Kapowarr settings the application does not hold
   ansible.builtin.set_fact:
     kapowarr_settings_drift_keys: >-
@@ -515,11 +382,8 @@
     - ansible_check_mode
     - kapowarr_settings_drift_keys | length > 0
 
-# The whole declared subset is submitted rather than only the keys that differ.
-# A request is refused whole if any single key in it is invalid, with nothing
-# applied, so submitting the set together is what makes a bad declaration fail
-# loudly instead of leaving the application half-configured.
-# Redacted: the request carries the application API key in its query string.
+# The whole subset is submitted so an invalid key fails the request whole.
+# Redacted: the API key is in the query string.
 - name: Declare the Kapowarr application settings
   ansible.builtin.uri:
     url: "{{ kapowarr_api }}/api/settings?api_key={{ kapowarr_settings_api_key }}"
@@ -533,15 +397,8 @@
   changed_when: true
   no_log: true
 
-# Kapowarr v1.3.2 moved the download service order out of the settings interface
-# and onto the GetComics indexer record, as gc_service_preference: migration 47
-# copies the old global value into that record and deletes the config row (#671).
-#
-# A 404 is accepted under --check only, and it is the review of the upgrade
-# itself: Compose's dry run recreates nothing, so the container answering is
-# still the older image, which has no indexer interface. A live run deployed the
-# pin above, so a 404 there is a Kapowarr that is not the pinned one and fails.
-# Redacted: the request carries the application API key in its query string.
+# v1.3.2 keeps the service order on the GetComics indexer (#671). A 404 is accepted only
+# under --check, where the older image still answers. Redacted: API key in the query.
 - name: Read the deployed Kapowarr indexers
   ansible.builtin.uri:
     url: "{{ kapowarr_api }}/api/indexers?api_key={{ kapowarr_settings_api_key }}"
@@ -554,17 +411,8 @@
   check_mode: false
   no_log: true
 
-# The verdict on the read, and readable where the read is not: a redacted task
-# that fails says only "censored". It names the status, Kapowarr's own error code
-# and the one explanation that fits that status, and nothing else. Measured
-# bodies carry no secret -- v1.3.1's missing route is
-# `{"error": "NotFound", "result": {}}` -- but the request URL carries the API
-# key, so no part of the request is ever printed, and neither is the module's
-# msg, which on a failed connection can quote that URL.
-#
-# A 200 is not enough on its own. A body that is not JSON, or JSON whose result
-# is not a list of records, would otherwise fall through to the GetComics count
-# below as zero indexers and blame the operator for deleting one.
+# Readable verdict for a redacted read: status, error code, one explanation, never the
+# URL or msg (they carry the key). A non-list result must not read as zero indexers.
 - name: Require a Kapowarr indexer read the role can act on
   ansible.builtin.assert:
     that:
@@ -582,8 +430,7 @@
       Kapowarr answered GET /api/indexers with status
       {{ kapowarr_indexers.status | default('none') }} ({{ kapowarr_indexers_error }}).
       {{ kapowarr_indexers_explanation }} No indexer was changed.
-  # The expressions live here rather than in the message: a folded scalar keeps
-  # the line break around any more-indented line, which put breaks mid-sentence.
+  # Expressions here, not in the message: a folded scalar keeps breaks around indented lines.
   vars:
     kapowarr_indexers_error: >-
       {{ ((kapowarr_indexers.json | default({})) if (kapowarr_indexers.json | default({})) is mapping
@@ -624,8 +471,7 @@
       indexer, and a live run then reconciles kapowarr_service_preference there.
   when: kapowarr_indexers.status | default(0) | int == 404
 
-# Identified by client_type, which the application registers and no request can
-# change; the title is editable through the same interface the write uses.
+# client_type is immutable; the title is editable.
 - name: Resolve the Kapowarr GetComics indexer
   ansible.builtin.set_fact:
     kapowarr_getcomics_indexers: >-
@@ -634,13 +480,8 @@
          | selectattr('client_type', 'equalto', 'GetComics') | list }}
   when: kapowarr_indexers.status | default(0) | int == 200
 
-# Kapowarr creates exactly one GetComics indexer on first start, migration 47
-# creates exactly one on upgrade, and a second is refused with
-# AddingIndexerForbidden. So none means it was deleted in the web interface, and
-# more than one means the database was edited outside the application. Both are
-# refused rather than repaired: recreating the record would make this platform
-# own its title, URL and enabled flag, which it does not declare, and choosing
-# between two would be a guess.
+# Exactly one GetComics indexer exists unless someone deleted or duplicated it; both are
+# refused rather than repaired (repairing would mean owning undeclared fields).
 - name: Refuse a Kapowarr without exactly one GetComics indexer
   ansible.builtin.assert:
     that:
@@ -651,8 +492,7 @@
       {{ kapowarr_getcomics_indexer_missing if kapowarr_getcomics_indexers | length == 0
          else kapowarr_getcomics_indexer_duplicated }} No indexer was changed.
   vars:
-    # Each remedy is its own folded scalar: a quoted literal continued onto a
-    # more-indented line inside the message above keeps that line break.
+    # Separate folded scalars: an indented continuation would keep its line break.
     kapowarr_getcomics_indexer_missing: >-
       Add the GetComics indexer back under Settings, Indexers in the web
       interface, then rerun.
@@ -661,15 +501,8 @@
       the application; delete all but one under Settings, Indexers, then rerun.
   when: kapowarr_indexers.status | default(0) | int == 200
 
-# The declared order is applied over the deployed one exactly as it was over the
-# v1.3.1 setting, because the rule that shaped it survived the move: the indexer
-# interface still accepts only a permutation of every service the deployed
-# version knows, and refuses a two-service list and a list naming an unknown
-# service alike with 400 InvalidKeyValue, measured against v1.3.2. A declared
-# service this version does not know drops out, and one it knows that the
-# declaration does not name keeps its place behind the declared ones. A record
-# holding no order at all is merged over the declaration itself, so the write
-# submits the declared list and the application's own validation decides it.
+# Kapowarr accepts only a full permutation, so the declared order is applied over the
+# deployed one; unknown declared services drop out.
 - name: Resolve the declared Kapowarr download service order
   vars:
     kapowarr_service_order_base: >-
@@ -695,22 +528,9 @@
     - kapowarr_indexers.status | default(0) | int == 200
     - kapowarr_service_preference_declared != kapowarr_service_preference_deployed
 
-# The indexer interface is NOT a partial merge, unlike the settings one: the
-# route reads every indexer field out of the body and refuses a missing title,
-# enabled flag or URL. So the write restates the record it read with only the
-# order replaced -- the fields this platform does not declare go back exactly as
-# the application holds them, and the route ignores the read-only ones.
-#
-# This write is the role's one third-party dependency, which is why it matters
-# when it runs. Kapowarr tests an indexer before it stores it --
-# GetComicsIndexer.test() fetches the record's URL and requires the page to say
-# GetComics -- so with getcomics.org unreachable the write fails with 400
-# ClientNotWorking after about eight seconds, measured from a container with no
-# network. It is gated on drift, and a fresh v1.3.2 and one migrated from v1.3.1
-# both already hold the declared order, so a converged host never issues it: it
-# runs only after the order was changed in the web interface, and then fails
-# loudly rather than half-applying.
-# Redacted: the request carries the application API key in its query string.
+# Not a partial merge: restate the read record with only the order replaced. Kapowarr
+# tests getcomics.org before storing, so this is gated on drift and never runs on a
+# converged host. Redacted: API key in the query.
 - name: Declare the Kapowarr download service order on the GetComics indexer
   ansible.builtin.uri:
     url: >-
@@ -721,12 +541,7 @@
       {{ kapowarr_getcomics_indexers[0]
          | combine({'gc_service_preference': kapowarr_service_preference_declared}) }}
     status_code: "{{ range(100, 600) | list }}"
-    # Bounded above one attempt of Kapowarr's own test -- 30s to connect and 30s
-    # to read -- so a slow but healthy getcomics.org still completes, and short
-    # of Kapowarr's retries, which it spends in full before it answers
-    # ClientNotWorking. Measured with getcomics.org blackholed: five rounds about
-    # 32s apart, 2m42s in all, so this request gives up first and reports -1.
-    # A healthy write measured 0.16-0.26s.
+    # Above one Kapowarr test attempt (30s+30s), below its full retry cycle (~2m42s).
     timeout: 75
   register: kapowarr_service_order_write
   when:
@@ -736,17 +551,8 @@
   changed_when: kapowarr_service_order_write.status | default(0) | int == 200
   no_log: true
 
-# Readable, because the write is redacted. It prints the status, Kapowarr's error
-# code, where Kapowarr gives one its reason enum, and how long the request took --
-# never the request, which carries the API key, never the module's msg, which on
-# a failed connection can quote that URL, and never the rest of the result, which
-# on InvalidKeyValue echoes the submitted value back.
-#
-# Each status gets only the explanation that fits it. A -1 is two different
-# failures told apart by elapsed, which the uri module reports in whole seconds on
-# every outcome: at the task's timeout (75, above) the request gave up while
-# Kapowarr was still testing getcomics.org, and anything shorter is a connection
-# to Kapowarr itself that was refused or dropped, which never reached that test.
+# Readable verdict for a redacted write; never the request, msg or echoed value. A -1 at
+# the 75s timeout means getcomics.org was unreachable; sooner means Kapowarr itself was.
 - name: Require the Kapowarr download service order write to have been stored
   ansible.builtin.assert:
     that:
@@ -757,8 +563,7 @@
       {{ kapowarr_service_order_write.status | default('none') }} ({{ kapowarr_service_order_write_code }})
       after {{ kapowarr_service_order_write.elapsed | default('an unknown number of') }} seconds.
       {{ kapowarr_service_order_explanation }}
-  # The expressions live here rather than in the message: a folded scalar keeps
-  # the line break around any more-indented line, which put breaks mid-sentence.
+  # Expressions here, not in the message: a folded scalar keeps breaks around indented lines.
   vars:
     kapowarr_service_order_write_error: >-
       {{ ((kapowarr_service_order_write.json | default({}))
@@ -817,20 +622,8 @@
     - not ansible_check_mode
     - kapowarr_service_preference_declared != kapowarr_service_preference_deployed
 
-# Declaring volume_folder_naming does not migrate the library. Kapowarr stores
-# each volume's absolute folder in its own database at add time and re-derives
-# it for nothing: update_settings() writes the config table and enqueues no
-# work, so every volume added before a template change keeps the folder the old
-# template gave it, and a later download lands in that stored folder. On this
-# platform's library every one of them was `<Series>/Volume NN (YYYY)`, which is
-# the nested shape Komga reads as a series called "Volume 01 (YYYY)".
-#
-# The migration below is a converge rather than an operator step because the
-# requirement is universally quantified -- *every* volume's folder must be the
-# one the declared template derives -- so it needs no identifier the platform
-# has to know in advance, and it is a fixed point.
-#
-# Redacted: the request carries the application API key in its query string.
+# Changing volume_folder_naming does not move existing volumes (stored at add time), so
+# every volume is converged onto the declared template. Redacted: API key in the query.
 - name: Read the Kapowarr library volumes
   ansible.builtin.uri:
     url: "{{ kapowarr_api }}/api/volumes?api_key={{ kapowarr_settings_api_key }}"
@@ -842,17 +635,8 @@
   check_mode: false
   no_log: true
 
-# Kapowarr's own answer to "where would this volume's files go", and the only
-# read that gives it. `GET /api/volumes/<id>/rename` runs preview_mass_rename(),
-# which re-derives the volume folder from the current template unless the volume
-# carries a custom folder, and builds every suggested file path underneath it --
-# so a suggested path that lies outside the volume's stored folder is Kapowarr
-# saying the folder itself has to move, and names where to. Deriving the folder
-# in Jinja instead would mean reimplementing an arbitrary format string and the
-# application's illegal-character rules, and a reimplementation that disagreed
-# by one character would report drift forever and never converge.
-#
-# It renames nothing: the route only previews. Redacted for the API key.
+# Kapowarr's own rename preview is the only source of the derived folder; reimplementing
+# it in Jinja would drift by a character and never converge. Previews only; redacted.
 - name: Read the Kapowarr rename plan for every volume
   ansible.builtin.uri:
     url: >-
@@ -872,17 +656,8 @@
   ansible.builtin.set_fact:
     kapowarr_volume_folder_plan: []
 
-# `target` is the shallowest folder among the suggested paths that fall outside
-# the volume's stored folder, which is the folder Kapowarr would move the volume
-# to; it is empty when every suggested path is already inside the stored folder,
-# and also when the volume holds no files at all, because the route previews
-# nothing for a volume with nothing in it. `nested` is the independent, template
-# agnostic reading of the same defect: the declared template names one directory
-# level, so a folder Kapowarr derived is always a direct child of the library
-# root, and a deeper one cannot be template-derived whatever the template says.
-# Neither can lie about a converged volume, which is what makes the pair a fixed
-# point; a volume Kapowarr reports without a stored folder is not migratable
-# through this route at all and is excluded below.
+# `target`: the folder Kapowarr would move the volume to (empty if converged or no files).
+# `nested`: deeper than one level, so not template-derived. Folderless volumes excluded.
 - name: Resolve the Kapowarr volume folder plan
   ansible.builtin.set_fact:
     kapowarr_volume_folder_plan: >-
@@ -905,19 +680,8 @@
     kapowarr_volume_folder_migrations: []
     kapowarr_volume_folders_unconfined: []
 
-# Confinement, and it is the property this migration is reviewed on rather than a
-# tidiness rule: the comics library is the only tree a restore covers, so nothing
-# outside kapowarr_library_root may be moved, emptied or removed. Both ends are
-# required to be inside it -- the folder the volume holds now, because that is
-# the directory the move empties and Kapowarr then removes, and the folder
-# Kapowarr previews for it, because that is where the files land. A volume
-# failing either is refused rather than migrated, and named by the report below
-# instead of dropping out silently.
-#
-# Neither test is a substitute for the root-folder refusal further down. Kapowarr
-# derives a volume's new folder from *that volume's own* root folder, not from
-# the root this platform declares, so a second root folder is what could put a
-# derived target outside the comics library in the first place.
+# Confinement: both the current and target folders must be inside the comics library, the
+# only tree a restore covers; violations are refused and reported, never migrated.
 - name: Resolve the pending Kapowarr volume folder migrations
   ansible.builtin.set_fact:
     kapowarr_volume_folder_migrations: "{{ kapowarr_volume_folder_migrations + [item] }}"
@@ -942,11 +706,7 @@
   loop_control:
     label: "{{ item.id }}"
 
-# One line per volume, and the reason this is a loop rather than one message:
-# `--check --diff` is the review the comics share gets before anything moves, so
-# it has to name the current folder and the folder the migration would move it
-# to, per volume, rather than a count. It reports on every run, gated or not,
-# because a closed gate is the state the report is for.
+# One line per volume so --check --diff reviews each move; reported even with the gate shut.
 - name: Report each pending Kapowarr volume folder migration
   ansible.builtin.debug:
     msg: >-
@@ -962,11 +722,6 @@
     label: "{{ item.id }}"
   changed_when: false
 
-# Reported, never migrated. This platform cannot repair a volume stored outside
-# the library root without moving a directory the confinement promise excludes,
-# so it says which volume and stops. It cannot arise from anything this role
-# does: every folder the migration writes is one Kapowarr derived from the root
-# asserted below.
 - name: Report each Kapowarr volume folder outside the declared library root
   ansible.builtin.debug:
     msg: >-
@@ -981,9 +736,7 @@
     label: "{{ item.id }}"
   changed_when: false
 
-# How the role says that this input is not a setting. It is reported on every run
-# that carries it, including the run where it turns out to have nothing left to
-# do, so a flag left on is visible in the output rather than silent.
+# Reported whenever set, so a flag left on is visible.
 - name: Report the one-convergence Kapowarr volume folder migration input
   ansible.builtin.debug:
     msg: >-
@@ -996,28 +749,9 @@
   when: kapowarr_volume_folder_migration_allowed | bool
   changed_when: false
 
-# `volume_folder: null` is Kapowarr's own "use the folder the template derives":
-# change_volume_folder() regenerates the path from the current template, moves
-# the files onto it with a rename rather than a copy, updates their paths in its
-# database and returns early when the derived path is the one already stored --
-# so a second converge is a no-op inside the application as well as here.
-#
-# `custom_folder: false` repairs the same call's own bookkeeping. It sets
-# custom_folder from a variable it has already overwritten with the generated
-# path, so it marks every volume it derives a folder for as carrying an operator
-# chosen one, and a volume marked that way is one preview_mass_rename() stops
-# re-deriving -- the next template change would then converge silently wrong.
-# The application accepts the key on the same request and applies it after the
-# move. Confirmed against the pinned image: custom_folder reads back 0.
-#
-# The request names no path, so the folder it installs is whatever Kapowarr
-# derives -- and Kapowarr derives it from the root folder the *volume* is
-# attached to, not from the root this platform declares. Those are the same root
-# only while Kapowarr owns exactly the declared one, so that is asserted here,
-# immediately before the only mutation that depends on it, rather than left to
-# the verification at the end of this role. A second root folder is refused
-# instead of migrated: it is the one state in which a derived target could land
-# outside the comics library.
+# `volume_folder: null` makes Kapowarr derive, move (rename) and record the folder;
+# `custom_folder: false` undoes its own bookkeeping bug. The derivation uses the volume's
+# root folder, so exactly one root is asserted right before this mutation.
 - name: Refuse a Kapowarr volume folder migration beyond the declared library root
   ansible.builtin.assert:
     that:
@@ -1031,12 +765,8 @@
       library. Remove the undeclared root folder in Kapowarr first. No volume was moved.
   when: kapowarr_volume_folder_migrations | length > 0
 
-# This is the only mutation in this repository that moves a directory in the
-# comics library, which is why it is gated. Kapowarr removes the emptied source
-# directory and any parent that becomes empty, up to but never including the
-# library root, and stops at any directory that still holds something -- it
-# never touches a file and never touches a directory that is not a volume's.
-# Redacted: the request carries the application API key in its query string.
+# The only mutation that moves a comics directory, hence gated. Kapowarr removes emptied
+# parents up to the library root. Redacted: API key in the query.
 - name: Migrate Kapowarr volume folders onto the declared naming template
   ansible.builtin.uri:
     url: "{{ kapowarr_api }}/api/volumes/{{ item.id }}?api_key={{ kapowarr_settings_api_key }}"
@@ -1066,15 +796,8 @@
   changed_when: false
   check_mode: false
 
-# The web interface is the writer: it renames and deletes the comics library and
-# queues downloads into it, and every route behind /api answers to the key a
-# successful login returns. These three reads prove the vault-authored identity
-# is the one Kapowarr accepts, that a caller without it is refused, and that the
-# library root the platform declared is still the only one it owns. All of them
-# accept any status so the assertion below is what fails, naming which outcome
-# differed: a probe that died on the HTTP code would report the failure from a
-# redacted task and say nothing.
-# Redacted: the request is the vault-authored administrator identity.
+# Proves the vault identity is accepted, anonymous callers refused and the root owned.
+# Any status accepted so the assertion names the outcome. Redacted: the credential.
 - name: Verify Kapowarr accepts the vault administrator
   tags: [platform_verify_kapowarr]
   ansible.builtin.uri:
@@ -1092,13 +815,8 @@
   check_mode: false
   no_log: true
 
-# Conditional for the same reason as the converge probe above: a credential-free
-# auth POST is a failed login in Kapowarr's own log, and the mode this playbook
-# has already read answers it. At mode 2 the refusal is what mode 2 means, and
-# the assertion below reads it from there; below mode 2 the probe runs and says
-# what an anonymous caller actually gets, which is the diagnosis that matters.
-# Keep the gate: the tagged path runs on every converge as well as from
-# verify.yml, so an ungated probe writes the warning twice per run.
+# Gated like the converge probe: an anonymous POST logs a failed login, and this runs on
+# every converge and from verify.yml.
 - name: Verify Kapowarr refuses an unauthenticated caller
   tags: [platform_verify_kapowarr]
   ansible.builtin.uri:
@@ -1115,7 +833,7 @@
   changed_when: false
   check_mode: false
 
-# Redacted: the request carries the application API key the login returned.
+# Redacted: the API key the login returned.
 - name: Verify the Kapowarr comics library root ownership
   tags: [platform_verify_kapowarr]
   ansible.builtin.uri:
@@ -1131,12 +849,8 @@
   check_mode: false
   no_log: true
 
-# The declaration is compared against the defaults rather than against the facts
-# the converge resolved, because verify.yml reaches only the tagged tasks and
-# none of those facts exist there. The service order is compared as the partial
-# ordering it is declared as: the declared services, in declared order, ignoring
-# whatever the deployed version knows and the declaration does not name.
-# Redacted: the request carries the application API key the login returned.
+# Compared against defaults: verify.yml has none of the converge's facts. The order is
+# compared as a partial ordering. Redacted: API key.
 - name: Verify the Kapowarr declared application settings
   tags: [platform_verify_kapowarr]
   ansible.builtin.uri:
@@ -1152,9 +866,7 @@
   check_mode: false
   no_log: true
 
-# The download service order, read where v1.3.2 keeps it: on the GetComics
-# indexer rather than in the settings (#671).
-# Redacted: the request carries the application API key the login returned.
+# The order lives on the GetComics indexer since v1.3.2 (#671). Redacted: API key.
 - name: Verify the Kapowarr GetComics indexer
   tags: [platform_verify_kapowarr]
   ansible.builtin.uri:
@@ -1170,8 +882,7 @@
   check_mode: false
   no_log: true
 
-# Normalized for the reason the volume list below is: an unauthorized Kapowarr
-# answers a mapping where the list was, and the assertion reads the status.
+# Normalized: an unauthorized Kapowarr answers a mapping where the list was.
 - name: Resolve the Kapowarr GetComics indexers reported for verification
   tags: [platform_verify_kapowarr]
   ansible.builtin.set_fact:
@@ -1184,21 +895,8 @@
          | select('mapping') | selectattr('client_type', 'defined')
          | selectattr('client_type', 'equalto', 'GetComics') | list }}
 
-# The mode condition is what now carries the refusal, and that is a change in
-# kind rather than a tightening: this playbook used to establish empirically,
-# against the running instance, that an anonymous caller is refused, and now
-# infers it from mode 2 -- with the entailment proved live in the disposable
-# lanes by the runtime half of tests/contracts/kapowarr.sh, which asks the same
-# question of a real converged Kapowarr without costing the NAS a log entry.
-#
-# The 401 comparison below cannot change this assertion's verdict while both
-# conditions stand, because the probe skips exactly when mode is 2 and mode 2 is
-# required unconditionally: below mode 2 the first condition has already failed.
-# It is kept deliberately rather than overlooked. It states the property being
-# claimed instead of the mode it is inferred from, it is load-bearing again the
-# moment the mode condition is relaxed or the probe's gate widens, and
-# tests/contracts/kapowarr.sh requires this assertion to name the anonymous
-# outcome, so dropping it fails the contract.
+# The mode-2 condition carries the refusal (proved live by tests/contracts/kapowarr.sh).
+# The 401 comparison stays: the contract requires the anonymous outcome to be named.
 - name: Require the exact Kapowarr verification results
   tags: [platform_verify_kapowarr]
   ansible.builtin.assert:
@@ -1217,12 +915,8 @@
         (kapowarr_verify_settings.json.result | default({}) | dict2items |
          selectattr('key', 'in', kapowarr_settings.keys() | list) | items2dict)
         == kapowarr_settings
-      # The order conditions index the one record, so they follow the conditions
-      # that prove there is one: assert stops at the first that is false. A 404
-      # passes under --check only, for the reason the converge's indexer read
-      # gives: the review of the upgrade still reaches the older image. On a live
-      # run the first condition refuses a 404, so the alternatives after it can
-      # never be what passes.
+      # The order conditions follow those proving one record exists. A 404 passes only under
+      # --check.
       - >-
         kapowarr_verify_indexers.status | default(0) | int == 200
         or (ansible_check_mode and kapowarr_verify_indexers.status | default(0) | int == 404)
@@ -1244,13 +938,8 @@
       library root, holds the declared application settings, and holds exactly
       one GetComics indexer in the declared download service order.
 
-# The library's folder shape is verified rather than only migrated, because the
-# defect this repairs is not a one-off: a volume added while a hand-edited
-# template was in force, or a folder renamed in the web interface, puts a series
-# back under a name Komga cannot read, and nothing in Kapowarr reports it. These
-# reads repeat the converge's own two -- the tagged path reaches none of its
-# facts -- and take the API key the login above returned.
-# Redacted: the request carries the application API key the login returned.
+# Verified, not only migrated: a hand-edited template or rename can reintroduce drift.
+# Redacted: API key.
 - name: Read the Kapowarr library volumes for verification
   tags: [platform_verify_kapowarr]
   ansible.builtin.uri:
@@ -1266,12 +955,8 @@
   check_mode: false
   no_log: true
 
-# The read above accepts any status so that the assertion below is what fails,
-# and an unauthorized Kapowarr answers `{"error": "ApiKeyInvalid", "result": {}}`
-# -- a mapping where the library was. Looping over that dies with `The loop value
-# must resolve to a 'list', not 'dict'` from the task below instead of with the
-# diagnosis this block exists to give, so the list is normalized here and the
-# assertion reads the status. Confirmed against the pinned image.
+# An unauthorized Kapowarr answers a mapping, which would break the loop below instead of
+# reaching the diagnosis; normalized here.
 - name: Resolve the Kapowarr volumes reported for verification
   tags: [platform_verify_kapowarr]
   ansible.builtin.set_fact:
@@ -1282,7 +967,7 @@
             and (kapowarr_verify_volumes.json.result | default(none)) is not string
          else [] }}
 
-# Redacted: the request carries the application API key the login returned.
+# Redacted: the API key the login returned.
 - name: Read the Kapowarr rename plan for every volume for verification
   tags: [platform_verify_kapowarr]
   ansible.builtin.uri:
@@ -1306,12 +991,7 @@
   ansible.builtin.set_fact:
     kapowarr_verify_volume_folder_drift: []
 
-# The same two readings as the converge, for the same reason: a suggested path
-# outside the volume's stored folder is Kapowarr saying the folder must move, and
-# a folder deeper than one level under the library root cannot be one the
-# declared template derived. A volume Kapowarr reports without a folder is drift
-# too here -- the converge cannot repair it, so the verification must say so
-# rather than pass over it.
+# Same two readings as the converge; a folderless volume is drift here.
 - name: Resolve drifted Kapowarr volume folders
   tags: [platform_verify_kapowarr]
   ansible.builtin.set_fact:
@@ -1331,10 +1011,7 @@
     label: "{{ item.item.id | default('') }}"
   no_log: true
 
-# An empty library asserts nothing here, and that is the honest verdict: a
-# platform that owns no volume owns no misnamed folder. The floor the assertion
-# does hold is that both reads answered, so a 401 or an unreachable application
-# fails with a diagnosis instead of resolving an empty drift list from nothing.
+# An empty library passes; both reads must still have answered.
 - name: Require converged Kapowarr volume folders
   tags: [platform_verify_kapowarr]
   ansible.builtin.assert:

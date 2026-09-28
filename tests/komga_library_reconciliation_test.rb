@@ -1,15 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Behavior and shape proof for the exactly reconciled Komga library model.
-#
-# The model is plural: komga_libraries declares Comics at /data/Comics and
-# Ebooks at /data/Ebooks, each carrying its own settings over the shared
-# komga_library_settings baseline. The interesting case is the migration from
-# the single Comics library at /data, which the ambiguity guard refuses unless
-# komga_library_root_migration_allowed is set for that one convergence.
-#
-# Run with --self-test to prove this file detects a planted regression.
+# Behaviour and shape proof for the reconciled two-library Komga model, including
+# the guarded migration from the single /data library. --self-test plants regressions.
 
 require "json"
 require "open3"
@@ -28,23 +21,13 @@ ARGUMENT_SPECS = File.join(ROOT, "roles/komga/meta/argument_specs.yml")
 DEFAULTS_PATH = File.join(ROOT, "roles/komga/defaults/main.yml")
 CONTRACT = File.join(ROOT, "tests/contracts/komga.sh")
 
-# The contract is three files: a shell wrapper and the two Ruby halves #147 gave
-# their own files. The program list is derived from the wrapper's own text by the
-# same rule tests/run_contracts.rb and tests/policy_mutation_support.rb use, so a
-# third program is covered on the day it is added rather than on the day someone
-# remembers to edit a list here. A derived subject list with no floor is how an
-# absence assertion goes quiet, so the floor and the existence of every entry are
-# asserted rather than assumed.
+# Programs derived from the wrapper's text, with a floor so the list cannot go quiet.
 def contract_program_paths(wrapper_source)
   wrapper_source.each_line.reject { |line| line.lstrip.start_with?("#") }
                 .flat_map { |line| line.scan(%r{tests/contracts/[A-Za-z0-9_./-]+\.rb}) }
                 .uniq
                 .map { |relative| File.join(ROOT, relative) }
 end
-# The Mac wrapper and the Mac seed hook are both shared across services now: one
-# runner resolves every contract through tests/contracts/registry.yml, and one
-# hook seeds every service from a table of phases. The properties asserted below
-# are unchanged, they just live in the shared files.
 MAC_CONTRACT_WRAPPER = File.join(ROOT, "tests/mac/run-contract.sh")
 SEED_HOOK = File.join(ROOT, "tests/mac/hooks/fixtures-seed/00-services.sh")
 DRIFT_HOOK = File.join(ROOT, "tests/mac/hooks/drift/40-komga.sh")
@@ -70,8 +53,7 @@ def named_task(tasks, name)
   tasks.find { |task| task.is_a?(Hash) && task_name(task) == name }
 end
 
-# Every string a parsed task carries, keys included. A comment is not one of
-# them, which is the whole point of reading the tasks instead of the file.
+# Reading parsed tasks means a comment never counts.
 def task_strings(node)
   case node
   when Hash then node.flat_map { |key, value| [key.to_s] + task_strings(value) }
@@ -154,12 +136,8 @@ else
   raise "#{label} health mutation was not rejected"
 end
 
-# `contract` is the shell wrapper, `runtime_program` is tests/contracts/
-# komga-runtime.rb, and `whole_contract` is the wrapper and its programs
-# concatenated. Each assertion below reads whichever of the three actually owns
-# its subject: a positive check pointed at the wrong file fails loudly, but an
-# absence check pointed at the wrong file goes trivially true forever, so the one
-# negative here reads the whole contract on purpose.
+# Each assertion reads the file owning its subject; the one absence check reads
+# the whole contract, since an absence check on the wrong file is always true.
 def validate_runtime_health_paths!(sources)
   contract, wrapper, seed_hook, integration, integration_library,
     runtime_program, whole_contract = sources
@@ -206,8 +184,7 @@ def validate_runtime_health_paths!(sources)
   raise "actuator readiness no longer requires an exact UP mapping" unless
     runtime_program.include?('payload.is_a?(Hash) && payload["status"] == "UP"')
 
-  # Both subjects live in the runtime program, so the ordering is asserted within
-  # that one file. Across a concatenation an index comparison means nothing.
+  # Both in the runtime program: an index across a concatenation means nothing.
   auth_index = runtime_program.index('request("get", "/api/v2/users/me"')
   gate_index = runtime_program.index(managed_health)
   raise "Komga health gates no longer precede authenticated assertions" unless
@@ -288,47 +265,27 @@ def model_failures(defaults_source, argument_specs, role_source, contract_text, 
     return failures + ["role tasks are malformed: #{error.message.lines.first.to_s.strip}"]
   end
 
-  # A one-convergence input that any task writes to the target is no longer one.
-  # Persistence is a property of one task -- a writing module whose own arguments
-  # name the input -- so the module and the mention have to be found in the same
-  # parsed task rather than anywhere in the file.
+  # Persistence is one parsed task: a writing module whose own arguments name the input.
   persisting = role_tasks.select do |task|
     task.is_a?(Hash) && task.keys.any? { |key| key.to_s.match?(PERSISTING_MODULES) } &&
       task_strings(task).any? { |value| value.include?(MIGRATION_INPUT) }
   end
   failures << "the role persists the one-convergence migration input" unless persisting.empty?
 
-  # Read off the guard's own conditions. The input is named in three live places
-  # -- this guard, the plan that consults the name match, and the report's when --
-  # so asking whether the file mentions it answered for whichever of the three
-  # happened to survive, and the guard could lose its clause unnoticed.
+  # Read off the guard's own conditions: the input is named in three places.
   guard = named_task(role_tasks, "Refuse ambiguous Komga library candidates")
   failures << "the ambiguity guard no longer gates the root move on the migration input" unless
     Array(guard&.dig("ansible.builtin.assert", "that")).any? do |condition|
       condition.to_s.include?("#{MIGRATION_INPUT} | bool")
     end
 
-  # Likewise the report: a banner that survives only in a comment reports nothing.
   report = named_task(role_tasks, "Report the one-convergence Komga library root migration input")
   failures << "the role never reports that the migration input is one-convergence only" unless
     report&.dig("ansible.builtin.debug", "msg").to_s.include?("KOMGA_ROOT_MIGRATION_ALLOWED") &&
     report["when"].to_s.include?("#{MIGRATION_INPUT} | bool")
 
-  # The four below stay source text: the contract and the Mac drift hook state
-  # these as literals a running lane compares against, so there is no parsed
-  # structure to read; what the values should be is asserted against the parsed
-  # defaults above, and this only asks that the contract and the lane still pin
-  # them.
-  #
-  # `contract_text` is the whole contract -- since #147 that is the shell wrapper
-  # and both Ruby halves concatenated -- because these subjects are genuinely
-  # spread across it. The three literals of the two-library model in particular
-  # sit in *both* halves: `LIBRARY_MODEL = [` is the runtime half's, while the
-  # Comics and Ebooks root literals are the static half's `expected_libraries`.
-  # One whole-file `include?` had been answering for whichever half held each,
-  # which the split made visible. Narrowing these to one file would be a
-  # strengthening rather than a move, so the subject stays the whole contract and
-  # the split is recorded here instead.
+  # Source text on purpose: the contract and Mac drift hook pin these as literals.
+  # `contract_text` is the whole contract, since the literals span both halves (#147).
   failures << "the contract does not pin the two-library model" unless
     contract_text.include?('LIBRARY_MODEL = [') &&
       contract_text.include?("\"Comics\", \"root\" => \"#{COMICS_ROOT}\"") &&
@@ -377,20 +334,14 @@ def converged_libraries
   [managed_library(id: "comics"), managed_library(id: "ebooks", name: "Ebooks", root: EBOOKS_ROOT)]
 end
 
-# Komga refuses a library root that contains, or is contained by, an existing
-# library's root, and answers 400. The stub models that rule because it is the
-# whole reason library repairs must precede library creations: a creation
-# ordered before the repair that frees its root is accepted by a permissive
-# fixture and rejected by the real service.
+# Komga refuses nested library roots (400), which is why repairs precede creations.
 def nested_root?(existing, requested)
   held = existing.to_s.chomp("/")
   wanted = requested.to_s.chomp("/")
   held == wanted || wanted.start_with?("#{held}/") || held.start_with?("#{wanted}/")
 end
 
-# Komga answers 400 rather than 204 when a requested library root overlaps one
-# it already holds, and states no Content-Type when it has nothing to say. Both
-# are modelled, because both are what the role has to survive.
+# Overlapping roots answer 400, and empty answers carry no Content-Type.
 def with_http_service(libraries, users: [], fail_after_apply: false, &block)
   requests = []
   failed_patch = false
@@ -461,11 +412,8 @@ def run_tasks(port, arguments = [], managed_users: [], migration_allowed: false,
     "vault_komga_admin_password" => "admin-secret",
     "komga_claim_status" => { "json" => { "isClaimed" => true } },
     "vault_managed_komga_users" => managed_users,
-    # The library slice carries the managed-user include, which since #647
-    # reaches roles/managed_users and reads the capability register off the
-    # DEPLOYED release. The repository root is a release that carries it, so the
-    # probe drives the branch a converged host is in rather than the review
-    # branch; tests/media_probes_services.rb owns the other one.
+    # The managed-user include reads the capability register off the deployed
+    # release (#647); the repository root is one.
     "platform_current_dir" => ROOT,
     MIGRATION_INPUT => migration_allowed
   )
@@ -485,8 +433,6 @@ def legacy_single_library
   )]
 end
 
-# The refusal half of the migration: without the one-convergence input, the
-# single /data library must stop the run with nothing mutated.
 def migration_refusal_failures(role_source)
   failures = []
   libraries = legacy_single_library
@@ -501,8 +447,6 @@ def migration_refusal_failures(role_source)
   failures
 end
 
-# The completion half: with the input set, the named library is repointed in
-# place and the second library is created beside it.
 def migration_completion_failures(role_source)
   failures = []
   libraries = legacy_single_library
@@ -544,14 +488,7 @@ end
 failures = []
 self_test = ARGV.include?("--self-test")
 
-# Flattened, and the order is the property. #537 wrapped the deploy in a
-# `block:` named "Deploy Komga, catching a container that runs but never
-# serves", so the task literally named "Deploy Komga" moved one level down and
-# a top-level scan stopped finding it -- the gating assertion below then failed
-# on a nil index rather than on a real ordering defect. PolicySupport's
-# flatten_tasks appends each task before descending into its block/rescue/
-# always, so the sequence a reader sees is preserved and "deploy precedes
-# readiness precedes claim" still means what it says.
+# Flattened, preserving order, since the deploy moved into a block (#537).
 main_tasks = PolicySupport.flatten_tasks(YAML.safe_load(ROLE_SOURCE, aliases: false))
 compose = YAML.safe_load_file(COMPOSE, aliases: true)
 argument_specs = YAML.safe_load_file(ARGUMENT_SPECS, aliases: false)
@@ -571,9 +508,7 @@ whole_contract = ([contract] + contract_programs.map { |path| File.read(path) })
 drift_hook = File.read(DRIFT_HOOK)
 mac_contract_wrapper = File.read(MAC_CONTRACT_WRAPPER)
 seed_hook = File.read(SEED_HOOK)
-# Positional, and the two #147 entries are APPENDED: the mutation rows below
-# index this array, so inserting anywhere but the end moves a row onto the wrong
-# source.
+# Positional: append only, the mutation rows index this array.
 runtime_sources = [
   contract,
   mac_contract_wrapper,
@@ -622,13 +557,8 @@ if self_test
       detected.any? { |failure| failure.include?(diagnostic) }
   end
 
-  # The two rows below are why the guard and report checks read parsed tasks
-  # rather than the role's text. The input is named in three live places and the
-  # banner appears exactly once, so a whole-file substring answered for whichever
-  # copy happened to survive: an ungated guard still mentions the input twice
-  # elsewhere, and a banner demoted to a comment is still in the file. Each plant
-  # is asserted to pass the source-text form before it is required to fail the
-  # structural one.
+  # Why the guard and report checks read parsed tasks: each plant passes the
+  # source-text form before it must fail the structural one.
   ungated = ROLE_SOURCE.sub("        #{MIGRATION_INPUT} | bool\n", "        true\n")
   abort "self-test could not plant an ungated root migration" if ungated == ROLE_SOURCE
   abort "self-test failed: an ungated guard no longer names the input in the file" unless
@@ -654,11 +584,9 @@ if self_test
                  drift_hook)
       .any? { |failure| failure.include?("one-convergence only") }
 
-  # And the behavioural half: an ungated guard also lets the refusal fixture through.
   abort "self-test failed: an ungated root migration reconciled" if
     migration_refusal_failures(ungated).empty?
 
-  # And with the name match never consulted, the allowed migration cannot complete.
   unreachable = ROLE_SOURCE.sub(
     "             (item.name_matches | first | default({}))\n" \
     "             if komga_library_root_migration_allowed | bool else {})\n",
@@ -681,13 +609,7 @@ if self_test
                  ROLE_SOURCE[read_back_at..]
   abort "self-test could not plant a creation ordered before its repair" if
     create_first == ROLE_SOURCE
-  # A pure reordering: anything else and the failure below would be proving that
-  # a malformed role fails, which it would do for any reason at all.
-  # Flattened on both sides, because main_tasks is: comparing a nested parse
-  # against a flattened one reports every block's children as missing and aborts
-  # on a fixture that is in fact a pure reordering. Flattening both also widens
-  # what this invariant covers -- a plant that moved a task INTO a block would
-  # now be caught, where a top-level-only comparison could not see it.
+  # A pure reordering, flattened on both sides like main_tasks.
   abort "self-test planted a malformed task list" unless
     PolicySupport.flatten_tasks(YAML.safe_load(create_first, aliases: false))
                  .map { |task| task_name(task) }.sort ==
@@ -702,9 +624,7 @@ end
 failures.concat(model_failures(DEFAULTS_SOURCE, argument_specs, ROLE_SOURCE,
                                whole_contract, drift_hook))
 
-# The disposable lanes deploy Komga under a project namespace and name the
-# container after it, so a base context pinned to the canonical Compose name
-# would verify a container the lane never created.
+# Lanes name the container after their project namespace, not the canonical name.
 production_base = runtime_sources.dup
 production_base[0] = contract.sub(
   "PLATFORM_KOMGA_CONTAINER=${PLATFORM_PROJECT_NAME:+$PLATFORM_PROJECT_NAME-}komga",
@@ -773,8 +693,6 @@ health_mutation_rejected!(compose, late_readiness, DEFAULTS, argument_specs, "la
 main_names = main_tasks.map { |task| task_name(task) }
 preflight_index = main_names.index("Refuse ambiguous Komga library candidates")
 user_index = main_names.index("Reconcile managed Komga users")
-# The earliest of the two, so the invariant cannot be satisfied by whichever
-# mutation happens to be written second.
 library_mutation_index = [
   main_names.index("Repair the managed Komga library"),
   main_names.index("Create the managed Komga library")
@@ -815,8 +733,7 @@ with_http_service(libraries) do |port, requests|
   failures << "converged model failed: #{stderr.lines.last(8).join}" unless status.success?
   failures << "converged model mutated a library" unless mutations(requests).empty?
 
-  # A stale migration input must be inert rather than a source of churn: the
-  # root match still wins, so there is nothing for the name match to repoint.
+  # A stale migration input must be inert: the root match still wins.
   requests.clear
   stdout, stderr, allowed = run_tasks(port, migration_allowed: true)
   failures << "converged model with the migration input failed: #{stderr.lines.last(8).join}" unless
@@ -940,7 +857,6 @@ with_http_service(libraries, fail_after_apply: true) do |port, requests|
   failures << "rerun after uncertain PATCH changed the identifier" unless libraries.first["id"] == "managed"
 end
 
-# Check mode reviews the whole migration without performing any of it.
 libraries = legacy_single_library
 with_http_service(libraries) do |port, requests|
   stdout, stderr, status = run_tasks(port, ["--check"], migration_allowed: true)

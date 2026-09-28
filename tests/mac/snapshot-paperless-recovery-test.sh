@@ -1,43 +1,15 @@
 #!/bin/sh
-# Regression proof for the Paperless restore recovery path.
-#
-# The restore path stops the webserver and redis together, and its ensure block
-# starts redis and immediately flushes the valkey queue. docker start returns
-# once the container process has been launched, not once valkey has bound
-# 127.0.0.1:6379, so as a one-shot exec that flushall raced the socket: it
-# intermittently reported "Connection refused" and turned a restore that had
-# actually succeeded into "application recovery failed" and a failing job. It
-# passed seven consecutive CI runs before failing run 32590260858, which is the
-# signature of a race rather than a logic error, and a race is exactly the kind
-# of defect a green suite cannot be used to prove absent.
-#
-# So the wait is proven here instead, by driving the real script against a stub
-# docker whose valkey refuses a chosen number of connections. Restore mode needs
-# no network at all (the API calls live behind MODE == "drill"), so docker and
-# ansible-vault are the only two commands that need stubbing, and each case
-# costs about a second.
-#
-# The cases are:
-#
-#   - a valkey that refuses twice and then answers must still produce a
-#     successful restore, with the flushall retried and the webserver started
-#     only after it succeeded,
-#   - a valkey that never answers must be reported as a recovery failure and
-#     must not abort the ensure block: the remaining recovery steps and the
-#     health wait have to run, because dying inside an ensure that is unwinding
-#     a restore failure would replace the real diagnosis with a recovery one,
-#   - a failed restore with a dead valkey must still surface the restore failure
-#     rather than the recovery failure, and
-#   - the deadline cannot be configured away: zero still leaves a retry.
+# Regression proof for restore recovery: the flushall right after `docker start`
+# raced valkey's socket. A stub valkey refuses N connections; recovery must retry,
+# report without aborting the ensure block, keep the restore failure as the
+# diagnosis, and never let the deadline be configured away.
 set -eu
 set +x
 umask 077
 
 mac_test_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 fixture=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-paperless-recovery.XXXXXX")
-# Resolved physically because the script under test refuses any snapshot
-# directory whose realpath differs from the path it was given, and on macOS
-# TMPDIR sits under the /var symlink.
+# Resolved physically: the script refuses a snapshot dir whose realpath differs (macOS /var).
 fixture=$(CDPATH= cd -- "$fixture" && pwd -P)
 
 cleanup_fixture() {
@@ -65,8 +37,6 @@ mkdir -p "$fixture/bin" "$snapshot" \
   "$sandbox/media/Documents/archive" "$sandbox/media/Documents/inbox" \
   "$fixture/seed/archive" "$fixture/seed/application" "$fixture/seed/inbox"
 
-# The vault is only read for database and administrator names, and restore mode
-# never authenticates against the API, so a plain document is enough.
 cat > "$fixture/bin/ansible-vault" <<'STUB'
 #!/bin/sh
 set -eu
@@ -79,10 +49,8 @@ vault_paperless_admin_password: recovery
 YAML
 STUB
 
-# Every invocation is appended to the ledger, which is what makes the ordering
-# and the retry count observable. STUB_VALKEY_REFUSALS decides how many flushall
-# attempts are refused the way a valkey that has not yet bound its port refuses
-# them, and STUB_PSQL_FAILS breaks the restore itself.
+# Every call is logged. STUB_VALKEY_REFUSALS refuses that many flushalls;
+# STUB_PSQL_FAILS breaks the restore itself.
 cat > "$fixture/bin/docker" <<'STUB'
 #!/bin/sh
 set -eu
@@ -141,12 +109,8 @@ ruby -rjson -rdigest -e '
              JSON.pretty_generate({ "schema" => 1, "members" => members }) + "\n")
 ' "$snapshot" || fail 'snapshot manifest fixture could not be built'
 
-# run_restore REFUSALS DEADLINE PSQL_FAILS. Taken as arguments rather than as
-# variable assignments prefixed to the call, because a prefixed assignment to a
-# function persists in the calling shell and would leak one case into the next.
-#
-# Each case starts from an empty ledger and attempt counter so the assertions
-# below read one restore rather than the accumulation of every earlier one.
+# run_restore REFUSALS DEADLINE PSQL_FAILS: arguments, since a prefixed assignment
+# to a function call persists in the calling shell and would leak between cases.
 run_restore() {
   : > "$ledger"
   : > "$attempts"
@@ -174,8 +138,6 @@ ledger_line() {
   grep -n -x -F "$1" "$ledger" | tail -1 | cut -d: -f1
 }
 
-# A refusing valkey must not fail the restore: the flushall has to be retried
-# until it lands, and only then may the webserver come back.
 run_restore 2 60 0
 [ "$case_status" -eq 0 ] ||
   fail "a valkey that answers on the third attempt failed the restore: $(cat "$fixture/stderr")"
@@ -192,9 +154,7 @@ webserver_line=$(ledger_line 'start paperless_webserver')
 [ "$flushall_line" -lt "$webserver_line" ] ||
   fail 'the webserver was started before the queue flush succeeded'
 
-# A valkey that never answers must be reported, and must not abort recovery: the
-# webserver start and the health wait after it still have to run, because a die
-# inside this ensure block would discard whatever failure it is unwinding.
+# A never-answering valkey is reported without aborting the rest of recovery.
 run_restore 9999 1 0
 [ "$case_status" -eq 1 ] ||
   fail "a valkey that never answers exited $case_status rather than 1"
@@ -211,8 +171,6 @@ grep -qF 'Paperless snapshot failed: application recovery failed' "$fixture/stde
 [ -n "$(ledger_line 'inspect --format {{.State.Health.Status}} paperless_redis')" ] ||
   fail 'the readiness wait skipped the health wait that follows it'
 
-# The restore failure is the one worth reporting. A recovery failure on top of it
-# must not become the diagnosis.
 run_restore 9999 1 1
 [ "$case_status" -eq 1 ] ||
   fail "a failed restore exited $case_status rather than 1"
@@ -221,8 +179,7 @@ grep -qF 'Paperless snapshot failed: docker failed' "$fixture/stderr" ||
 ! grep -qF 'application recovery failed' "$fixture/stderr" ||
   fail 'a recovery failure masked the restore failure that caused it'
 
-# The deadline is an environment seam so this test can reach the timeout branch
-# quickly. It must not be a way to switch the wait off.
+# The deadline seam must not be a way to switch the wait off.
 run_restore 1 0 0
 [ "$case_status" -eq 0 ] ||
   fail 'a zero deadline removed the retry instead of being floored'

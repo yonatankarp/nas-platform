@@ -35,10 +35,8 @@ def normalize_expression(value)
   value.to_s.gsub(/\s+/, " ").strip
 end
 
-# Scoped to one named assertion's own conditions, never the union across every
-# assert in the file. Two assertions now carry the same per-path stat
-# conditions, so a union membership test would let either one supply what the
-# other dropped, and both guards would pass while checking nothing.
+# Scoped to one assertion's conditions: a union would let either of two asserts
+# with the same conditions supply what the other dropped.
 def assertion_conditions(flat, name)
   task = flat.find { |item| item["name"] == name }
   return nil unless task
@@ -71,9 +69,7 @@ def verifier_problems(tasks, verify_play)
     "host_prep_media_acquisition_storage | selectattr('recovery', 'equalto', 'critical') | list | length == 11",
     "host_prep_media_acquisition_storage | map(attribute='mode') | unique | list == ['0755']",
     "host_prep_media_acquisition_storage_stats.results | length == 30",
-    # Usenet is deliberately absent: the NAS enabled it through Phase 1, and a
-    # verifier that required it off would fail the host that completed the
-    # handoff. Torrent remains inert on every host.
+    # Usenet is deliberately absent: the NAS enabled it through Phase 1.
     "not (media_torrent_enabled | bool)"
   ]
   required.each { |condition| problems << "verifier omits exact assertion: #{condition}" unless conditions.include?(condition) }
@@ -83,10 +79,8 @@ def verifier_problems(tasks, verify_play)
     leaf_conditions && ["item.stat.exists", "item.stat.isdir", "not item.stat.islnk",
                         "item.stat.mode == '0755'"].all? { |condition| leaf_conditions.include?(condition) }
 
-  # The two paths the Phase 1 acceptance item names. The floor must live in its
-  # own UNLOOPED assert: a looped assert whose list is empty runs zero
-  # iterations, so a floor placed inside the loop it guards can never fire. That
-  # is the whole reason these are two tasks rather than one.
+  # The floor must be its own unlooped assert: inside the loop, an empty list
+  # means it never fires.
   floor_task = flat.find { |task| task["name"] == ROOT_FLOOR_NAME }
   floor_conditions = assertion_conditions(flat, ROOT_FLOOR_NAME)
   problems << "the acquisition tree-root floor must be asserted without a loop" if
@@ -102,9 +96,7 @@ def verifier_problems(tasks, verify_play)
     root_conditions && ["item.stat.exists", "item.stat.isdir", "not item.stat.islnk",
                         "item.stat.mode == '0755'", "item.item.owner is not defined",
                         "item.item.group is not defined"].all? { |condition| root_conditions.include?(condition) }
-  # other=5 is exactly r-x, so a roth/xoth condition beside the mode condition
-  # could never fail on its own. Refuse the restatement rather than bank it as
-  # independent proof.
+  # other=5 is exactly r-x, so roth/xoth beside the mode could never fail alone.
   problems << "the tree-root assertion must not restate mode 0755 as separate roth/xoth conditions" if
     root_conditions && (root_conditions.include?("item.stat.roth") || root_conditions.include?("item.stat.xoth"))
 
@@ -151,10 +143,8 @@ def verifier_problems(tasks, verify_play)
 
   play = Array(verify_play).first || {}
   includes = Array(play["tasks"]).select { |task| task.dig("ansible.builtin.include_role", "name") == "host_prep" }
-  # host_prep carries a second standalone verifier (verify_mdraid, #609), so this
-  # one is found by its file rather than by being the only include; every include
-  # is still held to a verify_ file under its own never-guarded verify tag, so
-  # host_prep's mutating main stays unreachable.
+  # host_prep has a second verifier (verify_mdraid, #609), so this one is found by
+  # its file; every include is still held to a never-guarded verify tag.
   foundation_includes = includes.select do |task|
     task.dig("ansible.builtin.include_role", "tasks_from") == "verify_media_acquisition"
   end
@@ -370,16 +360,11 @@ unless failures.any?
       assertion = copy.find { |task| task["name"] == LEAF_ASSERTION_NAME }
       assertion.dig("ansible.builtin.assert", "that").delete("item.stat.exists")
     end,
-    # One row per condition the tree-root guard rests on. The first two are the
-    # ones that matter: without the length floor the loop can iterate zero
-    # times, and without the stat-results source the selector would re-read the
-    # declaration and prove the paths were declared rather than inspected.
+    # One row per condition the tree-root guard rests on.
     "missing tree-root length floor" => proc do |copy|
       assertion = copy.find { |task| task["name"] == ROOT_FLOOR_NAME }
       assertion.dig("ansible.builtin.assert", "that").delete("host_prep_media_acquisition_tree_roots | length == 2")
     end,
-    # The vacuous shape itself: the floor still present, but moved inside the
-    # loop it is supposed to guard, where an empty list means it never runs.
     "tree-root floor moved inside the loop it guards" => proc do |copy|
       floor = copy.find { |task| task["name"] == ROOT_FLOOR_NAME }
       floor["loop"] = "{{ host_prep_media_acquisition_tree_roots }}"

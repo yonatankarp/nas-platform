@@ -1,13 +1,7 @@
 #!/usr/bin/env ruby
-# The live half of the Dozzle service contract: it talks to the deployed Dozzle
-# notification API, to the private alert relay through it, and to the Pushover
-# recorder the relay publishes at in a lane, and it owns every fixture mode the
-# integration lane and the Mac drift hooks dispatch through.
-#
-# Reads the encrypted vault itself and overwrites the plaintext in place, so
-# nothing it holds reaches a diagnostic, an artifact or the environment. The
-# artifacts it does write under PLATFORM_REPORT_ROOT are opaque API identifiers
-# at mode 0600, filtered through SAFE_ID first.
+# Live half of the Dozzle contract: the notification API, the alert relay and the
+# Pushover recorder, plus every fixture mode the lanes dispatch. Vault plaintext
+# never reaches a diagnostic; artifacts are SAFE_ID-filtered identifiers at 0600.
 require "json"
 require "net/http"
 require "open3"
@@ -19,17 +13,12 @@ require "yaml"
 
 MODE = ARGV.fetch(0)
 DOZZLE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_DOZZLE_PORT'), 10)}")
-# The address Dozzle dispatches to is whatever the deployment was told to use,
-# not the loopback address this contract connects to, and it is not a fixed name:
-# only Docker Desktop supplies host.docker.internal. Follow the precedence
-# inventory/local.yml uses, and fall back to the name inventory/mac.yml hardcodes,
-# which the Mac lane relies on because it exports neither variable.
+# The address Dozzle dispatches to, in inventory/local.yml's precedence, falling
+# back to inventory/mac.yml's host.docker.internal.
 CALLBACK_HOST = [ENV["PLATFORM_CALLBACK_HOST"], ENV["PLATFORM_NAS_ADDRESS"]]
                 .compact.reject(&:empty?).first || "host.docker.internal"
 REPORT_ROOT = ENV.fetch("PLATFORM_REPORT_ROOT")
-# The dispatcher URL Dozzle reports back is the rendered form of the role
-# default, whose port is shared inventory (service_dozzle.yml), so build the expectation from the one place the listener port is
-# declared instead of repeating the number in this contract.
+# Built from the one declaration of the listener port (service_dozzle.yml).
 RELAY_ALERTS_URL = "http://alert-relay:#{Integer(
   YAML.safe_load_file(ENV.fetch('PLATFORM_CONTRACT_DOZZLE_SERVICE_VARS'))
       .fetch('dozzle_alert_relay_port')
@@ -47,13 +36,8 @@ def fail_contract(message)
   exit 1
 end
 
-# The throwaway fixtures below run `/bin/sh` under the alert relay's Alpine
-# Python image, chosen only because a lane that converged Dozzle has already
-# pulled it. Restating the pin here would make that false the moment the relay's
-# image is bumped -- and Renovate does not read this tree, so nothing would say
-# so. Read the one pin the deployment declares instead. The prefix is the one
-# tests/contracts/dozzle-stack.rb requires of the relay, so the match cannot
-# land on the Dozzle or socket-proxy image in the same file.
+# Fixtures run under the relay's image, already pulled by the lane; read its pin
+# from the deployment rather than restating it (Renovate does not read this tree).
 def deployed_fixture_image
   path = ENV.fetch("PLATFORM_CONTRACT_DOZZLE_COMPOSE")
   fail_contract("services/dozzle/compose.yml is unavailable") unless File.file?(path)
@@ -168,7 +152,6 @@ def request(method, uri, cookie: nil, basic: nil, bearer: nil, token: nil, body:
   request["Cookie"] = cookie if cookie
   request.basic_auth(*basic) if basic
   request["Authorization"] = "Bearer #{bearer}" if bearer
-  # PocketBase takes its auth token bare, with no scheme in front of it.
   request["Authorization"] = token if token
   if body
     request["Content-Type"] = "application/json"
@@ -192,30 +175,15 @@ rescue SystemCallError, Timeout::Error => error
   fail_contract("#{method.upcase} #{uri.path} failed: #{error.class}")
 end
 
-# --- the Pushover stand-in -----------------------------------------------
-#
-# The relay publishes to Pushover since #558, and no proof that ends at a real
-# Pushover account can run in a lane: the messages reach somebody's phone and
-# the API has nothing to read them back from. So the lane redirects
-# dozzle_pushover_api_url at this recorder and the notify mode asserts the form
-# the relay POSTed -- which keeps every property the earlier readback was proving
-# (the exact presentation, exactly one recovery, no false recovery on a
-# startup-healthy container, and no event envelope leaking into message text)
-# rather than trading them for a transport change.
-#
-# A listener in this process rather than a container, and that works because
-# both lanes put this program on the Docker daemon's own network. The
-# integration harness runs its controller with --network host, and the Mac lane
-# runs this program on the Mac itself, so in both a socket opened here is a
-# socket on the host and a service container reaches it at CALLBACK_HOST -- the
-# same path the relay used to reach its earlier disposable server.
+# --- the Pushover stand-in ---
+# The lane redirects dozzle_pushover_api_url here and the notify mode asserts the
+# form the relay POSTed. Both lanes run this on the daemon's host network, so
+# containers reach it at CALLBACK_HOST.
 PUSHOVER_RECORDER_PORT = Integer(ENV.fetch("PLATFORM_DOZZLE_PUSHOVER_PORT"), 10)
 PUSHOVER_RECORDER_URL =
   "http://#{CALLBACK_HOST}:#{PUSHOVER_RECORDER_PORT}/1/messages.json".freeze
 
-# Reads one request and answers it. Deliberately minimal rather than a server
-# library: the relay sends a POST with a Content-Length and a urlencoded body,
-# and nothing here has to be a general HTTP implementation.
+# Deliberately minimal: one POST with Content-Length and a urlencoded body.
 def read_recorded_request(socket)
   request_line = socket.gets
   return nil if request_line.nil?
@@ -241,11 +209,7 @@ rescue StandardError
   nil
 end
 
-# Every captured form carries the Pushover application token and user key, which
-# are the household's real credentials on the NAS. They are dropped at the point
-# of capture rather than at the point of printing, so no later diagnostic can
-# reach them: what the assertions need is that they were present and correct,
-# and that is recorded as a verdict rather than as the value.
+# Credentials are dropped at capture, recorded only as a verdict.
 def redact_credentials(captured, token, user_key)
   form = captured.fetch("form")
   captured.merge(
@@ -284,29 +248,11 @@ def with_pushover_recorder(token, user_key)
   end
 end
 
-# The relay container this contract drives. Its stderr is the only place a
-# refused envelope is named -- the relay logs a rejection and an outage as one
-# assembled line each, credentials redacted before truncation -- and until #716
-# nothing read it, so a refusal and a silence were the same red line.
-#
-# Found by Compose's own service label rather than by container name, because the
-# name is not one value: services/dozzle/compose.yml declares
-# `dozzle_alert_relay` and both platform overrides replace it with
-# `${PLATFORM_PROJECT_NAME}-dozzle-alert-relay`, so every lane this contract
-# actually runs in names it differently. #716 hardcoded the production spelling
-# and every integration run answered "No such container", which is the one
-# failure a diagnostic must not have -- it reported the absence of the log
-# instead of the contents, and looked exactly like a relay that was not running.
-# The label is set by Compose for every container it creates, under every name.
+# Its stderr is the only place a refused envelope is named (#716). Found by
+# Compose service label, because the container name differs per lane.
 ALERT_RELAY_COMPOSE_SERVICE = "alert-relay"
 
-# Dozzle's own log is the other half of the same question, and the relay alone
-# cannot answer it. A relay that logged nothing is equally consistent with "no
-# POST was ever sent" and with "a POST arrived and was published": the relay
-# writes a line for a rejection and for an outage, and nothing for the ordinary
-# path. Dozzle says which -- it logs "Event alert triggered" when a subscription
-# matches, and reports a dispatch that fails -- so without it a silent relay
-# names neither side of the boundary.
+# The relay logs nothing on the ordinary path; Dozzle's log says whether it sent.
 DOZZLE_COMPOSE_SERVICE = "dozzle"
 
 def compose_service_container(service)
@@ -320,10 +266,8 @@ def compose_service_container(service)
   output.lines.map(&:strip).reject(&:empty?).first
 end
 
-# What the relay said, for a failure that is about a message not arriving.
-# Best-effort by construction: no container, a docker that refuses, or an empty
-# log must not replace the caller's diagnostic with an error about fetching it,
-# so every failure here degrades to a stated absence.
+# Best-effort: every failure degrades to a stated absence, never replacing
+# the caller's diagnostic.
 def container_log_digest(service, limit)
   container = compose_service_container(service)
   return "  (no container carries the Compose label " \
@@ -338,19 +282,13 @@ def container_log_digest(service, limit)
   ["  [#{container}]", *lines.last(limit).map { |line| "  #{line}" }].join("\n")
 end
 
-# Both sides of the boundary the failure sits on, in the order a reader needs
-# them: did Dozzle send, and did the relay receive.
 def alert_delivery_diagnostics(relay_limit: 40, dozzle_limit: 25)
   "dozzle log (last lines):\n#{container_log_digest(DOZZLE_COMPOSE_SERVICE, dozzle_limit)}\n" \
   "relay log (last lines):\n#{container_log_digest(ALERT_RELAY_COMPOSE_SERVICE, relay_limit)}"
 end
 
-# A timeout here means "no message matched", which is three different states:
-# nothing was ever published, the relay refused what Dozzle sent, or something
-# arrived in a shape this block does not recognise. The diagnostic named only
-# the first and the caller's own `observed` -- returned for exactly this -- was
-# discarded on the failure path, so six identical CI failures produced no
-# mechanism. Report what was captured and what the relay said alongside it.
+# A timeout has three causes (nothing published, refused, unrecognised shape), so
+# report what was captured and what the relay said.
 def wait_for_pushover(reader, diagnostic, timeout: 40)
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
   loop do
@@ -359,11 +297,7 @@ def wait_for_pushover(reader, diagnostic, timeout: 40)
     return [match, messages] if match
 
     if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
-      # Titles only, and they are already redacted: with_pushover_recorder runs
-      # every record through redact_credentials before it is captured, so the
-      # token and the user key cannot reach this output. A whole body could
-      # still carry a container's own text, so the summary stays at the field
-      # the match is made on.
+      # Titles only; already redacted at capture.
       seen = messages.map { |message| message.fetch("form", {})["title"].inspect }
       summary =
         if seen.empty?
@@ -688,23 +622,12 @@ fail_contract("managed dispatcher name differs") unless dispatcher["name"] == "n
 fail_contract("managed dispatcher type differs") unless dispatcher["type"] == "webhook"
 fail_contract("managed dispatcher URL differs") unless dispatcher["url"] == expected_url
 fail_contract("managed dispatcher template differs") unless dispatcher["template"] == expected_template
-# Read straight out of the vault rather than through the inventory layer,
-# because the vault is the relay token's only home: it is authored there and
-# required there, with nothing in inventory deriving it (#558). So the equality
-# below is the operator's rotation path end to end -- the token in the vault
-# reaching Dozzle's own dispatcher (#172). Both ends of the role read one bare
-# variable (roles/dozzle/defaults/main.yml and roles/dozzle/templates/env.j2),
-# and the `| default(...)` or hoisted fact that would put a second source
-# between them fails the expression-text checks in
-# tests/contracts/dozzle-alerts.rb and tests/contracts/dozzle-stack.rb.
+# Straight from the vault, the relay token's only home (#558): this equality is
+# the rotation path end to end (#172).
 fail_contract("managed dispatcher headers differ") unless
   dispatcher["headers"] == { "Authorization" => "Bearer #{vault.fetch('vault_dozzle_alert_relay_token')}" }
-# The equality above is the whole of it, and deliberately so. A second check for
-# 'and it is not some other publisher's token' could never fail once this one
-# passed: an exact equality with the relay's own secret already excludes every
-# other value, so such a check would pass without checking anything. What the
-# header must not be is enforced where it can actually differ -- in the rendered
-# environment file, by tests/contracts/dozzle-stack.rb.
+# Exact equality already excludes every other token; what the header must not be
+# is checked in the rendered env file by tests/contracts/dozzle-stack.rb.
 fail_contract("expected exactly four alert rules") unless rules.length == 4
 
 ALERTS.each do |name, (expression, cooldown)|
@@ -725,10 +648,8 @@ if MODE == "notify"
   startup_fixture = "dozzle_contract_startup_#{SecureRandom.hex(6)}"
   exit_fixture = "dozzle_contract_exit_#{SecureRandom.hex(6)}"
   initial_exit_count = rules.find { |rule| rule["name"] == "Unexpected exit" }.fetch("triggerCount")
-  # The recorder starts before the first fixture container, and that ordering is
-  # load-bearing rather than tidy: a POST to a closed port raises UpstreamError
-  # in the relay, which answers Dozzle 502, and Dozzle does not retry. The alert
-  # is simply lost and every assertion below would fail for the wrong reason.
+  # Recorder first: a POST to a closed port makes the relay answer 502, and Dozzle
+  # does not retry, so the alert would be lost.
   with_pushover_recorder(pushover_token, pushover_user_key) do |captured|
     begin
       health_out, _error, health_status = Open3.capture3(
@@ -746,9 +667,7 @@ if MODE == "notify"
           message.fetch("form")["title"] == "\u{1F7E0} #{health_fixture} unhealthy"
         end
       end
-      # The lead names the container with its state in amber, and the detail
-      # labels follow in order; the host is whatever Docker reported, so it is
-      # matched by label rather than by value.
+      # The host is whatever Docker reported, so match it by label.
       expected_unhealthy_lead =
         "<b>#{health_fixture}</b> is <font color=\"#f9a825\">unhealthy</font>\n\n" \
         "\u{1F5A5}\u{FE0F} <b>Host</b> "
@@ -757,23 +676,17 @@ if MODE == "notify"
         unhealthy_form["message"].to_s.start_with?(expected_unhealthy_lead) &&
         unhealthy_form["message"].to_s.scan(%r{^\S+ <b>([^<]+)</b> }).flatten == %w[Host Container When] &&
         unhealthy_form["priority"] == "1" && unhealthy_form["html"] == "1"
-      # The tap-through link opens this container's page in Dozzle, whose route
-      # is keyed on the 12-character short id Docker printed for the fixture,
-      # and the event time travels as Unix seconds.
+      # Dozzle's route is keyed on the 12-character short id.
       fail_contract("unhealthy notification does not link its container in Dozzle") unless
         unhealthy_form["url"].to_s.match?(%r{\Ahttps?://[^/?#@]+/container/#{Regexp.escape(health_out.strip[0, 12])}\z}) &&
         unhealthy_form["url_title"] == "Open in Dozzle" &&
         unhealthy_form["timestamp"].to_s.match?(/\A[1-9][0-9]{9}\z/)
-      # Pushover authenticates by form field, so this is the one assertion that
-      # says the deployed relay is holding the credentials the vault declares --
-      # recorded as a verdict at capture time, never as the values.
+      # Pushover authenticates by form field; recorded as a verdict, never the values.
       fail_contract("relay published without the managed Pushover credentials") unless
         unhealthy["credentials_ok"]
       fail_contract("relay published to an endpoint other than the messages API") unless
         unhealthy["path"] == "/1/messages.json" &&
         unhealthy["content_type"].to_s.start_with?("application/x-www-form-urlencoded")
-      # A credential in a header is the earlier transport's shape carried across, and it would
-      # put the application token somewhere nothing on the far end reads.
       fail_contract("relay sent a credential in an Authorization header") unless
         unhealthy["authorization"].nil?
       fail_contract("relay exposed its event envelope as Pushover message text") if
@@ -783,9 +696,7 @@ if MODE == "notify"
         "docker", "exec", health_fixture, "/bin/sh", "-c", "touch /tmp/healthy"
       )
       fail_contract("disposable unhealthy fixture could not recover") unless exec_status.success?
-      # A recovery is a record, not an emergency. Under the earlier transport that was a second
-      # topic; Pushover says it on the message, so the assertion is the
-      # priority rather than the routing.
+      # A recovery is asserted by priority, not routing.
       recovered, observed = wait_for_pushover(
         captured, "healthy transition did not produce one correlated recovery"
       ) do |messages|
@@ -852,9 +763,7 @@ if MODE == "notify"
         exited_form["priority"] == "1" && exited_form["html"] == "1"
       fail_contract("relay exposed its event envelope as Pushover message text") if
         observed.any? { |message| message.fetch("form")["message"].to_s.include?('"version":1') }
-      # Nothing here should have tripped the ceiling, and a suppression notice
-      # in this window would mean the relay had spent its allowance on the
-      # lane's own container churn rather than on these three events.
+      # A suppression here means the relay spent its allowance on the lane's own churn.
       fail_contract("the daily ceiling suppressed the contract's own alerts") if
         captured.call.any? do |message|
           message.fetch("form")["title"].to_s.start_with?("\u{1F507} ")
@@ -871,17 +780,9 @@ if MODE == "notify"
   end
 end
 
-# Beszel's host alerts, end to end: the webhook the converged hub stored, sent by
-# the hub over the alert-relay bridge to the relay's /beszel route, published by
-# the relay to the recorder with the Alerts application token. Nothing else
-# crosses all of those. The Beszel contract proves the stored string. The relay's
-# unit suite proves the parser. Only this proves the hub can reach the relay with
-# a token it accepts, and that the relay then publishes. So the lane converges
-# beszel as well as dozzle.
-#
-# "Test Alert" is no subject the relay recognises, so it goes out verbatim at
-# priority 1 (render_beszel's fallback). The link Beszel appends to a test is its
-# bare app URL, not a /system/ page, so the relay adds no button.
+# Beszel's host alerts end to end: hub webhook -> relay /beszel -> recorder with
+# the Alerts token; only this proves the hub reaches the relay. "Test Alert" goes
+# out verbatim at priority 1 with no button.
 if MODE == "beszel-notify"
   beszel = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_BESZEL_PORT'), 10)}")
   timeout = Integer(ENV.fetch("PLATFORM_DOZZLE_BESZEL_NOTIFICATION_TIMEOUT_SECONDS", "40"), 10)
@@ -925,8 +826,7 @@ if MODE == "beszel-notify"
     ) do |messages|
       messages.find { |message| message.fetch("form")["title"] == "Test Alert" }
     end
-    # Pushover authenticates by form field. The Alerts token is what separates
-    # this route from /alerts, which publishes with Containers.
+    # The Alerts token separates this route from /alerts (Containers).
     fail_contract("relay published Beszel's test notification without the Alerts credentials") unless
       delivered["credentials_ok"]
     form = delivered.fetch("form")
@@ -936,8 +836,8 @@ if MODE == "beszel-notify"
   end
 end
 
-# Dozzle falls back to the image's public agent pair, silently, when DOZZLE_CERT
-# names no file. This line is the only evidence that it loaded the platform's.
+# Dozzle silently falls back to the image's public agent pair if DOZZLE_CERT names
+# no file; this line is the only evidence it loaded the platform's.
 dozzle_container = compose_service_container(DOZZLE_COMPOSE_SERVICE)
 fail_contract("no Dozzle container to read the agent TLS log line from") unless dozzle_container
 dozzle_log, dozzle_log_errors, dozzle_log_status = Open3.capture3("docker", "logs", dozzle_container)

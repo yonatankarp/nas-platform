@@ -37,10 +37,7 @@ check(failures,
         "#{argument.inspect} error must name job and unexpected result: #{stderr.inspect}")
 end
 
-# The non-blocking jobs are the ones the workflow declares it cannot be blocked
-# by, and the gate used to abort on them anyway. Read the list out of the script
-# rather than restating it: a job added there without a row here would otherwise
-# gain its tolerance untested.
+# Read from the script so a newly non-blocking job cannot gain its tolerance untested.
 check(failures, !ValidateResults::NON_BLOCKING_JOBS.empty?,
       "the non-blocking rows below prove nothing if no job is declared non-blocking")
 ValidateResults::NON_BLOCKING_JOBS.each do |job|
@@ -60,9 +57,7 @@ ValidateResults::NON_BLOCKING_JOBS.each do |job|
   check(failures, stdout == "accepted: #{job}=success\n",
         "a non-blocking job that succeeded must print the accepted summary: #{stdout.inspect}")
 
-  # Tolerating the results GitHub reports is not tolerating any string at all.
-  # A value outside KNOWN_RESULTS is a typo or a schema change, and a
-  # non-blocking job is exactly where one would go unnoticed.
+  # Tolerating GitHub's results is not tolerating any string at all.
   %w[pending unknown].each do |result|
     stdout, stderr, status = validate("#{job}=#{result}")
     check(failures, !status.success?,
@@ -73,8 +68,7 @@ ValidateResults::NON_BLOCKING_JOBS.each do |job|
   end
 end
 
-# The tolerance is keyed by job name and must not leak to the jobs that carry the
-# coverage.
+# The tolerance must not leak to the jobs that carry the coverage.
 (ValidateResults::KNOWN_RESULTS - ValidateResults::ALLOWED_RESULTS).each do |result|
   _stdout, _stderr, status = validate("static=#{result}")
   check(failures, !status.success?, "static=#{result} must still fail the gate")

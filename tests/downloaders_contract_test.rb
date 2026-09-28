@@ -1,30 +1,10 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#
-# Behaviour of the downloaders service contract's Ruby program.
-#
-# Until #147 the whole program lived in a `<<'RUBY'` heredoc inside
-# tests/contracts/downloaders.sh. `sh -n` reads a quoted heredoc as opaque text,
-# so the only thing that ever executed it was `tests/contracts/downloaders.sh
-# static` -- and a contract that passes says nothing about which of its
-# assertions still bite. tests/contracts/downloaders-static.rb is a file now, so
-# each one can be moved on its own.
-#
-# Two layers, because the contract has two kinds of property:
-#
-#   Static -- build a fixture repository from the files the program reads, break
-#   exactly one thing in it, and require the program to name that thing. The
-#   assertion text is the interface: a guard that fails for the wrong reason has
-#   stopped guarding what it names, so every row pins the exact diagnostic.
-#
-#   Wrapper -- tests/contracts/downloaders.sh is what turns a mode into an
-#   invocation. Its rows prove the mode guard, that the program is actually
-#   reached, that the program comes from the checkout while the tree it inspects
-#   does not, and that it cannot consume the caller's stdin.
-#
-# Run with --self-test to plant a regression in the program and in the wrapper
-# and prove the rows above detect each one. It accumulates its mismatches rather
-# than aborting on the first.
+
+# Behaviour of the downloaders contract (tests/contracts/downloaders-static.rb and
+# its wrapper): static rows break one thing each and pin the exact diagnostic;
+# wrapper rows prove mode guard, reachability, two roots and stdin isolation.
+# --self-test plants regressions and proves the rows detect each one.
 
 require "fileutils"
 require "open3"
@@ -47,11 +27,9 @@ DIAGNOSTIC_PREFIX = "Downloaders contract failed: "
 CONTRACT = File.join(ROOT, "tests", "contracts", "downloaders.sh")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "downloaders-static.rb")
 
-# Exactly what the program reads, plus the shared flatten_tasks it requires
-# through PLATFORM_CONTRACT_REPO_DIR. Its `required` list names six paths and it
-# then reads a seventh, services/downloaders/compose.yml, which the existence
-# sweep never checks -- so removing that one is a crash rather than a
-# diagnostic. Recorded here rather than fixed: this change moves code.
+# Exactly what the program reads, plus the shared flatten_tasks. Note: it reads
+# services/downloaders/compose.yml without checking it exists (a crash, not a
+# diagnostic).
 FIXTURE_FILES = %w[
   roles/downloaders/defaults/main.yml
   roles/downloaders/tasks/main.yml
@@ -66,7 +44,6 @@ FIXTURE_FILES = %w[
 SUCCESS_LINE = "downloaders contract: Phase 1 Usenet ownership holds"
 MODE_REFUSAL = "downloaders contract accepts only static"
 
-
 def build_fixture_repository(root)
   FIXTURE_FILES.each do |relative|
     destination = File.join(root, relative)
@@ -75,10 +52,8 @@ def build_fixture_repository(root)
   end
 end
 
-# Every substitution states how many matches it expects. A replacement that
-# still contains its own pattern plants nothing, and a bare `sub` cannot tell
-# that from a plant that worked: the row then reports a pass, or a failure with
-# the wrong diagnostic.
+# Every substitution states its expected match count, so a plant that planted
+# nothing cannot read as a pass.
 def mutate_text(root, relative, pattern, replacement, occurrences: 1)
   path = File.join(root, relative)
   body = File.read(path)
@@ -89,14 +64,8 @@ def mutate_text(root, relative, pattern, replacement, occurrences: 1)
   File.write(path, occurrences == 1 ? body.sub(pattern, replacement) : body.gsub(pattern, replacement))
 end
 
-# `downloaders role must deploy through docker_compose_v2` has deliberately no
-# row. It asserts that some task carries a docker_compose_v2 mapping, and the
-# activation-order assertion two lines below it already requires a
-# docker_compose_v2 mapping whose `state` is `present` -- so the weaker claim
-# cannot be broken without also breaking the stronger one, and any break
-# produces three diagnostics rather than the one a row would pin. A row
-# expecting a three-sentence output would freeze that redundancy and make
-# removing it look like a regression. Reported, not pinned.
+# `must deploy through docker_compose_v2` deliberately has no row: the stronger
+# activation-order assertion covers it, so any break yields three diagnostics.
 STATIC_ROWS = [
   {
     name: "an intact repository",
@@ -159,10 +128,8 @@ STATIC_ROWS = [
     expects: "downloaders role must verify its effective project CPU policy"
   },
   {
-    # #537 moved this gate onto the block that now wraps the deployment -- the
-    # block whose rescue records the message roles/container_health is handed --
-    # so the `when` to remove is the block's, and the anchor is the last line of
-    # its rescue rather than the deploy's own arguments.
+    # #537 moved this gate onto the block wrapping the deployment, so the anchor
+    # is the last line of its rescue.
     name: "an activation no longer gated on the Usenet switch",
     break: lambda { |root|
       mutate_text(root, "roles/downloaders/tasks/main.yml",
@@ -249,11 +216,8 @@ STATIC_ROWS = [
     expects: "the Usenet provider password must never travel in a URL"
   },
   {
-    # A second condition on the undeclared branch, not a different one. Two
-    # conditions are no longer each other's negation, so the pair assertion
-    # fires -- while the branch's own key in branch_claims is still its first
-    # condition, so the per-branch count assertion below stays satisfied and
-    # this row pins one diagnostic rather than two.
+    # A second condition, so the pair assertion fires while the per-branch count
+    # stays satisfied: one diagnostic.
     name: "a provider-state branch that is no longer the other's negation",
     break: lambda { |root|
       mutate_text(root, "roles/downloaders/tasks/verify.yml",
@@ -291,9 +255,7 @@ STATIC_ROWS = [
     expects: "the Usenet server reconciliation must be gated on the declared fact"
   },
   {
-    # An added mapping test rather than a rewritten sequence one, so the
-    # positive "reconciled from the API list schema" assertion is untouched and
-    # only the refusal below it fires.
+    # An added mapping test, so only the refusal fires.
     name: "categories also read as a mapping",
     break: lambda { |root|
       mutate_text(root, "roles/downloaders/tasks/reconcile_sabnzbd.yml",
@@ -383,22 +345,14 @@ def static_failures(program, rows = STATIC_ROWS)
 end
 
 # --- wrapper layer ---------------------------------------------------------
-#
-# tests/contracts/downloaders.sh resolves its program from its own checkout
-# rather than from the tree it is inspecting, so a copy of the two files into a
-# throwaway tests/contracts/ is a whole working contract. That is what lets a
-# row point PLATFORM_CONTRACT_REPO_DIR at a broken fixture and still exercise
-# the real wrapper. The copy is laid into a fixture repository so it is also a
-# valid tree to inspect, which is what the unset-variable row needs.
+# The wrapper resolves its program from its own checkout, so a copy of the two
+# files into a throwaway tests/contracts/ is a whole working contract.
 
 def with_contract_copy(static: File.read(STATIC_PROGRAM), wrapper: File.read(CONTRACT), &block)
   with_contract_sandbox("downloaders", wrapper, { "static" => static }, &block)
 end
 
-# Reports what the program saw on stdin and what the caller still has, which is
-# the only way the redirect is observable: the real program never reads stdin,
-# so the redirect is what keeps that true rather than something that changes an
-# outcome today.
+# The real program never reads stdin, so the redirect is observable only here.
 def stdin_failures(wrapper_source: File.read(CONTRACT))
   with_contract_copy(static: STDIN_PROBE, wrapper: wrapper_source) do |contract|
     stdin_probe_failures(contract, %w[static], { "PLATFORM_CONTRACT_REPO_DIR" => ROOT })
@@ -445,10 +399,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     end
   end
 
-  # The branch every deployment actually takes. Neither tests/integration.sh nor
-  # run_contracts.rb --execute sets PLATFORM_CONTRACT_REPO_DIR, so the default is
-  # the only path in production -- and it is the one where resolving the program
-  # from the script's own checkout is load-bearing rather than shadowed.
+  # The branch every deployment takes: PLATFORM_CONTRACT_REPO_DIR unset.
   with_contract_copy do |contract, copy_root|
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => nil }, contract, "static"
@@ -472,11 +423,8 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures
 end
 
-# The two-roots property, stated as an outcome rather than as the wrapper's text.
-# An inspected tree with no tests/contracts at all must still pass, because the
-# program comes from the checkout; and the program must still require
-# tests/policy_support.rb out of the inspected tree, because that is the tree
-# whose task files it is flattening.
+# The two-roots property: the program comes from the checkout, but requires
+# tests/policy_support.rb out of the inspected tree.
 def two_roots_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   with_contract_copy(wrapper: wrapper_source) do |contract|
@@ -493,10 +441,7 @@ def two_roots_failures(wrapper_source: File.read(CONTRACT))
         stdout.include?(SUCCESS_LINE)
     end
 
-    # The other direction. The inspected tree's own flatten_tasks is what the
-    # program must use, so a tree whose policy_support.rb refuses to load has to
-    # take the contract down with it. Reading the checkout's copy instead would
-    # pass here, silently.
+    # The inspected tree's flatten_tasks must be the one used.
     Dir.mktmpdir("nas-platform-downloaders-support.") do |raw|
       inspected = File.realpath(raw)
       build_fixture_repository(inspected)
@@ -515,18 +460,14 @@ def two_roots_failures(wrapper_source: File.read(CONTRACT))
   failures
 end
 
-# --- planted regressions ---------------------------------------------------
-
 PROGRAM_MUTATIONS = [
   {
     label: "a declared file no longer having to exist",
     from: 'failures << "missing #{relative}" unless File.file?(File.join(root, relative))',
     to: "failures << relative if false",
     rows: ["a declared file that is gone"],
-    # The existence sweep is also what keeps the reads below it from meeting an
-    # absent file, so removing it does not merely accept the repository: it
-    # crashes on the first read. The row still refuses, and now says why in a
-    # stack trace instead of a sentence, which is the regression.
+    # Removing the existence sweep crashes on the first read; the row must say
+    # it refused for the wrong reason.
     detects: "refused for the wrong reason"
   },
   {
@@ -566,9 +507,8 @@ PROGRAM_MUTATIONS = [
     rows: ["a project CPU policy that is never verified"]
   },
   {
-    # The whole condition, not the predicate inside the block: with the `when`
-    # removed the block never runs and `any?` on an empty array is already
-    # false, so a plant inside the block would change nothing.
+    # The whole condition: without the `when` the block never runs and `any?` on
+    # an empty array is already false.
     label: "the Usenet activation gate",
     from: 'activation_gate && Array(activation_gate["when"]).any? do |condition|
       condition.to_s.include?("media_usenet_enabled | bool")
@@ -695,8 +635,7 @@ PROGRAM_MUTATIONS = [
   }
 ].freeze
 
-# The wrapper's own regressions. Each one is a line that today changes no
-# outcome, which is exactly why it needs a plant rather than a passing contract.
+# The wrapper's own regressions: lines that today change no outcome.
 WRAPPER_MUTATIONS = [
   {
     label: "a dropped stdin redirect",
@@ -728,12 +667,8 @@ if ARGV.include?("--self-test")
   mismatches = []
   planted = 0
 
-  # Every plant is prepared on the main thread, before the pool. `plant` and
-  # `rows_named` abort with a sentence naming what they could not find, and an
-  # abort inside a worker raises SystemExit there: the thread dies without
-  # recording its result and the pool's own `collected.fetch` then reports a
-  # KeyError instead of that sentence. Nine copies of this helper are coming, so
-  # the ordering is the fix rather than a rescue.
+  # Plants are prepared on the main thread: an abort inside a worker would die
+  # as SystemExit and surface as a KeyError instead of its sentence.
   program_cases = PROGRAM_MUTATIONS.map do |mutation|
     [mutation,
      plant(File.read(STATIC_PROGRAM), mutation),

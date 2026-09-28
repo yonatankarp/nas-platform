@@ -26,19 +26,9 @@ VALIDATE_POLICY = File.join(ROOT, "tests", "validate-policy.sh")
 BCRYPT_A = "$2b$12$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 BCRYPT_B = "$2b$12$bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-# Every property these roles must have, stated against the parsed thing Ansible
-# would run rather than against the text of the file that spells it. A module
-# key, a `when`, a `no_log`, a loop, or a rescue attached to one particular
-# block are things the role acts on; a substring is not. "Dozzle rejects
-# malformed YAML" used to be satisfied by `rescue:` appearing anywhere in the
-# file -- inside a comment, or inside some other task's name -- and never said
-# the rescue guarded the safe-load block at all.
-#
-# Each entry is a predicate over the parsed context assembled below, so
-# --self-test can mutate that context the way a regression would (retarget a
-# module, drop a `when`, unset a `no_log`, detach a rescue) and watch the
-# predicate fire. That is the difference from the loop this replaced, which
-# deleted the very substring it then searched for.
+# Each property is a predicate over the parsed tasks Ansible would run, not
+# over file text, so --self-test can mutate the parsed context the way a
+# regression would and watch the predicate fire.
 STRUCTURAL_PROPERTIES = {
   "Dozzle safe load" => lambda do |context|
     parse = named_task(
@@ -92,10 +82,7 @@ STRUCTURAL_PROPERTIES = {
   "Dozzle unmanaged preservation" => lambda do |context|
     preserve = named_task(context.fetch(:dozzle), "Preserve unmanaged Dozzle users verbatim")
     reconcile = named_task(context.fetch(:dozzle), "Resolve the reconciled Dozzle users document")
-    # `dozzle_reconciled_document` is the fact `templates/users.yml.j2` renders,
-    # so it is the one this asserts the merge on. A second fact carrying the
-    # same expression and nothing reading it was what this used to read (#645):
-    # the assertion held while the value that reaches the file went unexamined.
+    # The fact users.yml.j2 actually renders (#645).
     merged = reconcile&.dig("ansible.builtin.set_fact", "dozzle_reconciled_document").to_s
     !preserve.nil? && preserve["loop"] == "{{ dozzle_existing_users | dict2items }}" &&
       # Without this `when` the loop would also copy the managed identities back
@@ -123,9 +110,7 @@ STRUCTURAL_PROPERTIES = {
       auth["no_log"] == true && auth["changed_when"] == false &&
       auth["check_mode"] == false
   end,
-  # The two filter properties are stated as the behaviour itself: the parser is
-  # handed the document it must refuse and asked what it did. A substring saying
-  # the token class is mentioned somewhere in the plugin proves far less.
+  # Filter properties are the behaviour itself: hand the parser what it must refuse.
   "strict YAML alias refusal" => lambda do |context|
     managed_users_yaml_outcome(
       "shared: &shared {password: #{BCRYPT_B}}\nusers: {reader: *shared}\n",
@@ -185,8 +170,6 @@ def ansible_python
   interpreter
 end
 
-# Ansible task lists nest through block/rescue/always, so finding a task by name
-# has to see through those sections.
 def named_task(tasks, name)
   PolicySupport.flatten_tasks(tasks).find { |task| task["name"] == name }
 end
@@ -203,8 +186,6 @@ def dozzle_hash_refusal(context)
   )
 end
 
-# Hand the strict parser a document and report what it did with it. The plugin
-# path is a parameter so --self-test can ask the same question of a mutant.
 def managed_users_yaml_outcome(document, plugin_path)
   script = <<~PYTHON
     import importlib.util, sys
@@ -229,17 +210,8 @@ def structural_property_failures(context)
   STRUCTURAL_PROPERTIES.reject { |_label, property| property.call(context) }.keys
 end
 
-# Freezes a fixture input the pooled cases below only read.
-#
-# Every one of them deep-copies before it changes anything, and this is what
-# says so: a case that forgets raises FrozenError in its own case instead of
-# handing the next case a corrupted input, which is a failure that would
-# reproduce only under load. Nested rather than a bare `freeze` because these
-# structures are two and three levels deep and every write in this file reaches
-# past the first.
-#
-# An input only one case uses is not frozen -- it is built inside that case, so
-# there is nothing to share.
+# Frozen so a case that forgets to deep-copy raises FrozenError in its own case
+# instead of corrupting a sibling's input under load.
 def deep_freeze(value)
   case value
   when Hash then value.each { |pair| pair.each { |item| deep_freeze(item) } }
@@ -248,9 +220,6 @@ def deep_freeze(value)
   value.freeze
 end
 
-# Deep-copy one parsed structure out of the context and let the caller change it
-# the way a regression would, leaving the baseline the other properties are
-# still measured against untouched.
 def mutate_structure(context, key)
   mutant = Marshal.load(Marshal.dump(context.to_h))
   yield mutant.fetch(key)
@@ -270,8 +239,6 @@ def run_playbook(source, extra_vars = {})
   end
 end
 
-# A responder answers either a full {status, body, content_type} record or a
-# bare status, which is how the refusal cases stay a single number.
 def with_http_probe(expected_count, responder, &block)
   requests = []
   reasons = { 200 => "OK" }.freeze
@@ -389,25 +356,9 @@ check(failures,
         dozzle_auth_task["no_log"] == true,
       "Dozzle managed authentication request or health ordering differs")
 
-# The fixtures from here to the end of the file are what this check spends its
-# wall time on, and each one is a case that owns everything it touches:
-# `run_dozzle_fixture` takes its own `Dir.mktmpdir` for the users document and
-# the rendered output, `run_playbook` takes another for the playbook it writes,
-# and `with_http_probe` binds a loopback `TCPServer` on an OS-assigned port with
-# its own accept thread. No two cases share a directory, a port, an output path
-# or an environment variable, and none of them touches the repository.
-#
-# Result locals are declared block-local -- the names after the `;` in each
-# parameter list -- rather than renamed. None of `status`, `output` or
-# `rendered` is a script-level name in this file today, but the moment one is
-# assigned at top level -- and an `if` body opens no scope -- a case that
-# assigned it without declaring it would share a single binding with its
-# siblings instead of getting its own. That loss is silent: most of these fixtures are
-# expected to fail, so a sibling's failing status reads as this case's own
-# result and the guard passes vacuously.
-#
-# A fixture input that more than one case reads is frozen; one that a single
-# case uses is built inside that case, so there is nothing to share.
+# Each fixture below owns its directories, port and output, so cases pool safely.
+# Result locals are block-local (after the `;`): a shared top-level binding would
+# let a sibling's failing status read as this case's result.
 dozzle_cases = []
 
 if dozzle_auth_task
@@ -520,12 +471,8 @@ if ARGV == ["--self-test"]
     failures << "self-test baseline rejected #{label}"
   end
 
-  # Every mutation below changes something the role would act on -- a module
-  # key, a `when`, a `no_log`, the block a rescue hangs off, the order of two
-  # tasks -- and the matching property has to notice. None of them edits the
-  # text its property looks for, which is exactly what made the substring loop
-  # this replaced circular: it proved only that deleting a fragment defeats a
-  # search for that fragment.
+  # Every mutation changes something the role acts on, never the text a property
+  # searches for.
   Dir.mktmpdir("nas-platform-managed-user-state-mutant-") do |mutant_directory|
     alias_mutant = File.join(mutant_directory, "alias_managed_user_state.py")
     File.write(
@@ -549,8 +496,6 @@ if ARGV == ["--self-test"]
         end
       end,
       "Dozzle malformed refusal" => lambda do |context|
-        # Detach the rescue from the block it guards -- the defect the old
-        # `dozzle_tasks.include?("rescue:")` check could never have seen.
         mutate_structure(context, :dozzle) do |tasks|
           named_task(tasks, "Safely load the existing Dozzle users document").delete("rescue")
         end
@@ -611,13 +556,7 @@ if ARGV == ["--self-test"]
     missing_mutations = STRUCTURAL_PROPERTIES.keys - structural_mutations.keys
     check(failures, missing_mutations.empty?,
           "structural properties without a self-test mutation: #{missing_mutations.join(', ')}")
-    # Each case deep-copies its own mutant out of the frozen baseline and asks
-    # every property about it, and two of the properties spawn a Python
-    # interpreter to answer. They share nothing but the failure list, so they go
-    # through the pool and are still reported in the order written above. The
-    # `missing_mutations` check stays outside it: the pool is not the place for
-    # anything a case would have to `abort` over, and that one is about the
-    # table, not about any single mutation.
+    # Pooled; missing_mutations stays outside because it may abort.
     structural_cases = structural_mutations.map do |label, mutate|
       lambda do |collected|
         mutant = mutate.call(structural_context)
@@ -630,10 +569,6 @@ if ARGV == ["--self-test"]
     in_parallel_cases(failures, structural_cases) { |mutation, collected| mutation.call(collected) }
   end
 
-  # Each case below stands up its own mutant plugin or module in its own
-  # temporary directory and waits on a Python interpreter running that file's
-  # behaviour test against it. They share nothing but the failure list, so they
-  # go through one pool and are still reported in the order written here.
   behavior_cases = {
     "duplicate YAML parser" => ["if duplicate:", "if False:"],
     "YAML alias parser" => [

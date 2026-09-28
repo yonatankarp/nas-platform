@@ -1,12 +1,6 @@
 #!/usr/bin/env ruby
-# The static half of the Arr service contract, and the whole of it: Phase 1 API
-# ownership is decided from the repository alone, with nothing deployed.
-#
-# usage: arr-static.rb REPOSITORY
-#
-# PLATFORM_CONTRACT_REPO_DIR names the same repository and is read below for
-# tests/policy_support.rb, so this program carries no copy of flatten_tasks.
-#
+# Static half of the Arr contract, and the whole of it: decided from the
+# repository alone. usage: arr-static.rb REPOSITORY
 require "yaml"
 
 root = ARGV.fetch(0)
@@ -28,18 +22,12 @@ required.each do |relative|
   failures << "missing #{relative}" unless File.file?(File.join(root, relative))
 end
 
-# Task files are flattened so a task on a block's rescue or always path is still
-# a task the role executes.
+# Flattened so rescue/always tasks count too.
 require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
 include PolicySupport
 
-# Assertions about what the role does read the parsed structure rather than the
-# file's bytes: a module named in a comment is not a module the role runs, and a
-# literal found anywhere in the file does not belong to the task the assertion
-# names. role_strings collects the strings one at a time rather than joining
-# them, because a pattern matched against a joined blob spans two unrelated
-# tasks — or, when two files were concatenated, two unrelated files — and reports
-# a violation neither of them contains.
+# Read parsed strings one at a time: a pattern over a joined blob spans
+# unrelated tasks or files.
 def role_strings(node)
   case node
   when Hash then node.flat_map { |key, value| [key.to_s] + role_strings(value) }
@@ -53,8 +41,7 @@ def role_tasks(root, relative)
   flatten_tasks(YAML.safe_load_file(File.join(root, relative), aliases: true))
 end
 
-# A folded scalar carries its line breaks into the parsed value, so a URL written
-# across two lines is compared in its collapsed form.
+# A folded scalar keeps its line breaks, so URLs are compared collapsed.
 def request_urls(tasks)
   tasks.filter_map do |task|
     uri = task["ansible.builtin.uri"]
@@ -74,10 +61,7 @@ if failures.empty?
     defaults["arr_prowlarr_application_sync_level"] == "fullSync"
 
   main_tasks = role_tasks(root, "roles/arr/tasks/main.yml")
-  # Two `up`s since #537, told apart by `recreate`: the deployment, and the
-  # bounded recovery roles/container_health brackets. Counted separately rather
-  # than as a total of two, so a second plain deployment is still refused and a
-  # force-recreate spent twice in one converge is still refused.
+  # Deployment and bounded recovery, told apart by `recreate` and counted separately.
   compose_activations = main_tasks.select do |task|
     compose = task["community.docker.docker_compose_v2"]
     compose.is_a?(Hash) && compose["state"] == "present" && !compose.key?("recreate")
@@ -89,11 +73,7 @@ if failures.empty?
     main_tasks.count do |task|
       task.dig("community.docker.docker_compose_v2", "recreate") == "always"
     end == 1
-  # The gate is read from whatever element carries the deployment. #537 wrapped
-  # it in a block whose rescue records the message roles/container_health is
-  # handed, and Ansible applies a block's `when` to every task inside it, so the
-  # gate moved onto the block: reading the task's own `when` alone would report
-  # an ungated deployment that is in fact gated.
+  # The gate may sit on the enclosing block (#537), whose `when` applies inside it.
   activation_gate = main_tasks.find do |task|
     task["block"].is_a?(Array) &&
       flatten_tasks(task["block"]).any? { |inner| inner.equal?(activation_task) }
@@ -105,10 +85,7 @@ if failures.empty?
   failures << "Arr role must verify the complete project CPU policy once" unless
     main_tasks.count { |task| task.dig("vars", "container_cpu_service_name") == "arr" } == 1
 
-  # force: false is what preserves an operator's existing file, and it has to be
-  # on the task that writes that file. The pair of substring checks this replaced
-  # could not tell the two seed tasks apart: either task's force satisfied both,
-  # and the Bazarr half never asked about force at all.
+  # force: false must be on the task that writes the operator's file.
   bootstrap_tasks = role_tasks(root, "roles/arr/tasks/bootstrap.yml")
   servarr_seed = bootstrap_tasks.find do |task|
     task.dig("ansible.builtin.template", "src") == "config.xml.j2"
@@ -123,9 +100,7 @@ if failures.empty?
     bazarr_seed && bazarr_seed.dig("ansible.builtin.template", "force") == false &&
       bazarr_seed.dig("ansible.builtin.template", "dest").to_s.end_with?("/config/config.yaml")
 
-  # The bootstrap config is an XML template, so it is read as the elements it
-  # declares. A substring check cannot tell <AuthenticationMethod>Forms</...>
-  # from the word Forms appearing in a comment or in some other element.
+  # Read as XML elements, not substrings.
   config_elements = File.readlines(
     File.join(root, "roles/arr/templates/config.xml.j2"), chomp: true
   ).filter_map do |line|
@@ -138,10 +113,7 @@ if failures.empty?
     config_elements["AuthenticationMethod"] == "Forms" &&
       config_elements["AuthenticationRequired"] == "Enabled"
 
-  # The environment file has its own grammar, so it is read as the assignments it
-  # declares. A commented-out sample of the right assignment satisfies a
-  # substring check while the live line exports something else, and a key found
-  # anywhere in the file says nothing about which variable it is bound to.
+  # Read as assignments: a commented-out sample would satisfy a substring search.
   env_assignments = File.readlines(
     File.join(root, "roles/arr/templates/env.j2"), chomp: true
   ).filter_map do |line|
@@ -163,10 +135,7 @@ if failures.empty?
     role_tasks(root, "roles/arr/tasks/reconcile_servarr_download_client.yml")
   servarr_scalars = role_strings(servarr_tasks)
   servarr_urls = request_urls(servarr_tasks)
-  # The download-client body is built by the Servarr relationship filter, and the
-  # Bazarr settings POST by the Bazarr one, rather than being spelled out in the
-  # task files; these read where each body actually lives. Python is not YAML, so
-  # a filter is read as source text; the task files beside it are read as tasks.
+  # These bodies live in the filters, read as source text.
   servarr_filter = File.read(File.join(root, "filter_plugins/acquisition_servarr.py"))
   bazarr_filter = File.read(File.join(root, "filter_plugins/acquisition_bazarr.py"))
   failures << "Servarr reconciliation must own only the SABnzbd clients" unless
@@ -174,12 +143,7 @@ if failures.empty?
       servarr_filter.include?("Sabnzbd")) &&
       servarr_categories["radarr"] == "movies" &&
       servarr_categories["sonarr"] == "series"
-  # A root folder is created by a request to the rootfolder endpoint, and an
-  # import or search is a request to the command endpoint. Reading the URLs the
-  # tasks actually call says that; the substring pair it replaced was satisfied
-  # by the word rootfolder anywhere in either file, and its negative half only
-  # matched an import or search named on the same source line as the word
-  # command, which a JSON body on its own line never is.
+  # Read the URLs the tasks actually call.
   failures << "Servarr reconciliation must create root folders without import commands" unless
     servarr_urls.any? { |url| url.end_with?("/rootfolder") } &&
       servarr_urls.none? { |url| url.match?(%r{/command(/|\z)}i) } &&
@@ -219,9 +183,7 @@ if failures.empty?
     %w[settings-general-use_radarr settings-general-use_sonarr settings-radarr-apikey settings-sonarr-apikey].all? do |token|
       bazarr_scalars.any? { |value| value.include?(token) }
     end
-  # Pinned off, not merely absent: an unwritten flag is one a human can tick in
-  # Bazarr's web interface and keep forever. The reasoning for the decision is
-  # in the filter beside the desired projection.
+  # Pinned off, not absent: an unwritten flag can be ticked in the UI and kept.
   failures << "Bazarr must pin its Jellyfin integration off rather than ignore it" unless
     bazarr_scalars.any? do |value|
       value.include?(%("settings-general-use_jellyfin": "false"))
@@ -230,9 +192,7 @@ if failures.empty?
     bazarr_scalars.any? { |value| value.include?("path_mappings") } &&
       bazarr_scalars.any? { |value| value.include?("path_mappings_movie") }
 
-  # Redaction is a property of each request, not of the file it lives in. One
-  # no_log anywhere satisfied the substring check while every other request in
-  # the same file logged its payload.
+  # Redaction is checked per request, not per file.
   failures << "all Arr API reconciliation must redact secret-bearing payloads" unless
     %w[
       roles/arr/tasks/reconcile_servarr.yml
@@ -247,10 +207,8 @@ end
 if failures.empty?
   puts "arr contract: Phase 1 API ownership holds"
 else
-  # Every violation, one per line, each line naming the contract that authored it.
-  # The prefix is not decoration: tests/<service>_contract_test.rb requires a row
-  # that says "this must be refused" to see it, so a Ruby backtrace or a shell
-  # diagnostic can no longer stand in for a refusal (#352).
+  # One line per violation with the contract's prefix, which contract tests
+  # match on (#352).
   warn failures.map { |failure| "Arr contract failed: #{failure}" }.join("\n")
   exit 1
 end

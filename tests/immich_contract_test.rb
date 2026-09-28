@@ -1,42 +1,9 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 #
-# Behaviour of the Immich service contract's two Ruby programs.
-#
-# Until #147 both lived in `<<'RUBY'` heredocs inside tests/contracts/immich.sh --
-# 1,786 of that file's 1,863 lines, the largest pair in the repository. `sh -n`
-# reads a quoted heredoc as opaque text, so the only thing that ever executed
-# either one was an integration lane with Docker, a converged four-container
-# Immich and a real vault. tests/contracts/immich-static.rb and
-# tests/contracts/immich-runtime.rb are files now, so both are reachable here.
-#
-# Three layers, because the contract has three kinds of property:
-#
-#   Static -- build a fixture repository from the files the contract reads, break
-#   exactly one thing in it, and require the program to name that thing. The
-#   assertion text is the interface: a guard that fails for the wrong reason has
-#   stopped guarding what it names, so every row pins the exact diagnostic. The
-#   rows run through in_parallel_cases because there are enough of them to matter
-#   to the gate.
-#
-#   Runtime -- serve the Immich interface from an HTTP fixture and put `docker`
-#   and `ansible-vault` stubs on PATH, so the health, login, containment and
-#   settings outcomes can each be moved one at a time. This layer deliberately
-#   stops where it stops: it covers the whole prefix of the program up to and
-#   including assert_managed_settings, which `MODE=run` exits at when the vault
-#   declares no managed users. Reaching past that means fixturing managed-user
-#   preference reconciliation, asset upload, thumbnailing and CPU machine
-#   learning -- a large and flaky lift, and tests/immich_smart_search_retry_test.rb
-#   already evals the machine-learning retry slice out of this same file.
-#
-#   Wrapper -- tests/contracts/immich.sh is what turns a platform and a mode into
-#   two invocations. Its rows prove the platform guard, that both programs are
-#   actually reached, that each is resolved from the script's own checkout while
-#   the tree to inspect is passed in, and that neither can consume the caller's
-#   stdin.
-#
-# Run with --self-test to plant a regression in each program and prove the rows
-# above detect it.
+# Behaviour of the Immich contract's static and runtime programs and its wrapper
+# (#147). Static rows pin exact diagnostics; runtime rows stop at
+# assert_managed_settings. --self-test plants a regression in each program.
 
 require "fileutils"
 require "json"
@@ -55,23 +22,17 @@ include TestScaffold
 include ContractTestSupport
 
 ROOT = File.expand_path("..", __dir__)
-# The prefix every refusal this file judges has to carry. Matching the
-# fragment alone accepted a backtrace or an echoed argument as a refusal.
+# Matching the fragment alone accepted a backtrace or an echoed argument.
 DIAGNOSTIC_PREFIX = "Immich contract failed: "
 CONTRACT = File.join(ROOT, "tests", "contracts", "immich.sh")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "immich-static.rb")
 RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "immich-runtime.rb")
 
-# The `-ryaml` preload tests/contracts/immich.sh carries, because the static
-# program does not require yaml itself. Every invocation of it here must carry
-# the same preload or every row fails identically on an uninitialized constant,
-# which would read as the extraction having broken everything.
+# The static program does not require yaml itself, as in tests/contracts/immich.sh.
 STATIC_COMMAND = [RbConfig.ruby, "-ryaml"].freeze
 
-# Exactly what the static half reads. A fixture holding only these is the proof
-# that the list is the list the program actually needs -- immich-runtime.rb
-# included, because the static half reads the runtime half's source out of the
-# tree it is inspecting to require the unowned-sentinel logic to be live.
+# Exactly what the static half reads, immich-runtime.rb included (it reads that
+# source for the unowned-sentinel logic).
 FIXTURE_FILES = %w[
   roles/immich/tasks/main.yml
   roles/immich/tasks/user_onboarding.yml
@@ -112,9 +73,7 @@ def edit_text(root, relative)
   File.write(path, yield(File.read(path)))
 end
 
-# Renames a task in place, which is how a "required task survives only as a
-# comment" regression looks to a program that reads parsed tasks rather than
-# text.
+# Renames a task in place: a required task surviving only as a comment.
 def rename_task(root, relative, from, to = "Renamed task")
   edit_yaml(root, relative) do |document|
     target = document.find { |task| task.is_a?(Hash) && task["name"] == from }
@@ -130,12 +89,7 @@ def compose_service(root, name)
   end
 end
 
-# --- static layer ----------------------------------------------------------
-#
-# One row per assertion family rather than one per refuse() site. The static half
-# has 116 of those; covering each individually would put this file on the policy
-# gate's critical path for no additional signal, because a family shares its
-# read, its parse and its shape. Each row below breaks a different one of those.
+# --- static layer: one row per assertion family, not per refuse() site ---
 
 STATIC_ROWS = [
   { name: "an intact repository", break: ->(_root) {}, expects: nil },
@@ -159,9 +113,7 @@ STATIC_ROWS = [
     expects: "redis restart policy differs"
   },
   {
-    # compose.yml declares one logging block and aliases it into every
-    # container, so editing any of them edits all of them and the first one
-    # checked is the one reported.
+    # One aliased logging block, so the first container checked is the one reported.
     name: "a logging policy without a rotation bound",
     break: ->(root) { compose_service(root, "database") { |spec| spec["logging"]["options"].delete("max-file") } },
     expects: "immich-server logging policy differs"
@@ -253,10 +205,7 @@ STATIC_ROWS = [
     },
     expects: "production inventory must not select the test-only compact profile"
   },
-  # The assertion the extraction repointed. It reads the runtime half's source
-  # out of the tree under inspection and requires the sentinel logic to be live
-  # in it. Two rows, because the interesting failure is not only "the sentinel is
-  # gone" but "the file it is read from is the wrong one".
+  # The sentinel read: the sentinel gone, or read from the wrong file.
   {
     name: "a dormant supported-unowned-preference sentinel",
     break: lambda { |root|
@@ -270,16 +219,11 @@ STATIC_ROWS = [
     name: "the runtime half absent from the tree under inspection",
     break: ->(root) { FileUtils.rm(File.join(root, "tests/contracts/immich-runtime.rb")) },
     expects: nil,
-    # Honestly a crash rather than a diagnostic: the sentinel read has no
-    # existence guard in front of it, so the file's absence surfaces as Errno.
-    # Both halves are required so the row cannot pass on the filename alone.
+    # A crash, not a diagnostic: the sentinel read has no existence guard.
     expects_crash: ["immich-runtime.rb", "No such file or directory"]
   },
   {
-    # The mac override is edited as text throughout. safe_load erases the
-    # `!override` tag and YAML.dump never restores it, so a round-trip through
-    # the parser trips "must reset devices with an explicit tag" before the row
-    # can reach the assertion it is actually about.
+    # Edited as text: a safe_load round-trip erases the `!override` tag.
     name: "the mac override adding a service",
     platform: "mac",
     break: lambda { |root|
@@ -301,8 +245,7 @@ STATIC_ROWS = [
     expects: "mac override must not publish a host port on database"
   },
   {
-    # The surplus-key sweep runs before the image guard and reports first; both
-    # are the same property stated twice, and this pins the one that fires.
+    # The surplus-key sweep reports before the image guard.
     name: "the mac override redefining an image",
     platform: "mac",
     break: lambda { |root|
@@ -397,9 +340,7 @@ STATIC_ROWS = [
     expects: "managed user preference non-administrator guard is absent"
   },
   {
-    # The guard lives in a file roles/managed_users runs through a hook, so the
-    # static program has to follow the hook to see it. A hook that stops naming
-    # the file removes the guard from what the role executes.
+    # The static program must follow the hook to see the guard.
     name: "the before-create hook no longer naming the preference target refusals",
     break: lambda { |root|
       edit_yaml(root, "roles/immich/defaults/main.yml") do |document|
@@ -441,12 +382,8 @@ end
 
 # --- runtime layer ---------------------------------------------------------
 #
-# The runtime half needs a deployed Immich. What it actually needs is an HTTP
-# interface, a `docker inspect`, an `ansible-vault view` and a policy file, and
-# all four can be fixtured. The vault declares no managed users, which is what
-# lets `MODE=run` reach its own success line: with an empty list the
-# managed-user profile reconciliation has nothing to walk, so the covered prefix
-# ends at assert_managed_settings and every row below moves one thing inside it.
+# The vault declares no managed users, so `MODE=run` ends at
+# assert_managed_settings and every row below moves one thing inside it.
 
 ADMIN_EMAIL = "immich-admin@example.invalid"
 ADMIN_PASSWORD = "contract-fixture-password"
@@ -563,8 +500,7 @@ RUNTIME_ROWS = [
   {
     name: "a helper container publishing a host port",
     given: { helper_ports: { "6379/tcp" => [{ "HostPort" => "6379" }] } },
-    # The helpers are walked in the order the wrapper exports them, so the
-    # machine-learning worker is the one reported first.
+    # Helpers are walked in export order, so machine-learning reports first.
     expects: "immich_machine_learning publishes host ports [\"6379/tcp\"]"
   },
   {
@@ -599,9 +535,8 @@ def write_stub(path, body)
   File.chmod(0o755, path)
 end
 
-# The policy the runtime half merges out of the repository and the protected Mac
-# fixture file. Only the preference keys matter here; the fixture file is what
-# names the designated compact account, and its 0600 mode is itself asserted.
+# The merged runtime policy; only preference keys matter, and the fixture's 0600
+# mode is itself asserted.
 def build_runtime_policy(root, options)
   inventory = File.join(root, "repo", "inventory", "group_vars", "all")
   FileUtils.mkdir_p(inventory)
@@ -666,8 +601,7 @@ def build_runtime_sandbox(root, options)
   [bin, build_runtime_policy(root, options)]
 end
 
-# Answers exactly the endpoints the covered prefix reaches, so a row can move one
-# of them without disturbing the others.
+# Answers exactly the endpoints the covered prefix reaches.
 def runtime_responder(options)
   lambda do |method, target, _headers, body|
     path = target.split("?").first
@@ -747,12 +681,8 @@ end
 
 # --- wrapper layer ---------------------------------------------------------
 #
-# tests/contracts/immich.sh resolves both programs from its own checkout rather
-# than from the tree it is inspecting, so a copy of the three files into a
-# throwaway tests/contracts/ is a whole working contract. That is what lets a row
-# point PLATFORM_CONTRACT_REPO_DIR at a broken fixture and still exercise the
-# real wrapper. The copy is laid into a fixture repository so it is also a valid
-# tree to inspect, which is what the unset-variable rows need.
+# The wrapper resolves both programs from its own checkout, so a copy of the
+# three files into a fixture's tests/contracts/ is a whole working contract.
 
 def with_contract_copy(static: File.read(STATIC_PROGRAM), runtime: File.read(RUNTIME_PROGRAM),
                        wrapper: File.read(CONTRACT), &block)
@@ -784,8 +714,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     failures << "wrapper: an unknown flag was refused without usage" unless
       (stdout + stderr).include?("usage: immich.sh")
 
-    # Every platform's static mode, against this repository, through the real
-    # wrapper.
     %w[mac nas integration].each do |platform|
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, "--platform", platform, "static"
@@ -796,8 +724,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
         stdout.include?("Immich static contract passed (#{platform})")
     end
 
-    # The row that proves the wrapper still runs the static program at all: the
-    # tree under inspection is broken, the wrapper's own checkout is not.
+    # The wrapper still runs the static program against a broken inspected tree.
     Dir.mktmpdir("nas-platform-immich-broken.") do |broken_raw|
       broken = File.realpath(broken_raw)
       build_fixture_repository(broken)
@@ -810,9 +737,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
         (stdout + stderr).include?("stack composition differs")
     end
 
-    # ... and that it is the *inspected* tree that is read, not the checkout the
-    # programs came from. Breaking the copy's own compose.yml while pointing the
-    # variable at this repository must change nothing.
+    # ... and it reads the inspected tree, not the checkout the programs came from.
     edit_yaml(copy_root, "services/immich/compose.yml") { |d| d.fetch("services").delete("redis") }
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, "--platform", "nas", "static"
@@ -821,10 +746,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
                 "#{(stdout + stderr).strip}" unless status.success?
   end
 
-  # The branch every deployment actually takes. Neither tests/integration.sh nor
-  # run_contracts.rb --execute sets PLATFORM_CONTRACT_REPO_DIR, so the default is
-  # the only path in production -- and it is the one where resolving the programs
-  # from the script's own checkout is load-bearing rather than shadowed.
+  # PLATFORM_CONTRACT_REPO_DIR unset: the only path production takes.
   with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => nil }, contract, "--platform", "nas", "static"
@@ -834,8 +756,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     failures << "wrapper: static mode did not report the property it proved" unless
       stdout.include?("Immich static contract passed (nas)")
 
-    # ... and it read that checkout rather than some other tree: break the copy
-    # and the same unset invocation must now refuse.
     edit_yaml(copy_root, "services/immich/compose.yml") { |d| d.fetch("services").delete("redis") }
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => nil }, contract, "--platform", "nas", "static"
@@ -846,14 +766,9 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
       (stdout + stderr).include?("stack composition differs")
   end
 
-  # The runtime half's own root. PLATFORM_CONTRACT_REPO_DIR must reach it bound
-  # to the inspected tree, not to the checkout the program was loaded from --
-  # the second site of the same two-roots defect, one line over from the first.
+  # The runtime half must receive the inspected tree as its root too.
   with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
-    # A refusing `ansible-vault` prepended to the real PATH rather than a
-    # replaced PATH: replacing it picks up whichever system Ruby happens to be
-    # in /usr/bin, and the static half would then die in the interpreter instead
-    # of the runtime half running at all.
+    # Prepended rather than replacing PATH, which would pick up the system Ruby.
     stub_bin = File.join(copy_root, "stub-bin")
     FileUtils.mkdir_p(stub_bin)
     write_stub(File.join(stub_bin, "ansible-vault"), "#!/bin/sh\nexit 1\n")
@@ -868,18 +783,11 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     )
     output = stdout + stderr
     failures << "wrapper: the runtime half was not reached: #{output.strip}" if status.success?
-    # With a refusing ansible-vault the runtime half fails in its own first
-    # statement, which is proof it ran and that its environment arrived.
     failures << "wrapper: the runtime half did not report its own first failure: " \
                 "#{output.strip.inspect}" unless output.include?("encrypted vault could not be read")
 
-    # The run-mode environment contract, as tests/pinchflat_contract_test.rb
-    # holds it. Each name is set to "" rather than deleted, because ${VAR:?}
-    # refuses null as well as unset, and one name at a time with the others
-    # valid, so an earlier guard cannot shadow a later one. The wrapper's own
-    # message is asserted, never the shell's wording. A guard planted as `:=`
-    # reaches the refusing ansible-vault above and fails fast there; chdir keeps
-    # the "" it expands to off this checkout.
+    # Each name set to "" (${VAR:?} refuses null too), one at a time, and the
+    # wrapper's own message asserted rather than the shell's wording.
     full = { "PLATFORM_CONTRACT_REPO_DIR" => copy_root,
              "PLATFORM_MEDIA_ROOT" => copy_root, "PLATFORM_DOCKER_ROOT" => copy_root,
              "PLATFORM_REPORT_ROOT" => copy_root,
@@ -898,20 +806,15 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures
 end
 
-# Reports what each program saw on stdin and what the caller still has, which is
-# the only way the redirect is observable: neither real program reads stdin, so
-# the redirect is what keeps that true rather than something that changes an
-# outcome today.
+# Neither real program reads stdin, so only a probe can observe the redirect.
 def stdin_failures(wrapper_source: File.read(CONTRACT))
   failures = []
-  # The static invocation, which runs for every mode.
   with_contract_copy(static: STDIN_PROBE, wrapper: wrapper_source) do |contract|
     failures.concat(stdin_probe_failures(contract, %w[--platform nas static], { "PLATFORM_CONTRACT_REPO_DIR" => ROOT },
                                          subject: "the static program"))
   end
 
-  # The runtime invocation, which is `exec`ed and so is the last thing the script
-  # does -- its redirect needs its own row because the static one cannot cover it.
+  # The runtime invocation is `exec`ed, so its redirect needs its own row.
   with_contract_copy(runtime: STDIN_PROBE, wrapper: wrapper_source) do |contract, copy_root|
     environment = { "PLATFORM_CONTRACT_REPO_DIR" => ROOT,
                     "PLATFORM_MEDIA_ROOT" => copy_root, "PLATFORM_DOCKER_ROOT" => copy_root,
@@ -924,14 +827,8 @@ end
 
 # --- planted regressions ---------------------------------------------------
 #
-# Each entry removes one guard from one program and names the rows that must
-# catch it. A row that survives its own guard being deleted is proving nothing,
-# and at this file's size that is the failure mode worth spending a self-test on.
-#
-# Deliberately absent: any mutation of the two sentinel literals in
-# immich-runtime.rb. immich-static.rb reads that file's source and requires both
-# to be live, so planting there would make the *static* rows refuse for a reason
-# that has nothing to do with the guard under test.
+# No mutation of the two sentinel literals in immich-runtime.rb: the static
+# rows would refuse for an unrelated reason.
 
 PROGRAM_MUTATIONS = [
   {
@@ -940,10 +837,7 @@ PROGRAM_MUTATIONS = [
     from: "containers.keys.sort == EXPECTED_CONTAINERS.sort",
     to: "true",
     rows: ["a container missing from the stack"],
-    # The composition sweep is also what keeps every read below it from meeting
-    # an absent container, so removing it does not accept the repository: it
-    # crashes on the first fetch. The row still refuses, and now says why in a
-    # stack trace instead of a sentence, which is the regression.
+    # Without the sweep it crashes on the first fetch instead of refusing in prose.
     detects: "refused for the wrong reason"
   },
   {
@@ -980,8 +874,6 @@ PROGRAM_MUTATIONS = [
     from: 'refuse("services/immich/compose.#{platform}.yml is absent") unless File.file?(override_path)',
     to: "nil unless true",
     rows: ["a declared file that is gone"],
-    # The presence check is what the reads below it rely on, so removing it does
-    # not accept the repository: the next line reads an absent file.
     detects: "refused for the wrong reason"
   },
   {
@@ -1006,9 +898,7 @@ PROGRAM_MUTATIONS = [
     rows: ["the pinned standard preference profile edited"]
   },
   {
-    # The assertion #147 repointed. Restoring the old path is the exact
-    # regression the repoint exists to prevent: the file it names no longer
-    # holds the sentinel, so it would refuse every repository forever.
+    # Restoring the pre-#147 path would refuse every repository forever.
     label: "the sentinel read pointed back at the wrapper",
     program: :static,
     from: 'File.join(root, "tests", "contracts", "immich-runtime.rb")',
@@ -1022,8 +912,6 @@ PROGRAM_MUTATIONS = [
     from: 'required_onboarding_names.all? { |name| onboarding_names.include?(name) }',
     to: "true",
     rows: ["a required onboarding task renamed"],
-    # Same shape: the completeness check is what the ordering check below it
-    # relies on, so the run dies indexing a name that is not there.
     detects: "refused for the wrong reason"
   },
   {
@@ -1061,11 +949,8 @@ PROGRAM_MUTATIONS = [
     program: :runtime,
     from: 'session.fetch("userEmail") == email && session.fetch("isAdmin") == true',
     to: "true",
-    # Only the non-administrator row, which the session check is the sole guard
-    # for. The wrong-email row is guarded twice -- the authoritative admin record
-    # is compared against the same address a few lines on -- so deleting this
-    # check moves that refusal rather than removing it, and a row cannot pin two
-    # different outcomes of one mutation.
+    # Only this row: the wrong-email row is guarded twice, so deleting this check
+    # moves that refusal rather than removing it.
     rows: ["a login answering a non-administrator"]
   },
   {
@@ -1081,9 +966,7 @@ PROGRAM_MUTATIONS = [
     from: 'value.is_a?(String) && value.match?(/\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\z/)',
     to: "true",
     rows: ["a login answering an unsafe identifier"],
-    # Without the guard the unsafe value is interpolated straight into the next
-    # request path, which the interface then answers 404. That the traversal
-    # reaches the wire at all is exactly what the guard exists to stop.
+    # Without the guard the traversal reaches the wire and answers 404.
     detects: "refused for the wrong reason"
   },
   {
@@ -1093,8 +976,6 @@ PROGRAM_MUTATIONS = [
   [true, false].include?(administrator_record_password_state)",
     to: "true",
     rows: ["an authoritative record with an unsupported schema"],
-    # The identity comparison below rejects the same record, so the refusal
-    # survives with a sentence that no longer names the schema.
     detects: "refused for the wrong reason"
   },
   {
@@ -1166,9 +1047,6 @@ PROGRAM_MUTATIONS = [
     from: 'fail_contract("unknown mode: #{MODE}") unless %w[seed assert-persistence].include?(MODE)',
     to: "nil unless true",
     rows: ["a mode the program does not implement"],
-    # Past the guard the program walks straight into the asset upload the
-    # fixture does not serve, so it still refuses -- with the wrong sentence,
-    # which is the regression.
     detects: "refused for the wrong reason"
   }
 ].freeze
@@ -1200,11 +1078,7 @@ if ARGV.include?("--self-test")
     []
   end
 
-  # The redirects' own regression, one per invocation. Neither real program reads
-  # stdin, so dropping `</dev/null` changes no outcome today -- which is exactly
-  # why it needs a program that does read, and why the rule cannot be proven by
-  # the contract passing. The third drains the caller's stdin before the runtime
-  # exec, which only the check that the caller's input survived can see.
+  # Neither real program reads stdin, so each redirect needs a probe that does.
   planted_redirects = 0
   [
     ['ruby -ryaml "$contract_repo_dir/tests/contracts/immich-static.rb" \\
@@ -1224,8 +1098,6 @@ if ARGV.include?("--self-test")
     planted_redirects += 1
   end
 
-  # Each run-mode requirement weakened to a default, and caught by its own row:
-  # every row names its variable, so any other failure is the wrong assertion.
   planted_requirements = 0
   REQUIRED_RUN_ENV.each do |name|
     from = %(: "${#{name}:?#{name} is required}")

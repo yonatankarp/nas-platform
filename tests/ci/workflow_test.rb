@@ -30,32 +30,21 @@ ARR_LINT_EXCLUSION_MUTATIONS = (BROAD_ARR_LINT_EXCLUSIONS + %w[
   ./roles/arr/
   roles/arr/**
 ]).uniq.freeze
-# Approved by name, not by commit. The security properties are that only these actions
-# are used and that every use is pinned to a full commit SHA rather than a mutable tag;
-# which commit is current is Renovate's job, and restating it here only guarantees that
-# routine action bumps fail this test.
+# Approved by name; SHA pinning is asserted below, and Renovate owns which commit.
 ALLOWED_ACTION_NAMES = %w[
   actions/checkout actions/setup-python actions/upload-artifact docker/login-action
 ].freeze
 CHECKOUT_ACTION_NAME = "actions/checkout"
 LOGIN_ACTION_NAME = "docker/login-action"
-# Registries whose authentication challenge is redeemed with a GitHub credential,
-# so the job's own GITHUB_TOKEN moves their pulls off the anonymous allowance that
-# every other job on the runner's IP is drawing down at the same time. lscr.io is
-# here because it is linuxserver.io's front door onto ghcr.io: it answers with
-# realm="https://ghcr.io/token" service="ghcr.io", and the Docker CLI keys
-# credentials by the host it was asked for, so the ghcr.io login does not cover it.
+# Pulls authenticate with GITHUB_TOKEN. lscr.io fronts ghcr.io, but Docker keys
+# credentials by host, so it needs its own login.
 GITHUB_BACKED_REGISTRIES = %w[ghcr.io lscr.io].freeze
-# Docker Hub redeems no GitHub credential -- GITHUB_TOKEN is not a Docker Hub
-# account -- so it is the one registry here that authenticates with a stored one.
-# Anonymous Hub pulls are 100 per six hours scoped to the runner's IPv4 address or
-# IPv6 /64 and shared with every unrelated job on it; a free personal account is
-# 200 per six hours that only this repository spends.
+# Docker Hub takes no GitHub credential; a stored account's 200 pulls/6h beats the
+# anonymous 100 shared with every job on the runner's IP.
 DOCKER_HUB_REGISTRY = "docker.io"
 DOCKER_HUB_USERNAME_SECRET = "DOCKERHUB_USERNAME"
 DOCKER_HUB_TOKEN_SECRET = "DOCKERHUB_TOKEN"
-# Every registry the job is able to authenticate to. A registry outside this list
-# is one nobody decided about, which is what the classification check below names.
+# A registry outside this list is one nobody decided about.
 CREDENTIALED_REGISTRIES = (GITHUB_BACKED_REGISTRIES + [DOCKER_HUB_REGISTRY]).freeze
 EXPECTED_JOBS =
   %w[changes static lint docs vault mutation reconciliation toolchain suites validate].freeze
@@ -68,9 +57,7 @@ RECONCILIATION_TASK_ROOTS = {
   "ARR_TASKS" => "roles/arr/tasks",
   "DOWNLOADER_TASKS" => "roles/downloaders/tasks"
 }.freeze
-# Inputs the contract reads that the support file does not enumerate as a list
-# this test can parse: its pinned Configarr sources, the defaults it lifts its
-# timings from, and the two playbook-level files the core leg loads.
+# Contract inputs the support file does not list in a parseable form.
 RECONCILIATION_EXTRA_INPUTS = %w[
   roles/arr/files/configarr/config.yml
   roles/arr/files/configarr/quality-definition-movie.json
@@ -86,24 +73,13 @@ FULL_RUN_SUITES = %w[
   dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden karakeep
   idempotence-check
 ].freeze
-# The one lane a `--full` run never dispatches because it has no BASE revision to
-# compare against, and so the one that would be invisible to an argv sweep driven
-# by FULL_RUN_SUITES alone. Named here for exactly the reason the shards below
-# are: the sweep has to cover every suite the matrix can dispatch by any route,
-# and the route that reaches this one is a routed pull request rather than
-# `--full`.
+# --full never dispatches upgrade (no base revision), so the argv sweep names it.
 UPGRADE_SUITES = %w[upgrade].freeze
-# The five shards that decompose the untagged idempotence lane. They are not in
-# the list above because a `--full` run does not dispatch them -- it keeps the
-# single unsharded pass -- so an argv sweep driven by that list alone would have
-# checked every suite except the ones just added. It did: this file was green
-# against the shards before they were named here, which is the repository's own
-# signature defect in miniature.
+# --full keeps the unsharded pass, so the shards are named for the argv sweep too.
 IDEMPOTENCE_SHARD_SUITES = %w[
   idempotence-1 idempotence-2 idempotence-3 idempotence-4 idempotence-5 idempotence-6
 ].freeze
-# Every suite the matrix can ever dispatch, by either route. What the argv sweep
-# below has to cover.
+# Every suite the matrix can dispatch by any route.
 INTEGRATION_SUITES = (FULL_RUN_SUITES + UPGRADE_SUITES + IDEMPOTENCE_SHARD_SUITES).freeze
 # The suites that receive the run's own selected_tags. The upgrade lane is NOT
 # one of them: its tags are its subject's, on their own output, because
@@ -122,18 +98,8 @@ STATIC_STEP_NAMES = [
   "Install Ansible tooling",
   "Check policy properties"
 ].freeze
-# The shard-independent steps `static` used to carry, on a runner of their own
-# (#653). Pinned by name and asserted unconditional for the same reason
-# STATIC_STEP_NAMES is: this job exists precisely because a check that does not
-# vary by shard should run once, which makes it the natural place for the next
-# such check to be dropped in and asserted by nothing.
-#
-# The three single-command checks that stood beside these went into
-# tests/validate-policy.sh instead, where the manifest declaration guards them.
-# What is here is what cannot be a manifest line: ansible-lint and
-# ansible-playbook are not this repository's own programs, and the ephemeral
-# vault self-test is required by tests/policy_vault_test.rb against the
-# workflow's own dependency install.
+# Shard-independent steps moved out of `static` (#653): the ones that cannot be a
+# manifest line (third-party programs, and the vault self-test).
 LINT_STEP_NAMES = [
   "Check out repository",
   "Set up Python",
@@ -143,36 +109,23 @@ LINT_STEP_NAMES = [
   "Check playbook syntax",
   "Validate the Renovate configuration"
 ].freeze
-# The commands that job must still run, as whole lines of its joined run text.
-# Moving a check out of `static` and into a job of its own is only half a fix:
-# the other half is that it still runs somewhere, and a check in neither place
-# is a guard that silently stopped running.
+# Each must still run somewhere after moving out of `static`.
 LINT_CHECK_COMMANDS = [
   "tests/generate-ephemeral-vault.sh --self-test",
-  # --offline is part of the literal rather than a check of its own, for the same
-  # reason --no-cache is at the toolchain install. ansible-compat's
-  # prepare_environment runs a second `ansible-galaxy collection install` from
-  # inside ansible-lint, which the install step's own --no-cache cannot reach,
-  # and that call carries the retry defect that reds a leg no diff caused (#719).
-  # The subject is joined run text, so the bare "ansible-lint --strict" this
-  # replaces is a prefix of the flagged form and would keep matching a step that
-  # had dropped the flag -- passing while pinning nothing.
+  # --offline stops ansible-lint's own galaxy install, which carries the retry
+  # defect (#719); the bare form is a prefix and would pin nothing.
   "ansible-lint --strict --offline",
   "ansible-playbook -i inventory/local.yml site.yml --syntax-check",
   "ansible-playbook generate-secrets.yml --syntax-check",
   "ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --syntax-check"
 ].freeze
-# The three that went the other way, into the gate's manifest. Asserted absent
-# from `static` as well as present in the manifest: a check left in both places
-# is the duplication this issue removed, reinstated one line at a time.
+# Moved into the gate's manifest (#653); asserted absent from `static` too.
 GATE_ADOPTED_CHECKS = [
   "tests/integration_cleanup_test.sh",
   'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_probe_status_test.py',
   "tests/generate-secrets-redaction-test.sh"
 ].freeze
-# The checks the docs job carries, in the order it runs them. Each one reads
-# Markdown and the working tree and nothing else, which is what lets the job be a
-# checkout and Ruby rather than the pinned Ansible toolchain the gate installs.
+# Docs checks read only Markdown and the tree, so the job needs no Ansible toolchain.
 DOCS_STEP_NAMES = [
   "Check out repository",
   "Check documentation links",
@@ -183,13 +136,7 @@ DOCS_CHECK_COMMANDS = [
   "ruby tests/docs_links_test.rb --self-test",
   "ruby tests/secrets_docs_test.rb"
 ].freeze
-# The vault job (#561). Its whole value is that it runs the play the poller runs
-# first, with the poller's own arguments, so the expected argv is *derived* from
-# scripts/production_auto_deploy.py below rather than restated here. It was a
-# hand-typed literal and that was the defect the job exists to prevent, one level
-# out: changing the poller to `-i inventory/nas-only.yml` and giving it an extra
-# `-e` left every check in this file green, which is a second contract agreeing
-# with itself while disagreeing with the host.
+# The vault job (#561): its expected argv is derived from the poller, not restated.
 VAULT_STEP_NAMES = [
   "Check out repository",
   "Set up Python",
@@ -198,9 +145,7 @@ VAULT_STEP_NAMES = [
 ].freeze
 VAULT_PASSWORD_SECRET = "ANSIBLE_VAULT_PASSWORD"
 VAULT_PASSWORD_ENV = "VAULT_PASSWORD"
-# The one argument that legitimately differs: the poller reads its password file
-# out of its own configuration, and the job writes one under $RUNNER_TEMP. The
-# derivation is fed this value, so every other token has to match exactly.
+# The one argument that legitimately differs from the poller's.
 VAULT_PASSWORD_FILE = "$RUNNER_TEMP/vault-password"
 VAULT_PLAYBOOK = "validate-vault.yml"
 POLLER_SCRIPT_PATH = File.expand_path("../../scripts/production_auto_deploy.py", __dir__)
@@ -246,12 +191,8 @@ def normalize_shell(source)
   source.to_s.lines.map(&:strip).reject(&:empty?).join("\n")
 end
 
-# One command out of a `run:` block, as argv. Backslash continuations are joined
-# and the result is split the way a shell would split it, so a flag inserted
-# anywhere in the invocation changes the answer. Asserting that a set of
-# fragments is *present* cannot do that: an argv with --list-tasks spliced into
-# it still contains every fragment, and --list-tasks exits 0 having parsed
-# nothing at all.
+# One command out of a `run:` block as argv, so an inserted flag (--list-tasks exits
+# 0 having parsed nothing) changes the answer.
 def shell_invocation(source, program)
   lines = normalize_shell(source).lines(chomp: true)
   start = lines.index { |line| line == program || line.start_with?("#{program} ") }
@@ -267,16 +208,7 @@ def shell_invocation(source, program)
   Shellwords.split(command)
 end
 
-# Import the poller and ask it what it runs. The claim this file makes about the
-# vault job is that the job runs the *host's* first play with the host's own
-# arguments, and only scripts/production_auto_deploy.py can answer what those
-# are; a literal transcribed from it proves the transcription, not the agreement.
-# Shelling out to build an expected argv is already this file's pattern -- see
-# integration_argv above, which runs the suite matrix's own shell.
-#
-# The stub answers any attribute the poller reaches for, because _deploy_invocations
-# also reads verify_tags, platform_public_host and external_scheduler for the
-# three invocations after the one under test.
+# Asks the poller what it runs; the stub answers any attribute _deploy_invocations reads.
 def poller_vault_invocation
   program = <<~PYTHON
     import importlib.util, json, sys
@@ -371,27 +303,15 @@ workflow = YAML.safe_load_file(WORKFLOW_PATH, aliases: false)
 triggers = workflow["on"] || workflow[true]
 jobs = workflow.fetch("jobs", {})
 
-# Every job must bound its own runtime. GitHub's default is six hours, and on
-# 2026-08-19 an apt-get update stalled mid-download in `static`, producing no output
-# for 161 minutes before it was cancelled by hand. A missing timeout is what turns a
-# transient mirror failure into an all-day one.
+# Every job bounds its runtime; GitHub's default is six hours.
 jobs.each do |job_name, job|
   budget = job["timeout-minutes"]
   check(failures, budget.is_a?(Integer) && budget.positive? && budget <= 90,
         "job #{job_name} must declare timeout-minutes between 1 and 90, found #{budget.inspect}")
 end
 
-# Every job on the same runner image. This is what lets one matrix leg stand for
-# the rest: a change to this file now dispatches three suites rather
-# than the whole matrix (#395), so a per-leg environment that varied by job would
-# be a difference the legs that do run cannot observe.
-#
-# And that image pinned (#843). A `-latest` label moves when GitHub rolls it over,
-# so the toolchains static, lint and mutation take from the runner's system
-# packages would change under an unchanged tree and arrive as a surprise red
-# rather than a diff -- the argument this repository makes for image digests.
-# The version is not restated here: Renovate's github-runners datasource proposes
-# the next one, and a literal in this test would only make that bump fail.
+# One pinned runner image for every job: one leg stands for the rest (#395), and a
+# floating -latest would change toolchains under an unchanged tree (#843).
 def runner_label_violations(jobs)
   violations = []
   jobs.each do |job_name, job|
@@ -431,27 +351,15 @@ if triggers.is_a?(Hash)
   check(failures, !contains_path_filter?(triggers),
         "triggers must not filter events by path: classification belongs to the changes job")
   check(failures, triggers.dig("push", "branches") == ["main"], "push must target only main")
-  # Pinned rather than range-checked: the hour is a measurement, not a preference.
-  # GitHub creates this workflow's scheduled runs 4h21m to 5h22m after the cron
-  # (12h06m once), so 03:23 landed the sweep at 07:44-08:45 UTC -- inside the
-  # merge window it then contended with. 17:47 lands it at 22:08-23:09 under those
-  # delays, at 05:47 under the worst observed one, and at 17:47 under none.
+  # Pinned: GitHub delays scheduled runs by hours; 17:47 keeps the nightly out of
+  # the merge window.
   check(failures, triggers.dig("schedule", 0, "cron") == "47 17 * * *", "nightly schedule is incorrect")
   check(failures, triggers.key?("workflow_dispatch"), "workflow_dispatch trigger is missing")
 end
 
 concurrency = workflow.fetch("concurrency", {})
-# The event name belongs in the key. Without it `push` and `schedule` both resolve
-# to refs/heads/main, and the nightly sweep -- which still cancels, because it is
-# not a push -- would kill an in-flight post-merge run once a night.
-#
-# The fallback belongs in the key too, and must be per-commit. A `github.ref`
-# fallback puts every merge in one group, and a group serialises: GitHub keeps at
-# most one *pending* run per group and cancels it when a third arrives, which
-# cancelled 8.8% of post-merge runs before they ran a single job. Asserting the
-# whole expression is what fails if the fallback is narrowed back to the ref --
-# the predicate below cannot catch that, because eviction happens with
-# cancel-in-progress already false.
+# The event name stops the nightly cancelling push runs; the per-commit fallback
+# keeps merges out of one group, where GitHub evicts pending runs.
 check(
   failures,
   expression(concurrency["group"]) ==
@@ -461,18 +369,11 @@ check(
   "ref: a shared push group evicts pending merges: " \
   "#{expression(concurrency['group']).inspect}"
 )
-# Only a pull request supersedes itself. A push to main is the only run that will
-# ever see the tree it merged, and cancelling those ended 21% of recent main runs
-# without a verdict. This is an expression, so it parses as a string, not a boolean.
-# It is honoured -- post-merge runs demonstrably queue rather than cancel -- but it
-# governs only in-flight runs, which is why the group above has to keep pushes out
-# of a shared group as well.
+# Only a pull request supersedes itself; a push is the only run that sees its tree.
 check(failures, expression(concurrency["cancel-in-progress"]) == "${{ github.event_name == 'pull_request' }}",
       "only pull requests may cancel their own superseded runs")
 check(failures, workflow.dig("permissions", "contents") == "read", "contents permission must be read-only")
-# Registry access is granted to the one job that pulls images, not to the workflow.
-# Asserting the top-level block stays a single key is what stops the narrow grant
-# below from being "simplified" upwards into every job.
+# Registry scopes are granted per job, never workflow-wide.
 check(failures, workflow.fetch("permissions", {}).keys == ["contents"],
       "workflow-level permissions must grant nothing beyond contents: " \
       "#{workflow.fetch('permissions', {}).keys.inspect}")
@@ -513,11 +414,8 @@ check(failures, classifier_run.include?('BASE=$PR_BASE') && classifier_run.inclu
 check(failures,
       classifier_run.include?('ruby tests/ci/classify_changes.rb --diff "$BASE" "$HEAD" --github-output "$GITHUB_OUTPUT"'),
       "pull requests must classify the base/head diff safely")
-# A push to main used to sweep the whole repository -- 202 runner-minutes across 23
-# jobs -- on top of the routed matrix the pull request had already run against an
-# identical tree. It now classifies the merge it landed. `--full` stays reachable
-# twice and only twice: once as the fail-open fallback for a push whose base cannot
-# be resolved, and once as the else branch schedule and workflow_dispatch take.
+# A push classifies the merge it landed; --full is only the push fallback and the
+# schedule/workflow_dispatch branch.
 check(failures, classifier_run.include?('[ "$EVENT_NAME" = push ]'),
       "classifier must recognise the push event by name")
 check(failures,
@@ -534,16 +432,8 @@ check(failures, !classifier_run.include?("github.event.pull_request"),
       "event payload expressions must not be interpolated into shell source")
 
 check(failures, jobs.dig("static", "needs") == "changes", "static must depend only on changes")
-# The gate is sharded across runners (#469), and this is the agreement that
-# cannot be derived from anything else: the matrix must enumerate exactly the
-# shards tests/validate-policy.sh partitions its manifest into. A matrix short
-# of the manifest is the defect the whole partition is built to be incapable of,
-# and it is the one form of it every other guard misses -- the dropped shard's
-# checks are still declared, still in a heredoc, still claimed by exactly one
-# shard, and simply never dispatched. The run is green, and faster.
-#
-# Derived rather than a literal 3, because a hardcoded count agrees with the
-# manifest only until somebody changes one of them.
+# The matrix must name exactly the gate's shards (#469): a dropped shard's checks run
+# nowhere while every other guard stays green. Derived, not a literal count.
 GATE_SHARD_IDS = PolicySupport.gate_shard_ids(POLICY_PATH)
 check_floor(failures, GATE_SHARD_IDS.length, 2,
             "the shards tests/validate-policy.sh declares")
@@ -555,14 +445,8 @@ check(failures, jobs.dig("static", "strategy", "matrix", "shard") == GATE_SHARD_
 check(failures, GATE_SHARD_IDS == PolicySupport.gate_shards(POLICY_PATH).keys,
       "tests/validate-policy.sh dispatches shards #{GATE_SHARD_IDS.inspect} and holds heredocs " \
       "for #{PolicySupport.gate_shards(POLICY_PATH).keys.inspect}")
-# `to_h` rather than a bare `keys`, here and at the reconciliation and suites
-# matrices below, which are the only three places in this file that dereference a
-# job that may be absent. A deleted job reaches such a line as nil, and the
-# NoMethodError it raises discards every diagnostic accumulated above it -- the
-# one naming the deletion included. The verdict is red either way; what a crash
-# costs is being told what happened, which is most of the value of running this
-# file from a job that cannot be skipped (#480). Every other `keys` in this file
-# reads a `fetch(key, {})` or a receiver that cannot be nil.
+# `to_h` (here and at two matrices below): a deleted job arrives as nil, and a crash
+# would discard the diagnostics naming the deletion (#480).
 check(failures, jobs.dig("static", "strategy", "matrix").to_h.keys == ["shard"],
       "the static matrix must have exactly one dimension")
 check(failures, jobs.dig("static", "strategy", "fail-fast") == false,
@@ -572,18 +456,13 @@ check(failures, jobs.dig("static", "strategy", "fail-fast") == false,
 check(failures, expression(jobs.dig("static", "name")) == "static (${{ matrix.shard }})",
       "each static leg must report its own shard as the check name, found " \
       "#{expression(jobs.dig('static', 'name')).inspect}")
-# The reconciliation contract is the workflow's heaviest single check. Each of
-# its three files gets its own runner so none of them serialises behind the
-# policy gate, behind each other, or starves the gate. The matrix is a literal
-# list rather than a classifier output: these files always run together, and
-# spelling them here means dropping one is visible in the diff.
+# One runner per reconciliation file; a literal list so dropping one shows in the diff.
 check(failures, jobs.dig("reconciliation", "needs") == "changes",
       "reconciliation must depend only on changes")
 check(failures, jobs.dig("reconciliation", "strategy", "matrix", "part") == RECONCILIATION_PARTS,
       "the reconciliation matrix must name every media acquisition reconciliation file " \
       "in canonical order, found #{jobs.dig('reconciliation', 'strategy', 'matrix', 'part').inspect}")
-# `to_h` for the reason given at the static matrix above: a deleted job arrives
-# here as nil, and a crash reports itself instead of the deletion.
+# `to_h`: see the static matrix above.
 check(failures, jobs.dig("reconciliation", "strategy", "matrix").to_h.keys == ["part"],
       "the reconciliation matrix must have exactly one dimension")
 check(failures, jobs.dig("reconciliation", "strategy", "fail-fast") == false,
@@ -607,10 +486,8 @@ RECONCILIATION_PARTS.each do |part|
         "the reconciliation matrix names a file that does not exist: #{part}")
 end
 
-# The job used to be gated on `static`, which is true whenever any lane runs at
-# all, so a change to roles/dozzle/ paid for all three legs. It is routed now,
-# and routing that fails closed silently stops running a contract -- so what the
-# contract reads is asserted to select it, file by file.
+# Routed on its own output; routing that fails closed silently stops the contract,
+# so every input is asserted to select it.
 check(failures,
       expression(jobs.dig("reconciliation", "if")) ==
         "${{ needs.changes.outputs.reconciliation == 'true' }}",
@@ -654,11 +531,8 @@ end
 check(failures, expression(jobs.dig("static", "if")) == "${{ needs.changes.outputs.static == 'true' }}",
       "static condition must match its classifier output")
 
-# The policy mutation harness runs beside the gate rather than inside it: it
-# builds a sandbox and runs the whole policy set once per mutation, which made it
-# the gate's floor. It is gated on the same classifier output as the gate, not on
-# a narrower lane, because a mutation is planted in a copy of the whole
-# repository -- there is no subset of files that cannot change what it proves.
+# The mutation harness runs beside the gate on the same output: a mutation plants
+# into a copy of the whole repository.
 check(failures, jobs.dig("mutation", "needs") == "changes",
       "mutation must depend only on changes")
 check(failures,
@@ -670,11 +544,8 @@ check(failures, jobs.dig("mutation", "strategy").nil?,
 mutation_commands = normalize_shell(run_steps(jobs.fetch("mutation", {}))).lines.map(&:chomp)
 check(failures, mutation_commands.include?("ruby tests/policy_manifest_test.rb"),
       "the mutation job must run tests/policy_manifest_test.rb")
-# The nightly and workflow_dispatch run `--audit`, everything else the narrow
-# form (#727). Executed per event, because the defect this guards is the nightly
-# silently falling back to the narrow run -- which still passes, still prints the
-# census, and re-derives nothing. The event must come through env, and an event
-# the step does not name must fail rather than pick a form.
+# Nightly and workflow_dispatch run --audit, everything else the narrow form (#727);
+# an unknown event must fail rather than pick one.
 mutation_step = Array(jobs.dig("mutation", "steps")).find { |step| step["name"] == "Check policy mutation coverage" } || {}
 check(failures, mutation_step.dig("env", "EVENT_NAME") == "${{ github.event_name }}",
       "the mutation step must receive the event name through env")
@@ -696,22 +567,14 @@ check(failures, !ok && argv.empty?,
 check(failures, jobs.dig("mutation", "timeout-minutes").to_i >= 60,
       "the mutation job runs --audit on the nightly, measured at up to 34.5 minutes on a " \
       "runner (#727); its timeout must stay at 60 or above")
-# The harness syntax-checks a play in every sandbox and renders role defaults
-# through the policy set, so it needs the toolchain the gate installs. Without
-# this the job would fail on a missing ansible-playbook rather than on a policy.
+# The harness needs the gate's Ansible toolchain.
 check(failures,
       mutation_commands.any? do |command|
         command.include?("pip") && command.include?("-r controller-requirements.txt")
       end,
       "the mutation job must install the pinned Ansible toolchain")
 
-# Five jobs need that toolchain and each carries its own copy of the step that
-# installs it. The pins used to be written into all of them, so a bump could land
-# in one and leave the rest on the old version with nothing comparing them;
-# they now install from controller-requirements.txt, which is the one place the
-# versions are authored. The copies that remain are held byte-identical, so a
-# flag, a retry or a package added to one of them cannot quietly apply to a
-# subset of the jobs it was reasoned about for.
+# Every toolchain install step is byte-identical and installs from the lock.
 INSTALL_TOOLCHAIN_STEP = "Install Ansible tooling"
 toolchain_installs = jobs.each_with_object({}) do |(name, job), collected|
   step = Array(job["steps"]).find do |candidate|
@@ -733,15 +596,8 @@ toolchain_installs.each do |name, body|
         "the #{name} job must not restate a pin controller-requirements.txt already authors")
 end
 
-# The Galaxy install is retried, because a TCP reset from galaxy.ansible.com red
-# a leg three times in eighteen hours and on `main` a red run stalls the poller
-# silently (#747). Two halves. Every `ansible-galaxy collection install` in any
-# step of any job sits inside the retry loop, so a new job that copies the bare
-# command fails here rather than reintroducing the flake. And the loop itself is
-# run -- extracted from the workflow, under the `bash -e` GitHub runs steps with,
-# against a stubbed ansible-galaxy -- so a loop that stops retrying, retries a
-# success, or swallows a persistent failure is caught by what it does rather than
-# by how it reads. `sleep` is stubbed to record the backoff instead of waiting it.
+# Galaxy installs sit inside a retry loop (#747); the loop itself is run against a
+# stubbed ansible-galaxy under `bash -e`, with `sleep` recording the backoff.
 GALAXY_INSTALL_LOOP = /^for attempt in 1 2 3; do\n.*?^done$/m
 galaxy_retry_loops = []
 jobs.each do |name, job|
@@ -803,21 +659,8 @@ if (galaxy_loop = galaxy_retry_loops.first)
         "the last error visible, got #{never.inspect}")
 end
 
-# The interpreter that venv is built with, held the same way and for the same
-# reason. controller-requirements.txt pins ansible-core 2.21.4, which requires
-# Python 3.12 or newer, and nothing declared that floor: the venv took whatever
-# `python3` the runner image shipped, so the image moving its default -- in
-# either direction -- changed the toolchain CI resolved with nothing failing to
-# say so, and a contributor on 3.11 met the documented install with a resolver
-# wall of text naming no cause (#655).
-#
-# Three properties, and the third is the one that keeps the first two honest.
-# Every job that installs the toolchain sets the interpreter up first, in that
-# order, because a setup-python after the venv is built configures nothing the
-# venv used. The four steps are byte-identical, like the install steps they
-# precede. And none of them names a version: the step reads .python-version, so
-# the floor is authored in one file a bump has to touch, the way the pins are
-# authored in controller-requirements.txt alone.
+# setup-python precedes every toolchain install, byte-identical, and reads
+# .python-version rather than naming a version (#655).
 PYTHON_SETUP_STEP = "Set up Python"
 PYTHON_VERSION_FILE = ".python-version"
 python_setups = jobs.each_with_object({}) do |(name, job), collected|
@@ -857,23 +700,10 @@ declared_python = File.read(File.join(ROOT, PYTHON_VERSION_FILE)).strip
 check(failures, declared_python.match?(/\A\d+\.\d+\z/),
       "#{PYTHON_VERSION_FILE} must name a major.minor series, found #{declared_python.inspect}")
 
-# The controller toolchain is built once per run and published to ghcr.io rather
-# than installed inside every leg. The suites job depends on it so a run that does
-# rebuild it does so once, but it depends on it without the implicit success gate:
-# the harness builds the image itself when it cannot pull one, so a failed or
-# skipped publish must cost time rather than coverage. Dropping that gate is what
-# forces the explicit changes result term -- otherwise a failed classification
-# would reach the matrix as an empty selection instead of as a skip.
+# Published once per run. Suites need it without the success gate: the harness
+# builds the image itself, so a failed publish costs time, not coverage.
 toolchain_job = jobs.fetch("toolchain", {})
-# It depends on nothing, and that is what the suites matrix buys from it. Every
-# lane's start is this job's finish, so a `needs` edge here is 2.6 minutes charged
-# to eighteen lanes to order a registry probe behind a classification it barely
-# read -- measured on run 34454075921, where `changes` finished at 4.8 minutes,
-# this job started at 7.4, and its publish step took 0 seconds. The `suites` term
-# went with the edge: without a dependency the classifier's outputs are not
-# addressable, and a run that dispatches no suite now probes the registry, which
-# is that same 0 seconds unless the pins changed -- and a pin change routes to the
-# suites anyway.
+# Needs nothing: every lane waits for this job, so an edge delays them all.
 check(failures, toolchain_job["needs"].nil?,
       "toolchain must depend on nothing: the suites matrix waits for this job, so " \
       "an edge here delays every lane by whatever this job waits for, " \
@@ -895,9 +725,7 @@ check(failures, toolchain_login&.dig("with", "password") == "${{ secrets.GITHUB_
 toolchain_publish = toolchain_steps.find { |step| step["run"].to_s.include?("tests/integration.sh") }
 check(failures, !toolchain_publish.nil?,
       "the toolchain job must publish through the harness that consumes the image")
-# Named through env and nowhere else. The tag, the build arguments and the
-# already-published skip all live in tests/integration.sh; restating any of them
-# here is how the published image and the image the suites look for drift apart.
+# Tag and build arguments live only in tests/integration.sh.
 check(failures, toolchain_publish&.dig("env", "INTEGRATION_TOOLCHAIN_PUBLISH") == "1",
       "the toolchain job must select the harness's publish mode through env")
 check(failures, toolchain_publish&.fetch("run", "").to_s.strip == "tests/integration.sh",
@@ -921,24 +749,11 @@ check(failures,
       expression(suites_job.dig("strategy", "matrix", "suite")) ==
         "${{ fromJSON(needs.changes.outputs.suites) }}",
       "the suite matrix must come from the classifier's JSON array")
-# `to_h` for the reason given at the static matrix above: a deleted job arrives
-# here as nil, and a crash reports itself instead of the deletion.
+# `to_h`: see the static matrix above.
 check(failures, suites_job.dig("strategy", "matrix").to_h.keys == ["suite"],
       "the suite matrix must have exactly one dimension")
-# A floor rather than the general 1..90 bound above, and it is what makes the
-# #395 narrowing sound. A change to this file dispatches the three cheapest
-# suites now, so lowering this budget is the one edit here whose damage the legs
-# that run cannot see: smoke and beszel finish well inside anything plausible
-# while immich would be cancelled mid-converge, and nobody would learn that until
-# the next unrelated pull request. Raising it is always safe; lowering it needs a
-# measurement of the slowest leg, not a guess.
-#
-# The floor moved from 60 to 90 with the untagged-idempotence fix. Until then the
-# slowest leg was idempotence-check at an observed 19.4-20.7 minutes, and it was
-# that fast because its phases 2 and 3 were running 88 of 1495 tasks; a lane that
-# re-converges the whole play twice more projects to 35-45, and the pre-pull's
-# retry ladder can add eight on a rate-limited image (five until #762 widened it). The floor is the projection
-# plus that, not the observation.
+# A floor: the #395 route runs only cheap suites, so a lowered budget would cancel a
+# slow lane unseen. 90 covers the untagged idempotence re-converge plus pull retries.
 suites_budget = suites_job["timeout-minutes"]
 check(failures, suites_budget.is_a?(Integer) && suites_budget >= 90,
       "suites must keep a timeout of at least 90 minutes, found #{suites_budget.inspect}: the " \
@@ -951,10 +766,7 @@ check(failures,
       ClassifyChanges.suites(ClassifyChanges.classify([], full: true)) == FULL_RUN_SUITES,
       "a full run must dispatch every suite in canonical order: " \
       "#{ClassifyChanges.suites(ClassifyChanges.classify([], full: true)).inspect}")
-# The other route to the same coverage. An unmapped path takes the shards instead
-# of the single pass, so the two selections differ in exactly those six suites and
-# in nothing else -- stated as a difference rather than as a second literal list,
-# because the part worth pinning is that neither route drops a lane.
+# An unmapped path shards the idempotence lane instead; neither route drops a lane.
 fall_open_suites = ClassifyChanges.suites(ClassifyChanges.classify(["unexpected/new-runtime-file"]))
 check(failures,
       fall_open_suites == FULL_RUN_SUITES - ["idempotence-check"] + IDEMPOTENCE_SHARD_SUITES,
@@ -963,13 +775,7 @@ check(failures,
 check(failures, ClassifyChanges.suites(ClassifyChanges.classify(["README.md"])) == [],
       "an inert change must dispatch no suite")
 
-# The floor under UPGRADE_SUITES, for the reason FULL_RUN_SUITES and
-# IDEMPOTENCE_SHARD_SUITES have theirs: emptying this list to %w[] leaves both
-# the upgrade argv sweep and the empty-tags refusal check running over nothing
-# while this file still prints that every check passed -- green, and faster,
-# which is the shape the sharding section of CLAUDE.md is entirely about. The
-# list is also asserted to be a subset of the suite table rather than a set of
-# names this file invented.
+# Floor under UPGRADE_SUITES: emptying it would leave its sweeps running over nothing.
 check(failures, UPGRADE_SUITES == %w[upgrade],
       "UPGRADE_SUITES must name exactly the upgrade lane, found #{UPGRADE_SUITES.inspect}: an " \
       "emptied list stops the argv sweep below covering the one suite it was added for")
@@ -981,21 +787,12 @@ suites_checkout = Array(suites_job["steps"]).find { |step| step["uses"]&.start_w
 check(failures, suites_checkout&.fetch("uses", nil).to_s.split("@").first == CHECKOUT_ACTION_NAME,
       "suites must check out the repository with the pinned action")
 
-# The suites job pulls every service image, and an anonymous ghcr.io pull draws on
-# an allowance scoped to the runner's IP and shared with unrelated jobs. That is
-# what failed PR #84's smoke and idempotence-check legs with "toomanyrequests" on a
-# converge that had changed nothing. Pin the login here so removing it is a test
-# failure rather than a rate limit reappearing weeks later.
-#
-# Job-level permissions replace the workflow-level block rather than merging with
-# it, so both keys are asserted: dropping contents: read would break checkout, and
-# adding anything beyond packages: read would widen the token past a registry read.
+# Logins keep pulls off the shared anonymous allowance (PR #84's toomanyrequests).
+# Job permissions replace the workflow's, so both keys are asserted.
 check(failures, suites_job.fetch("permissions", {}) == { "contents" => "read", "packages" => "read" },
       "suites must grant exactly contents: read and packages: read, " \
       "found #{suites_job.fetch('permissions', {}).inspect}")
-# Which registries need a login is read out of the Compose definitions rather than
-# restated here, so an image added at a registry nobody logged into is this test
-# failing rather than a rate limit weeks later.
+# Registries needing a login are derived from the Compose files.
 compose_image_lines = Dir[File.expand_path("../../services/*/compose.yml", __dir__)]
                       .flat_map { |path| File.readlines(path) }
                       .grep(/^\s*image:\s*\S/)
@@ -1025,11 +822,8 @@ login_steps.each do |step|
           "the #{registry} login must authenticate as the stored #{DOCKER_HUB_USERNAME_SECRET} account")
     check(failures, step.dig("with", "password") == "${{ secrets.#{DOCKER_HUB_TOKEN_SECRET} }}",
           "the #{registry} login must use the stored #{DOCKER_HUB_TOKEN_SECRET}: GITHUB_TOKEN is not a Docker Hub account")
-    # Authenticating is an optimization over the anonymous allowance, not a
-    # precondition for it. Without the guard a checkout that holds no Docker Hub
-    # secret -- a fork PR, a clone -- fails at login instead of pulling the way it
-    # did before the step existed. The guard reads job-level env because a step's
-    # own env block is not in scope for that step's `if`.
+    # Guarded so a checkout without the secret (fork, clone) pulls anonymously; a
+    # step's own env is not in scope for its `if`, hence job-level env.
     check(failures, step["if"].to_s.include?("env.#{DOCKER_HUB_USERNAME_SECRET}"),
           "the #{registry} login must be guarded on env.#{DOCKER_HUB_USERNAME_SECRET} being set, found #{step['if'].inspect}")
     check(failures,
@@ -1066,16 +860,8 @@ integration_steps = Array(suites_job["steps"]).select { |step| step["run"]&.incl
 check(failures, integration_steps.length == 1, "suites must have exactly one integration harness step")
 integration_step = integration_steps.first || {}
 
-# Nothing in this job that has not been reasoned about above. Every other
-# property of a suite leg is asserted per-suite -- the matrix expression, the
-# argv for every suite with tags and without, the registry logins derived from
-# the compose files, the runner image, the timeout floor -- but until #395 a
-# *step* could be added here and be asserted by nothing. That is the one way a
-# leg's behaviour could change while the route dispatches three legs out of the
-# whole matrix: a step that only a heavy suite trips over would reach main
-# green. The `static` job has been pinned this way by name since it existed;
-# this is the same property, derived rather than named so that adding a registry
-# stays one edit.
+# Every step in this job must be read by a check above (#395): a route dispatching
+# three legs cannot see a step only a heavy suite trips over.
 examined_steps = ([suites_checkout] + login_steps + integration_steps).compact
 unexamined = suites_steps - examined_steps
 check(failures, unexamined.empty?,
@@ -1091,11 +877,8 @@ check(failures, integration_step.dig("env", "SUITE") == "${{ matrix.suite }}",
       "the matrix suite must reach the harness through env, not through shell interpolation")
 check(failures, integration_step.dig("env", "SELECTED_TAGS") == "${{ needs.changes.outputs.selected_tags }}",
       "suites must pass selected tags through the environment")
-# The upgrade lane's subject and base pin reach the harness the same way, and
-# from the classifier rather than from this job: the `changes` job is the one
-# that checks out at fetch-depth 0, and this one takes actions/checkout's
-# default depth of 1, so a base revision is not readable from here at all. A
-# lane dispatched without them refuses rather than converging one version twice.
+# Upgrade inputs come from `changes` (fetch-depth 0); this job's shallow checkout
+# cannot read a base revision.
 { "INTEGRATION_UPGRADE_SERVICE" => "upgrade_service",
   "INTEGRATION_UPGRADE_BASE_IMAGE" => "upgrade_base_image",
   "UPGRADE_TAGS" => "upgrade_tags" }.each do |name, output|
@@ -1123,11 +906,8 @@ INTEGRATION_SUITES.each do |suite|
         "#{suite} without selected tags must invoke #{untagged.inspect}, got #{argv.inspect}")
 end
 
-# The upgrade lane takes its SUBJECT's tags, whatever the run's own selection is.
-# A fall-open empties selected_tags, and a fall-open is exactly the selection a
-# Renovate bump lands in whenever its pull request touches anything unmapped --
-# so a lane reading selected_tags there would converge the whole site twice for a
-# one-service proof, which is the idempotence lane's cost and not this one's.
+# The upgrade lane takes its subject's tags: a fall-open empties selected_tags and
+# would converge the whole site twice.
 UPGRADE_SUITES.each do |suite|
   expected = ["--suite", suite, "--tags", UPGRADE_SAMPLE_TAGS, "site.yml"]
   ["", SAMPLE_TAGS].each do |run_tags|
@@ -1160,9 +940,7 @@ check(failures, static_steps.none? { |step| step.key?("if") },
       "static steps must be unconditional: the changes job is the only classifier, and a step " \
       "conditioned on the shard is a check that runs on one leg of three")
 
-# The shard reaches the gate the way every other matrix value in this workflow
-# reaches its program: through the environment, never interpolated into shell
-# source.
+# The shard reaches the gate through env, never interpolated.
 gate_steps = static_steps.select { |step| step["run"].to_s.include?("tests/validate-policy.sh") }
 check(failures, gate_steps.length == 1, "static must have exactly one policy gate step")
 gate_step = gate_steps.first || {}
@@ -1174,19 +952,12 @@ check(failures, gate_step["run"].to_s.strip == 'tests/validate-policy.sh "$POLIC
 check(failures, !gate_step["run"].to_s.include?("${{ matrix"),
       "the gate step must not interpolate a matrix value into shell source")
 
-# The shell syntax sweep runs one file per invocation. `sh -n` parses only its
-# first argument, so the `-exec sh -n {} +` form this replaced fed it all
-# ninety-eight scripts, checked the first, and reported green over the other
-# ninety-seven (#634). A literal pin would only have pinned that bug, so assert
-# the shape that cannot degenerate the same way: no batching, a loop, a parser
-# invoked per script, the parser chosen from the shebang -- one script here is
-# bash and is not valid POSIX sh -- and a status that outlives the loop.
+# `sh -n` parses only its first argument, so the batched form checked one file of
+# 98 (#634): assert a per-script loop, a shebang-chosen parser and a surviving status.
 syntax_steps = static_steps.select { |step| step["run"].to_s.include?("-name '*.sh'") }
 check(failures, syntax_steps.length == 1,
       "static must have exactly one shell syntax sweep, found #{syntax_steps.length}")
-# Comments are stripped first: the step's own comment names the batched form it
-# replaced, and a check that reads prose would be satisfied -- or in this case
-# defeated -- by it.
+# Comments stripped: the step's own comment names the batched form.
 syntax_sweep = (syntax_steps.first || {})["run"].to_s
                                              .lines.reject { |line| line.strip.start_with?("#") }.join
 check(failures, !syntax_sweep.include?("-exec sh -n"),
@@ -1215,19 +986,13 @@ check(failures, static_commands.include?("tests/validate-policy.sh"),
 end
 check(failures, static_commands.include?('python3 -m venv "$RUNNER_TEMP/ansible"'),
       "static checks must create an isolated Ansible environment")
-# The gate installs from controller-requirements.txt rather than naming versions,
-# so a routine bump edits one file and neither this test nor the workflow is one
-# of them. That the file itself pins exactly, and that its pins agree with the
-# harness's, is proved at the end.
+# Installs from the lock rather than naming versions.
 check(failures,
       static_commands.include?('"$RUNNER_TEMP/ansible/bin/pip" install --require-hashes -r controller-requirements.txt'),
       "static checks must install the controller pins in the isolated environment")
 check(failures, static_commands.include?('echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"'),
       "static checks must expose only the isolated pinned Ansible tools")
-# --no-cache is part of the literal rather than a check of its own: the Galaxy API
-# cache entry is written blank and filled in when the response arrives, so a run
-# that dies between the two leaves an entry every read for the next day refuses,
-# and a job that installs collections once never reads it back.
+# --no-cache: a Galaxy cache entry left blank by a dead run is refused for a day.
 check(failures, static_commands.include?(
         '"$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml'
       ), "static checks must install collections with the isolated pinned Ansible tools")
@@ -1236,35 +1001,23 @@ check(failures, !static_commands.include?("python3 tests/deployment_target_valid
 
 policy_source = File.read(POLICY_PATH)
 
-# The three checks #653 moved out of `static` and into the gate's manifest,
-# asserted in both directions. A check the gate runs and `static` also runs is
-# the per-shard duplication the move removed; a check neither runs is a guard
-# that stopped running, which is the more expensive half and reads as a faster
-# job rather than as a failure.
+# #653's moved checks: registered once in the gate, absent from `static`.
 GATE_ADOPTED_CHECKS.each do |command|
   check(failures, registers_command_once?(policy_source, command),
         "tests/validate-policy.sh must register #{command.inspect} exactly once: it left " \
         "the static job so that it runs once rather than once per shard, and the manifest " \
         "is now the only thing that runs it")
-  # Compared as a whole line rather than as a substring, because the gate's own
-  # invocation is a substring of nothing in `static` and the lint job's run text
-  # is a separate subject. `static_commands` is joined run text, so the bare
-  # basename would match this file's own name in a comment.
+  # Whole-line compare: the basename could match a comment in joined run text.
   check(failures, static_commands.lines.map(&:strip).none? { |line| line == command },
         "static must not also run #{command.inspect}: the gate runs it once, and a step here " \
         "restores the per-shard triplication")
 end
 
-# The fourth job (#653). Its whole reason to exist is that a shard-independent
-# check should run once, so what is pinned is the step list, that no step is
-# conditional, and that the checks it took from `static` are still invoked --
-# the same three properties `docs` and `vault` are held to, for the same reason.
+# The lint job (#653): pinned steps, none conditional, moved checks still invoked.
 lint_job = jobs.fetch("lint", {})
 lint_steps = Array(lint_job["steps"])
 check(failures, lint_job["needs"] == "changes", "lint must depend only on changes")
-# The same output as the gate, not a narrower lane: ansible-lint and a syntax
-# check read every play and every role, so there is no subset of files that
-# cannot change what they say.
+# Same output as the gate: lint and syntax checks read every play and role.
 check(failures, expression(lint_job["if"]) == "${{ needs.changes.outputs.static == 'true' }}",
       "lint must run whenever the policy gate does, found #{expression(lint_job['if']).inspect}")
 check(failures, lint_job["strategy"].nil?,
@@ -1278,24 +1031,14 @@ check(failures, lint_steps.none? { |step| step.key?("if") },
       "lint steps must be unconditional: the changes job is the only classifier, and a step " \
       "gated on anything else is a check that stopped running without the job reporting it")
 lint_commands = run_steps(lint_job)
-# The renovate-config-validator invocation, matched by shape rather than as a
-# literal. Every other command this job runs is pinned as a whole line, but this
-# one carries a version Renovate bumps, and a literal would mean a bot pull
-# request that reds this test until somebody edits it by hand -- which is how a
-# tracked pin stops being tracked. What has to hold is that the validator still
-# runs and that it still runs pinned: an unpinned invocation is the one floating
-# dependency in the tree, and a Renovate release tightening a rule would then red
-# CI with no diff to point at.
+# Matched by shape: the version is Renovate-bumped, but it must stay pinned.
 check(failures, lint_commands.match?(/renovate_pin=renovate@\d+\.\d+\.\d+/),
       "the lint job must pin the renovate-config-validator version")
 check(failures, lint_commands.include?('npx --yes --package "$renovate_pin" renovate-config-validator --strict'),
       "the lint job must validate renovate.json against Renovate's own validator: parsing the " \
       "file and asserting hand-written properties both passed on the config that stopped " \
       "Renovate repository-wide (#775)")
-# --strict because a deprecation is a warning, and a warning exits zero: #842's
-# schedule migration sat on the Dependency Dashboard with this step green over
-# it. Strict turns the next one into a red lint job on the pull request that
-# introduces it, or on the Renovate bump whose release deprecates something.
+# --strict: deprecations are warnings that exit zero (#842).
 check(failures,
       lint_commands.lines.grep(/renovate-config-validator/).count { |line| line.include?("--strict") } == 1,
       "exactly one renovate-config-validator invocation must be --strict: the real check, " \
@@ -1342,10 +1085,7 @@ production_auto_deploy_commands.each do |command|
         "validate-policy.sh must register exactly once #{command.inspect}")
 end
 
-# The documentation gate. Its whole reason to exist is that it is cheap: it runs
-# on every change under docs/, which the static job no longer sees, so anything
-# that puts the Ansible toolchain or a container into it silently reverses the
-# saving. Assert the steps, the checks and the absence of an install.
+# The docs job must stay cheap: no Ansible toolchain or container.
 docs_job = jobs.fetch("docs", {})
 docs_steps = Array(docs_job["steps"])
 check(failures, docs_job["needs"] == "changes", "docs must depend only on changes")
@@ -1366,19 +1106,15 @@ check(failures, docs_commands.none? { |command| command.match?(/ansible|apt-get|
       "the docs job must stay a checkout and Ruby: #{docs_commands.inspect}")
 check(failures, Array(docs_job["steps"]).count { |step| step["uses"] } == 1,
       "the docs job must use only the pinned checkout action")
-# Moving a check here must not take it out of the gate. A documentation link
-# resolves against files the documents do not own, so a role file renamed without
-# touching a word of prose still breaks the link gate -- and such a change selects
-# `static`, never `docs`. The docs job is an added fast lane, not a relocation.
+# Docs checks also stay in the gate: a renamed role file breaks links without
+# selecting `docs`.
 DOCS_CHECK_COMMANDS.each do |command|
   check(failures, registers_command_once?(policy_source, command),
         "validate-policy.sh must still register #{command.inspect}: the docs job runs it " \
         "for a documentation change, the gate runs it for everything else")
 end
 
-# The vault job. It holds the only secret in this workflow that opens the
-# repository's own credentials, so what is asserted here is the argv, the
-# refusal, and where the password lands -- not merely that a step exists.
+# The vault job holds the only secret that opens the repository's credentials.
 vault_job = jobs.fetch("vault", {})
 vault_steps = Array(vault_job["steps"])
 check(failures, vault_job["needs"] == "changes", "vault must depend only on changes")
@@ -1420,22 +1156,8 @@ check(failures,
                               VAULT_PLAYBOOK],
       "the poller's first play must carry _vault_arguments and nothing else; it builds " \
       "#{expected_vault_argv.inspect} from #{Array(poller && poller['vault_arguments']).inspect}")
-# Pinned as an exact argv, not as fragments that must be present. Two reasons,
-# and the second is the one that was measured wrong.
-#
-# Fragments are a denylist in disguise: --list-tasks, --list-tags or --list-hosts
-# spliced into this command leaves every fragment present, and each of them exits
-# 0 having parsed nothing -- a permanently green job. An exact comparison kills
-# the whole class rather than naming three more flags.
-#
-# And what rules out --check here is *not* that it fails to parse the vault.
-# Measured on ansible-core 2.21.4 on 2026-09-13 against a sandbox vault:
-# decryption happens at vars-load time, before task simulation, so --check
-# reports #559's unterminated quote as rc=4 and a missing required key as rc=2 --
-# the same verdicts the real run gives. --syntax-check is the blind one, rc=0 on
-# both, as are the three --list-* flags. --check is refused because it is not
-# what the poller runs, and this job's whole claim is that the host's own command
-# succeeded against this artifact.
+# Exact argv, not fragments: --list-* or --syntax-check exit 0 without parsing the
+# vault. --check does decrypt, but is refused because the poller does not run it.
 check(failures, shell_invocation(vault_play["run"], "ansible-playbook") == expected_vault_argv,
       "the vault play must invoke exactly the poller's own argv. The poller builds " \
       "#{expected_vault_argv.inspect}; the workflow runs " \
@@ -1456,10 +1178,7 @@ check(failures, vault_play["run"].to_s.include?("umask 077"),
 check(failures, vault_play["run"].to_s.include?('> "$RUNNER_TEMP/vault-password"'),
       "the vault password file must be written under $RUNNER_TEMP, never into the checkout: a " \
       "relative target puts the repository's own credentials inside the tree the job checked out")
-# pull_request, never pull_request_target: the latter runs with the base
-# repository's secrets against a head the pull request author controls, which
-# would hand this secret to anyone who can open one. Asserted here as well as in
-# the trigger block above, because this is the job that makes it matter.
+# pull_request_target would hand this secret to any pull request author.
 check(failures, !triggers.to_h.key?("pull_request_target"),
       "the workflow must not use pull_request_target while a job holds the vault password")
 
@@ -1483,20 +1202,8 @@ end
 check(failures, validate_commands.include?("ruby tests/ci/validate_results.rb"),
       "validate must invoke the aggregate result validator")
 
-# This file's own two routes into CI, asserted in both directions, because from
-# the gate alone it is a check inside the job it guards. Everything above pins
-# the shape of `static` -- that it exists, that its `if:` matches its classifier
-# output, that its matrix names every shard the gate declares -- and every one of
-# those attacks also stops the gate running: `if: false`, a deleted job and an
-# empty matrix all leave `static` reporting `skipped`, which the aggregate
-# validator legitimately allows because the classifier skips that job on diffs
-# that cannot reach it. The run is green and the objection was never made (#480).
-#
-# So it runs from `validate` as well, which is `always()` and therefore the one
-# job no edit elsewhere can suppress. The duplication is the point, and these two
-# checks are what keep a tidy-up from noticing one script in two places and
-# leaving one: whichever copy survives is the one that names the loss. Same
-# reasoning as DOCS_CHECK_COMMANDS above, one level further out.
+# Run from `validate` (always()) as well as the gate, because every attack on
+# `static` also stops the gate running this file (#480). Keep both copies.
 workflow_guard_command = "ruby tests/ci/workflow_test.rb"
 check(failures, validate_commands.include?(workflow_guard_command),
       "validate must invoke the workflow-shape guard directly: run only from the policy gate, " \
@@ -1513,36 +1220,19 @@ check(failures,
       "validate steps must be unconditional and must fail the job: this is the route that " \
       "cannot be skipped, and a step gated on another job's result -- or one whose failure is " \
       "tolerated -- restores exactly the hole this job's copy of the guard closes")
-# One `needs` entry covers all three shards because `needs.<job>.result` for a
-# matrix job is the job's aggregate: `failure` if any leg failed, `cancelled` if
-# any was cancelled, and `success` only if every leg succeeded. The suites matrix
-# has staked this workflow's verdict on exactly that reading since it existed, so
-# `static` gaining a matrix changes nothing here -- which is the reason the shard
-# count is asserted against the manifest above instead. An empty or short matrix
-# reports `skipped` or `success`, and `skipped` is legitimately allowed because
-# the classifier skips this job; the aggregate cannot tell those apart, and
-# nothing downstream of it can either.
+# `needs.<job>.result` for a matrix is the aggregate of its legs, so one entry covers
+# every shard; a short matrix is caught by the shard assertion above instead.
 check(failures, !ValidateResults::NON_BLOCKING_JOBS.include?("static"),
       "static must stay blocking: it is the aggregate of every policy shard, and tolerating " \
       "its result would let a failed shard reach main green")
 
-# Which jobs the gate may not fail on is derived from the workflow rather than
-# restated here. A job the suites matrix depends on without requiring its success
-# is one the workflow declares non-blocking -- that is the whole point of dropping
-# the implicit success gate `needs` carries -- and the validator must tolerate
-# exactly those. It tolerated none of them until #360: ci.yml said "nothing
-# depends on this succeeding" about the toolchain publish while the aggregate
-# check aborted on it, so a ghcr push hiccup reddened a run whose coverage was
-# complete. Deriving both directions is what stops the two from disagreeing
-# again: re-adding the success term to the suites condition now forces the
-# validator's list to shrink with it.
+# Non-blocking jobs are derived from the suites condition (#360), so the validator
+# and the workflow cannot disagree.
 suites_condition = expression(suites_job["if"]).to_s
 derived_non_blocking = Array(suites_job["needs"]).reject do |job|
   suites_condition.include?("needs.#{job}.result == 'success'")
 end
-# The derivation only reads as "non-blocking" while the condition actually drops
-# the implicit gate. Without !cancelled() a `needs` entry gates on success whether
-# the expression mentions it or not, and every job here would look tolerated.
+# Without !cancelled() every `needs` entry gates on success regardless.
 check(failures, derived_non_blocking.empty? || suites_condition.include?("!cancelled()"),
       "a job the suites matrix needs is non-blocking only while the condition drops " \
       "the implicit success gate with !cancelled(), found #{suites_condition.inspect}")
@@ -1580,20 +1270,8 @@ all_uses.group_by { |uses| uses.split("@", 2).first }.each do |name, uses|
         "#{name} must be pinned to one commit across every job: #{uses.uniq.inspect}")
 end
 
-# controller-requirements.in is the anchor, not a mirror: it is the one file a
-# human edits a controller version in, and it compiles to controller-requirements.txt,
-# the hash-locked set an operator, the production poller and every toolchain job
-# above install (#827). The ansible-core version is still restated where it cannot
-# be read out of a pip requirement -- the integration sandbox bakes it into a
-# runner image tag, and the Beszel telemetry test refuses to run against any other
-# version because it asserts exact ansible output. Assert those agree with the
-# anchor. A bump that updates only some of them fails immediately and by name
-# instead of surfacing later as a confusing suite failure.
-#
-# Read the anchor, and fail loudly when it cannot be read. The previous shape
-# extracted the versions out of ci.yml's pip line and skipped this whole block when
-# the regex stopped matching, so the edit that removed those versions would have
-# retired every assertion below while leaving the test green.
+# controller-requirements.in is the one place versions are authored (#827); the
+# ansible-core mirrors below must agree. Fails loudly if the anchor is unreadable.
 controller_source = File.file?(CONTROLLER_REQUIREMENTS_SOURCE_PATH) ? File.read(CONTROLLER_REQUIREMENTS_SOURCE_PATH) : ""
 expected_core = controller_source[/^ansible-core==(\d+\.\d+\.\d+)$/, 1]
 expected_lint = controller_source[/^ansible-lint==(\d+\.\d+\.\d+)$/, 1]
@@ -1603,9 +1281,7 @@ check(failures, !expected_core.nil?,
 # ansible-lint would float the gate's lint results release by release.
 check(failures, !expected_lint.nil?,
       "controller-requirements.in must pin ansible-lint exactly, as ansible-lint==X.Y.Z")
-# The same reasoning covers the rest of the source file rather than the two lines
-# named above. Counted as well as shaped, so a file that stopped listing
-# requirements cannot satisfy this by having none.
+# Every source line is an exact pin, and there must be some.
 source_lines = controller_source.lines.map(&:strip).reject { |line| line.empty? || line.start_with?("#") }
 check(failures, source_lines.length >= 3,
       "controller-requirements.in must list the controller requirements, found #{source_lines.length}")
@@ -1617,22 +1293,8 @@ source_lines.each do |line|
   source_pins[match[:name].downcase.tr("_.", "--")] = match[:version] if match
 end
 
-# The lock itself (#827). Before it, the file pinned only the three packages above
-# and the poller installed it with --upgrade, so every transitive dependency --
-# jinja2, PyYAML, cryptography, ansible-lint's whole tree -- moved to whatever PyPI
-# served on the next five-minute tick, as the deploy account, with no pull request
-# involved. What makes the lock a lock is three properties, each refused here:
-#   - every entry is an exact == pin, so no resolution happens on the host;
-#   - every entry carries at least one --hash, so the artifact installed is the one
-#     this pull request's CI installed. pip turns hash-checking on for the whole
-#     file when any line has a hash, so one unhashed entry does not quietly install
-#     -- it fails the install on every host, which is why it is caught here first;
-#   - every top-level pin in the .in is in the lock at the same version, so an
-#     edit to the .in that was never compiled cannot pass as applied.
-# The header's --python-version is the universal lock's floor: uv resolves for
-# every interpreter at or above it, so a floor above .python-version would drop
-# the entries only older interpreters need, and hash mode would then refuse the
-# install there. It is held equal to .python-version, the one place it is authored.
+# The lock (#827): exact pins, a --hash on every entry (one unhashed line fails every
+# install), every .in pin present, and a --python-version floor equal to .python-version.
 CONTROLLER_LOCK_ENTRY = /\A(?<name>[A-Za-z0-9][A-Za-z0-9._-]*)==(?<version>[0-9][A-Za-z0-9.+!-]*)(?: *; *[^\\]+?)?(?<hashes>(?: +--hash=sha256:[0-9a-f]{64})*)\z/
 def controller_lock_violations(lock, source_pins, python_floor)
   violations = []
@@ -1669,11 +1331,7 @@ end
 
 controller_lock = File.read(CONTROLLER_REQUIREMENTS_PATH)
 python_floor = File.read(PYTHON_VERSION_PATH).strip
-# The host the lock matters most on has its own floor: the poller role refuses an
-# interpreter below it. A lock floor above that would drop the entries only the
-# NAS's interpreter needs -- typing-extensions is one today -- and the poller
-# would then refuse the install on every tick, so a .python-version bump for CI
-# alone must fail here rather than on the host.
+# The lock floor must not exceed the poller role's minimum, or the NAS refuses it.
 nas_floor = File.read(File.expand_path("../../roles/production_auto_deploy/tasks/main.yml", __dir__))[
   /python_version is version\('(\d+\.\d+)', '>='\)/, 1
 ]

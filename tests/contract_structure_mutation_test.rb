@@ -1,18 +1,7 @@
 #!/usr/bin/env ruby
-# Mutation proofs for the contract assertions that read parsed task structure.
-#
-# A test assertion that has quietly stopped checking anything still passes, so a
-# conversion from source text to parsed structure is only as good as the proof
-# that the new form still bites. Every row below copies the repository, breaks
-# exactly one thing in the copy, runs the static half of the contract against it
-# and requires the contract to name the failure.
-#
-# The rows marked accepted prove the other direction. Each one is a shape the old
-# source-text assertion judged wrongly: a required task name that survives only
-# inside a comment, a literal that moved into a comment, a URL that changed
-# nothing but its quoting style. Those rows are the reason the conversion is a
-# correctness change rather than a restyling, and they are what would regress
-# first if someone reintroduced a substring check.
+# Mutation proofs for the contract assertions that read parsed task structure: each
+# row breaks one thing in a copy of the repository and requires the contract to name
+# it. Rows marked accepted are shapes the old source-text assertions judged wrongly.
 
 require "digest"
 require "fileutils"
@@ -26,11 +15,8 @@ require_relative "policy_support"
 include TestScaffold
 
 VALIDATE_POLICY = File.join(ROOT, "tests", "validate-policy.sh")
-# The media probe suite reads the same Jellyfin role and duplicates several of
-# the contract assertions, so it is proven here too. Its slow behavioural probes
-# need Ansible and a container runtime; MEDIA_MANAGED_USERS_PROBES selects no
-# probe group, which leaves exactly the static role assertions these rows are
-# about and keeps a row under a second instead of near three minutes.
+# MEDIA_MANAGED_USERS_PROBES selects no probe group, leaving only the static role
+# assertions and keeping a row under a second.
 SUITES = {
   jellyfin: {
     command: ->(repo) { [File.join(repo, "tests", "contracts", "jellyfin.sh"), "--platform", "nas", "static"] },
@@ -72,27 +58,20 @@ SUITES = {
     environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
     diagnostic: ->(message) { "Dozzle contract failed: #{message}" }
   },
-  # The policy scripts resolve the repository from their own location, so a copy
-  # under a temporary directory checks the copy. They report every violation they
-  # found rather than aborting on the first, so the expected line has to be
-  # present among them rather than be the only one.
+  # Policy scripts check the copy they sit in and report every violation, so the
+  # expected line need only be among them.
   policy: {
     command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "policy_test.rb")] },
     environment: ->(_repo) { {} },
     diagnostic: ->(message) { "FAIL #{message}" }
   },
-  # The Arr contract reports every violation it found, one per line, rather than
-  # aborting on the first -- but each line carries the prefix now (#352), so the
-  # expected line is the prefixed one here too.
+  # Reports every violation, each line prefixed (#352).
   arr: {
     command: ->(repo) { [File.join(repo, "tests", "contracts", "arr.sh"), "static"] },
     environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
     diagnostic: ->(message) { "Arr contract failed: #{message}" }
   },
-  # This suite drives the real vault_contract role over the documented vault, so
-  # each row costs about twenty seconds. It carries three rows rather than one per
-  # conversion: the ones below are the shapes the old whole-file substrings could
-  # not see at all.
+  # Drives the real vault_contract role (~20s a row), so only three rows.
   managed_users_vault: {
     command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "managed_users_vault_test.rb")] },
     environment: ->(_repo) { {} },
@@ -113,8 +92,6 @@ SUITES = {
     environment: ->(_repo) { {} },
     diagnostic: ->(message) { "FAIL #{message}" }
   },
-  # This suite reports bare messages, one per line, and drives a real Ansible
-  # guard matrix, so its single row is the slowest of the fast ones.
   acquisition_phase1: {
     command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "media_acquisition_phase1_test.rb")] },
     environment: ->(_repo) { {} },
@@ -145,9 +122,7 @@ SUITES = {
     environment: ->(_repo) { {} },
     diagnostic: ->(message) { "FAIL #{message}" }
   },
-  # This suite installs the role into a temporary home and runs it, so it is the
-  # slowest row here at roughly ten seconds. That is the price of proving the
-  # assertions that read the installed artifacts alongside the parsed ones.
+  # Installs and runs the role in a temporary home (~10s a row).
   auto_deploy: {
     command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "production_auto_deploy_role_test.rb")] },
     environment: ->(_repo) { {} },
@@ -163,12 +138,8 @@ SUITES = {
 
 failures = []
 
-# Every row copies the repository, so the copy is the cost of a proof. Ignored
-# paths — the Python virtualenv, worktrees, editor caches — are build artifacts,
-# never contract inputs, and copying them costs ten times what copying the
-# repository does. `.git` is kept: policy_test.rb enumerates its own sources with
-# git and fails without it. If git cannot answer, the whole tree is copied, which
-# is only slower.
+# Ignored paths are never contract inputs and dominate the copy cost. `.git` is kept:
+# policy_test.rb enumerates its sources with git. Without git, the whole tree is copied.
 def ignored_children(children)
   stdout, _stderr, status = Open3.capture3("git", "-C", ROOT, "check-ignore", "--", *children)
   status.exitstatus == 128 ? [] : stdout.lines.map(&:chomp)
@@ -176,33 +147,12 @@ rescue SystemCallError
   []
 end
 
-# One copy, reused. Copying the repository took a third of a second and every row
-# paid it to change two or three files, which made the copies alone a quarter of
-# this suite's runtime. A row now restores exactly the paths it substituted.
-#
-# The reuse is verified rather than assumed. Restoring the wrong set of paths, or a
-# suite writing into the copy, would leave the next row proving something about a
-# tree nobody described -- so the whole tree is hashed after every row and compared
-# against the state it was built in. A copy that does not match is thrown away and
-# rebuilt. That costs 15ms per row against a 330ms copy, and its failure mode is an
-# extra copy rather than a row that passes for the wrong reason.
-#
-# `.git` is excluded from the comparison but kept in the copy: policy_test.rb
-# enumerates its own sources with git, and running git legitimately writes there.
-#
-# One copy per *worker*, since the rows run through a pool. A copy is a mutable
-# fixture and two rows breaking different things in the same tree would prove
-# nothing about either, so the reuse is per thread rather than global: a worker
-# builds its copy on its first row and restores it after every row, exactly as
-# the serial version did. The pool is capped at the core count, so this is a
-# handful of copies rather than one per row, and the printed accounting below is
-# what says so.
+# One copy per pool worker, reused: a row restores the paths it substituted, and the
+# tree is hashed after every row so a contaminated copy is discarded and rebuilt.
+# `.git` is excluded from the hash (git writes there) but kept in the copy.
 COPY_ACCOUNTING = { copies: 0, rows: 0, rebuilt: [] }
-# Guards the shared accounting only. Each worker's copy is reached through its
-# own thread-local, so the fixtures themselves need no lock.
+# Guards the shared accounting only; each worker's copy is thread-local.
 ACCOUNTING_LOCK = Mutex.new
-# Every copy any thread built, so at_exit removes all of them and not merely the
-# main thread's.
 PRISTINE_DIRECTORIES = []
 
 def tree_manifest(repo)
@@ -224,8 +174,6 @@ def tree_manifest(repo)
   end
 end
 
-# The calling thread's own copy, so a worker discarding a contaminated tree
-# never takes another worker's fixture away with it.
 def discard_repo
   state = Thread.current[:pristine]
   return unless state
@@ -234,12 +182,7 @@ def discard_repo
   ACCOUNTING_LOCK.synchronize { PRISTINE_DIRECTORIES.delete(state[:directory]) }
   Thread.current[:pristine] = nil
 end
-# The pool is drained before this runs, so every directory still listed is one no
-# worker discarded. Removal is not rescued, for the same reason the serial
-# version did not rescue it: there is no condition under which a copy this
-# process created and owns legitimately refuses to be removed, and a run that
-# leaks eight copies of the repository per invocation should say so rather than
-# fill a runner's disk quietly.
+# Removal is not rescued: a leaked copy of the repository should fail loudly.
 at_exit do
   ACCOUNTING_LOCK.synchronize { PRISTINE_DIRECTORIES.dup }.each do |directory|
     FileUtils.remove_entry(directory)
@@ -283,20 +226,14 @@ def with_copied_repo(mutated = [], label = nil)
   end
 end
 
-# PYTHONDONTWRITEBYTECODE is set for the same reason tests/validate-policy.sh sets
-# it: the suites that reach Ansible leave a __pycache__ tree behind them, which is
-# a build artifact rather than anything a contract reads. Suppressing it is what
-# lets the reuse check below stay strict -- every other byte a suite writes into
-# the copy is treated as contamination.
+# No __pycache__ from Ansible, so any other byte a suite writes counts as contamination.
 def run_static(suite, repo)
   definition = SUITES.fetch(suite)
   environment = { "PYTHONDONTWRITEBYTECODE" => "1" }.merge(definition.fetch(:environment).call(repo))
   Open3.capture3(environment, *definition.fetch(:command).call(repo))
 end
 
-# Each substitution must match exactly once. A fixture that drifted would
-# otherwise mutate the wrong place, or nothing at all, and the row would report a
-# pass that proves nothing.
+# Each substitution must match exactly once, or a drifted row would prove nothing.
 def apply_substitutions(repo, substitutions)
   substitutions.each do |relative_path, original, replacement|
     path = File.join(repo, relative_path)
@@ -308,26 +245,16 @@ def apply_substitutions(repo, substitutions)
   end
 end
 
-# The contract suites abort on the first violation, so their whole diagnostic is
-# one line. The probe suite reports every violation it found, so the expected line
-# has to be present among them rather than be the only one.
-# Most suites diagnose on stderr; production_auto_deploy_role_test.rb reports on
-# stdout, so the stream is part of the suite definition rather than assumed.
+# Contract suites abort on the first violation; the probe suite reports all.
+# production_auto_deploy_role_test.rb reports on stdout, the rest on stderr.
 def diagnostics(suite, stdout, stderr)
   SUITES.fetch(suite)[:stream] == :stdout ? stdout : stderr
 end
 
-# The rows are written below as straight-line calls, and each one copies the
-# repository and runs a policy script against it -- work this interpreter only
-# waits on. So a call queues its row rather than running it where it is written,
-# and the pool at the foot of the file runs the queue. Every row reports into the
-# one failure list this file has, which the pool concatenates in the order the
-# rows are written, so the report a developer reads is unchanged. Queueing also
-# means a row may name a constant declared further down the file than the call
-# itself, which is what the row bodies below already assume.
+# Rows queue here and the pool at the foot of the file runs them, concatenating
+# failures in written order; so a row may name a constant declared further down.
 ROWS = []
 
-# A few diagnostics name the file they are about, which lives under the copy, so
 # %REPO% in an expected diagnostic is replaced with the copy's root.
 def check_rejected(suite, name, substitutions, diagnostic)
   ROWS << ->(failures) { rejected_row(failures, suite, name, substitutions, diagnostic) }
@@ -362,10 +289,7 @@ rescue RuntimeError, SystemCallError => error
   failures << "#{suite} #{name} fixture failed: #{error.message}"
 end
 
-# The Jellyfin role is one stage per file, imported from a main.yml index, so a
-# row names the stage that owns the text it breaks. apply_substitutions requires
-# exactly one match, so a row left pointing at main.yml would fail loudly with
-# "0 matches" rather than pass while mutating nothing.
+# Roles split one stage per file: a row names the stage that owns the text it breaks.
 JELLYFIN_DEPLOY = "roles/jellyfin/tasks/deploy.yml"
 JELLYFIN_AUTHENTICATION = "roles/jellyfin/tasks/authentication.yml"
 JELLYFIN_PREFLIGHT = "roles/jellyfin/tasks/preflight.yml"
@@ -378,9 +302,6 @@ JELLYFIN_SETTINGS = "roles/jellyfin/tasks/settings.yml"
 KOMGA_ROLE = "roles/komga/tasks/main.yml"
 # The coordinated snapshot is the program, not the wrapper beside it, since #315.
 PAPERLESS_SNAPSHOT = "tests/mac/snapshot-paperless.rb"
-# The Paperless role is one stage per file, imported from a main.yml index, so a
-# row names the stage that owns the text it breaks -- same reason as Jellyfin
-# above.
 PAPERLESS_STORAGE = "roles/paperless_ngx/tasks/storage.yml"
 PAPERLESS_MAIL_STATE = "roles/paperless_ngx/tasks/mail_state.yml"
 PAPERLESS_MAIL_PROBE = "roles/paperless_ngx/tasks/mail_probe.yml"
@@ -390,8 +311,6 @@ PAPERLESS_COMPOSE = "services/paperless-ngx/compose.yml"
 PAPERLESS_MAC_COMPOSE = "services/paperless-ngx/compose.mac.yml"
 GENERATOR = "generate-secrets.yml"
 BESZEL_VARS = "roles/beszel/vars/main.yml"
-# The Beszel role is one stage per file, so a row names the stage that owns the
-# text it breaks rather than main.yml, which is now an index of static imports.
 BESZEL_DEPLOY = "roles/beszel/tasks/deploy.yml"
 BESZEL_APPLICATION_USER = "roles/beszel/tasks/application_user.yml"
 BESZEL_CONFIGURE = "roles/beszel/tasks/configure.yml"
@@ -421,8 +340,7 @@ SHARED_INVENTORY = "inventory/group_vars/all/main.yml"
 HOST_PREP = "roles/host_prep/tasks/main.yml"
 VERIFY_PLAY = "verify.yml"
 CI_WORKFLOW = ".github/workflows/ci.yml"
-# Relative, unlike VALIDATE_POLICY above: a substitution names the path inside
-# the copied tree, not in this checkout.
+# Relative: a substitution names the path inside the copied tree.
 POLICY_GATE = "tests/validate-policy.sh"
 VAULT_CONTRACT = "roles/vault_contract/tasks/main.yml"
 DOWNLOADERS_MAIN = "roles/downloaders/tasks/main.yml"
@@ -554,10 +472,8 @@ check_accepted(
     "    url: '{{ jellyfin_api }}/Packages'\n"]]
 )
 
-# A byte offset is not a task position. Both of these place a mutation task's name
-# in a comment ahead of the preflight, which changed nothing about the role but
-# moved the offset the old ordering assertions measured, so both suites reported a
-# phase violation that did not exist.
+# A byte offset is not a task position: a task name in a comment ahead of the
+# preflight used to read as a phase violation.
 check_accepted(
   :jellyfin, "a mutation task name mentioned in an early comment",
   [[JELLYFIN_DEPLOY,
@@ -616,8 +532,6 @@ check_rejected(
   "library updates must preserve the selected identifier"
 )
 
-# The root move is the one repair the ambiguity guard exists to refuse, so the
-# clause that opens it for a single convergence must not be able to vanish.
 check_rejected(
   :komga, "an ambiguity guard that lost its one-convergence migration clause",
   [[KOMGA_ROLE,
@@ -632,10 +546,8 @@ check_rejected(
   "role must not edit an opaque database"
 )
 
-# The exact line the drill carried before the login budget was fixed. The
-# behavioural proof of the budget is tests/mac/snapshot-paperless-drill-throttle-test.sh;
-# this row proves the cheap static half of the pair still rejects the shape, so the
-# assertion cannot rot into one that passes against the broken form too.
+# The drill line before the login budget fix; the behavioural proof is
+# tests/mac/snapshot-paperless-drill-throttle-test.sh.
 check_rejected(
   :paperless, "a deletion poll that logs in again on every pass",
   [[PAPERLESS_SNAPSHOT,
@@ -750,17 +662,13 @@ check_rejected(
 )
 
 # --- Paperless contract -------------------------------------------------------
-#
-# Host networking makes the webserver occupy the host's whole port namespace, so
-# the port registry that guards every other publication cannot see it at all.
+# Host networking hides the webserver from the port registry.
 check_rejected(
   :paperless, "a webserver that goes back to host networking",
   [[PAPERLESS_COMPOSE, "    ports:\n      - \"8000:8000\"\n", "    network_mode: host\n"]],
   "nas effective config must not use host networking"
 )
 
-# The dependencies answer on the stack's own network, so a host publication for
-# one of them is surface with nothing behind it.
 check_rejected(
   :paperless, "a dependency that goes back to publishing a host port",
   [[PAPERLESS_COMPOSE,
@@ -770,10 +678,8 @@ check_rejected(
   "nas broker publishes a host port"
 )
 
-# Compose merges two `ports:` lists by appending them, so an override that drops
-# `!override` publishes the production port next to its allocated one and the
-# collision it exists to prevent comes back. The override's own structure cannot
-# say that; only the merged effective config can.
+# Compose appends merged `ports:` lists, so an override without `!override` publishes
+# both ports; only the merged config shows it.
 check_rejected(
   :paperless, "a Mac override that lost its override tag",
   [[PAPERLESS_MAC_COMPOSE, "    ports: !override\n", "    ports:\n"]],
@@ -789,9 +695,6 @@ check_rejected(
   "missing Repair the managed Paperless mail rule"
 )
 
-# The snapshot pair has to straddle the probe. Renaming the first half leaves the
-# old whole-file substring satisfied twice over, once by the longer name that
-# contains it and once by the comparison that still spells both operands.
 check_rejected(
   :paperless, "a probe-state snapshot the probe no longer sits between",
   [[PAPERLESS_MAIL_STATE,
@@ -836,10 +739,8 @@ check_rejected(
   "Paperless effective state sources do not match the five Compose/env state roots"
 )
 
-# A folded scalar carries its line breaks into the parsed value, so a forbidden
-# endpoint written across two lines does not match a pattern for the single-line
-# form. These two rows are the reason the absence invariants match the
-# whitespace-stripped scalar as well: read as source text, both were accepted.
+# A folded scalar keeps line breaks, so absence checks also match the
+# whitespace-stripped scalar.
 check_rejected(
   :paperless, "a consuming mail endpoint folded across two lines",
   [[PAPERLESS_MAIL_STATE,
@@ -887,9 +788,6 @@ check_rejected(
   "Gmail app password must be a visible sentinel in the new-platform generator"
 )
 
-# Google displays the app password in groups of four. Stripping the spaces in one
-# of the two places it is consumed and not the other left the old whole-file
-# substring satisfied by whichever one still did it.
 check_rejected(
   :paperless, "grouped app-password spacing kept out of the payload only",
   [[PAPERLESS_MAIL_STATE,
@@ -914,9 +812,7 @@ check_rejected(
   "PAPERLESS_TIKA_ENDPOINT must address its Compose service by name on every platform"
 )
 
-# Compose reads the last assignment of a name, so an appended unescaped duplicate
-# is the live one. A substring check for the escaped form still found the earlier
-# line and passed.
+# Compose reads the last assignment of a name, so an appended duplicate is the live one.
 check_rejected(
   :paperless, "an unescaped secret assignment appended after the escaped one",
   [[PAPERLESS_ENVIRONMENT,
@@ -990,8 +886,7 @@ check_rejected(
   "incompatible newest backup diagnostic is not sanitized"
 )
 
-# Immich's documented restore rewrites the dump's empty search_path; a pipe that
-# goes straight from gzip to psql loads a dump the upstream recipe would not.
+# Immich's restore rewrites the dump's empty search_path; gzip straight to psql skips it.
 check_rejected(
   :immich_restore, "the search_path rewrite dropped from the restore pipe",
   [[IMMICH_RESTORE,
@@ -1048,9 +943,6 @@ check_rejected(
   "restore does not verify the pinned v3 migration marker"
 )
 
-# Two stages sharing one label makes the marker ambiguous about which phase
-# failed, which is the whole point of recording it. Both labels were still
-# present as substrings, so the old form could not see it.
 check_rejected(
   :immich_restore, "two failure stages collapsed onto one label",
   [[IMMICH_RESTORE,
@@ -1067,8 +959,7 @@ check_rejected(
   "restore failures do not preserve a sanitized marker stage"
 )
 
-# The other direction. Both of these are shapes the source-text form rejected as
-# violations that did not exist: a comment is not a statement and not a task.
+# Accepted: a comment is not a statement and not a task.
 check_accepted(
   :immich_restore, "a comment warning against DELETE",
   [[IMMICH_RESTORE,
@@ -1094,8 +985,6 @@ check_rejected(
   "missing Poll persisted Beszel telemetry collections"
 )
 
-# #85's headline for this contract: the old form passed with the register deleted,
-# because the variable's name still appeared elsewhere in the file.
 check_rejected(
   :beszel, "a telemetry poll that no longer registers its probe result",
   [[BESZEL_CONFIGURE,
@@ -1125,14 +1014,8 @@ check_rejected(
   "backup environment is absent"
 )
 
-# The role is one stage per file, and main.yml imports each stage statically.
-# That is not a formatting choice: verify.yml lists this role with tags: [never],
-# and only a static import carries that inherited tag -- alongside each task's own
-# platform_verify_audiobookshelf -- down into the stage, so a stage demoted to a
-# dynamic include would be skipped before its file was read. It is also what lets
-# every check above see the whole role: static_role_tasks follows an import and
-# deliberately does not follow an include, so the demotion removes the stage from
-# the role this contract inspects rather than quietly passing on a shorter list.
+# Stages must be static imports: verify.yml tags this role [never], and only an
+# import carries the platform_verify tag into a stage (static_role_tasks skips includes).
 check_rejected(
   :audiobookshelf, "a verification stage demoted to a dynamic include",
   [[AUDIOBOOKSHELF_MAIN,
@@ -1200,10 +1083,6 @@ check_rejected(
 )
 
 # --- Dozzle contract ----------------------------------------------------------
-#
-# The dispatcher header is the whole of "the role wires the relay's own shared
-# secret", so this row is what the deleted second substring check was pretending
-# to prove.
 check_rejected(
   :dozzle, "a dispatcher header that borrows another publisher's token",
   [[DOZZLE_DEFAULTS,
@@ -1212,9 +1091,6 @@ check_rejected(
   "managed dispatcher authorization differs"
 )
 
-# And the same regression on the other half of the pair. The rendered
-# environment file is where both credentials are named side by side, so it is
-# where one name standing in for both is visible at all.
 check_rejected(
   :dozzle, "a relay secret that borrows the Pushover application token",
   [[DOZZLE_ENV,
@@ -1234,9 +1110,6 @@ check_rejected(
   "Dozzle must expose every REST mutation category as a check-mode planned change"
 )
 
-# The old pair of substring checks never had to describe the same task: the count
-# matched any line spelling the include, and the service name could come from
-# anywhere else in the file.
 check_rejected(
   :policy, "a container CPU include that names another service",
   [[BESZEL_DEPLOY,
@@ -1245,8 +1118,6 @@ check_rejected(
   "beszel: role must verify its effective container CPU policy exactly once"
 )
 
-# The window this replaced was 120 characters wide, so a shell-out that named the
-# module further down its own argument list was past the end of it.
 check_rejected(
   :policy, "a Compose shell-out past the end of the old scan window",
   [[BESZEL_DEPLOY,
@@ -1266,10 +1137,6 @@ check_rejected(
 )
 
 # --- Arr Phase 1 API ownership ------------------------------------------------
-#
-# Every row below was accepted by the whole-file substring pairs these assertions
-# replaced. Three of them are the unintended-match class: a literal that belongs
-# to one task satisfying a check about another.
 
 check_rejected(
   :arr, "an activation downgraded while the module stays named in the file",
@@ -1289,9 +1156,7 @@ check_rejected(
   "Arr role must gate activation on media_usenet_enabled"
 )
 
-# force: false lives on one of two seed tasks. The old pair asked whether the file
-# contained the words, so the Servarr task's force answered for the Bazarr task,
-# and the Bazarr half never asked about force at all.
+# force: false must sit on the Bazarr seed task itself, not just somewhere in the file.
 check_rejected(
   :arr, "a Bazarr seed that overwrites an operator's own configuration",
   [[ARR_BOOTSTRAP,
@@ -1334,8 +1199,6 @@ check_rejected(
   "all Arr API reconciliation must redact secret-bearing payloads"
 )
 
-# The negative half of the old pair only matched an import or search named on the
-# same source line as the word command, which a JSON body on its own line is not.
 check_rejected(
   :arr, "a library scan command issued beside the root folder creation",
   [[ARR_SERVARR,
@@ -1353,8 +1216,6 @@ check_rejected(
   "Servarr reconciliation must create root folders without import commands"
 )
 
-# combine( appears in two requests in this file, so the old check was answered by
-# the naming request no matter what the host request did with unowned fields.
 check_rejected(
   :arr, "the host request replacing unowned fields instead of merging them",
   [[ARR_SERVARR,
@@ -1365,8 +1226,6 @@ check_rejected(
   "Servarr reconciliation must preserve unowned host fields"
 )
 
-# The forbidden-endpoint check used to read the file's text, so writing down that
-# the endpoint is deliberately not used was itself a violation.
 check_accepted(
   :arr, "a comment recording that no download client is created",
   [[ARR_PROWLARR,
@@ -1374,10 +1233,8 @@ check_accepted(
     "---\n# Prowlarr indexes; a download client is deliberately never created here.\n"]]
 )
 
-# Deleting the pin is the whole failure mode it guards against: Bazarr's Jellyfin
-# integration is left off deliberately, and an absent flag looks identical to a
-# decision that was never made. Without this row the assertion could stop biting
-# and every test would still pass.
+# Bazarr's Jellyfin integration is off deliberately; an absent flag looks identical
+# to an unmade decision.
 check_rejected(
   :arr, "the Jellyfin integration pin quietly deleted",
   [[ARR_BAZARR_FILTER,
@@ -1396,8 +1253,6 @@ check_rejected(
   "komga Compose must declare its user as ${NAS_UID:?}:${NAS_GID:?} exactly once"
 )
 
-# The banned literal used to be searched for in the file's text, so recording
-# that it is banned was itself the ban being broken.
 check_accepted(
   :reader_identity, "a comment recording the banned literal identity",
   [[KOMGA_COMPOSE,
@@ -1413,9 +1268,7 @@ check_rejected(
   "Unpackerr source must derive its user from NAS_UID and NAS_GID"
 )
 
-# The pattern this replaced ran with /m over the whole file, so it could see a
-# writing module in one task and the variable in another. This plants both in
-# the same task, which is the only shape that actually persists the input.
+# Plants the writing module and the variable in the same task, the shape that persists input.
 check_rejected(
   :acquisition_adoption, "the one-run adoption input written to disk",
   [[ARR_STATE_GUARD,
@@ -1442,9 +1295,7 @@ check_rejected(
 
 # --- Integration, Mac and vault policy ------------------------------------------
 
-# tasks_from: target is a prefix of tasks_from: target_docker_dependencies, so
-# the substring check could not tell the containment validator from the module
-# preflight that runs beside it.
+# tasks_from: target is a prefix of tasks_from: target_docker_dependencies.
 check_rejected(
   :policy_integration, "the Mac path fixture pointed at a different entry point",
   [[MAC_PATH_FIXTURE, "        tasks_from: target\n", "        tasks_from: target_docker_dependencies\n"]],
@@ -1468,8 +1319,6 @@ check_rejected(
   "acquisition namespacing must not alter the media-control or legacy project defaults"
 )
 
-# The leak check read three concatenated files, so a comment saying the scoped
-# variable does not apply here was itself the leak.
 check_accepted(
   :policy_integration, "a comment naming a role-scoped namespace variable",
   [[HOST_PREP,
@@ -1491,12 +1340,8 @@ check_accepted(
     "  roles:\n"]]
 )
 
-# The same defect one file over since #653, which moved this check out of the
-# static job's steps and into the policy gate's manifest: it is still named in
-# tests/validate-policy.sh, so a whole-file substring finds it, and it is no
-# longer inside a heredoc, so nothing dispatches it. That is what "demoted to its
-# name" means here, and it is why the assertion reads the manifest through
-# PolicySupport.gate_shards rather than grepping the file.
+# Named in tests/validate-policy.sh but outside every shard heredoc (#653), so the
+# assertion reads PolicySupport.gate_shards rather than grepping the file.
 check_rejected(
   :policy_vault, "the redaction test demoted from a dispatched line to its name",
   [[POLICY_GATE,
@@ -1529,10 +1374,6 @@ check_rejected(
 )
 
 # --- Downloader Phase 1 Usenet ownership ---------------------------------------
-#
-# Two of these are the byte-offset ordering failure this conversion is about: a
-# task named in a comment sorts ahead of the task it names, and a substring that
-# is a prefix of a longer identifier matches it.
 
 check_rejected(
   :downloaders, "the state guard replaced by a comment naming it",
@@ -1598,8 +1439,6 @@ check_rejected(
   "bootstrap must render every declared category and destination"
 )
 
-# Both absence invariants used to read the file's text, so writing down that the
-# forbidden shape is deliberately absent was itself the forbidden shape.
 check_accepted(
   :downloaders, "a comment recording that no provider section is rendered",
   [[DOWNLOADERS_INI,
@@ -1615,16 +1454,8 @@ check_accepted(
 )
 
 # --- Deployment bundle policy -------------------------------------------------
-#
-# The inputs the role validates are the ones the expression its
-# controller_input.yml inclusions hand the validator names. The old whole-file
-# substring could not tell a validated path from a path mentioned in a comment,
-# so deleting the canonical Compose validation outright left the check passing as
-# long as the words survived somewhere in the file. Batched since #333: the
-# canonical Compose group leaves the batch expression, and the words survive in a
-# YAML comment above the task -- which is where a comment can still be one, since
-# a `#` inside the folded expression would be part of the string rather than a
-# comment.
+# The validated inputs are those the controller_input.yml expression names; a
+# comment naming a path must not count (#333).
 check_rejected(
   :policy_deployment, "canonical Compose validation deleted with its path left in a comment",
   [[BUNDLE_INPUTS,
@@ -1655,9 +1486,6 @@ check_rejected(
   "controller inputs must validate every tracked runtime helper"
 )
 
-# The leaf moves out of the expression the command evaluates and into a comment
-# beside it. The file still contains the words; the validator no longer sees the
-# path.
 check_rejected(
   :policy_deployment, "a guarded leaf demoted to a comment beside the batch",
   [[BUNDLE_TARGET,
@@ -1696,9 +1524,6 @@ check_rejected(
   "deployment manifest must bind the exact acquisition catalog path, mode, and checksum"
 )
 
-# The byte-offset form this replaced compared the first occurrence of each key
-# anywhere in the file, so a comment naming the later key sorted ahead of the key
-# itself and failed a template that renders in exactly the required order.
 check_accepted(
   :policy_deployment, "a template comment naming a key that renders later",
   [[BUNDLE_MANIFEST_TEMPLATE,
@@ -1716,8 +1541,6 @@ check_rejected(
   "preflight must derive the effective container CPU set from Docker capacity"
 )
 
-# The old pair only ruled out the one wrong path that had been used before, so any
-# other divergent path satisfied it.
 check_rejected(
   :policy_platform, "one probe task pointed at a divergent path",
   [[PREFLIGHT,
@@ -1727,11 +1550,7 @@ check_rejected(
 )
 
 # --- Production auto-deploy role ----------------------------------------------
-#
-# These two rows install and run the role, so they are the slowest here at about
-# ten seconds each. The first is #85's headline find: the probe could be deleted
-# outright and the old whole-file substring still passed, because the same path
-# appears in the poller's own command line and in a fail_msg.
+# These rows install and run the role (~10s each).
 check_rejected(
   :auto_deploy, "a virtualenv probe deleted while its path stays in the command line",
   [[AUTO_DEPLOY_ROLE,
@@ -1745,10 +1564,7 @@ check_rejected(
   "the role must verify the controller virtualenv before installing"
 )
 
-# The Pushover configs carry a duplicated-directive guard of their own: curl
-# sends every form-string it is given, so a second token line is a second token
-# on one request -- and a rendered file carrying its own token twice still
-# contains it, which is all a substring check would ask.
+# curl sends every form-string it is given, so a duplicated token line is a second token.
 check_rejected(
   :auto_deploy, "a duplicated Pushover token form-string",
   [[AUTO_DEPLOY_PUSHOVER_NOTIFIER,
@@ -1764,10 +1580,7 @@ check(failures,
       File.readlines(VALIDATE_POLICY).include?("ruby tests/contract_structure_mutation_test.rb\n"),
       "contract structure mutation proofs are not registered in the policy suite")
 
-# Printed so the reuse is checkable from a build log rather than believed: a copy
-# for every row means the verification is rejecting the copy every time and the
-# rows are paying for a cache that is not working. The floor is one copy per pool
-# worker rather than one for the whole run, because each worker owns its fixture.
+# Printed so cache reuse is checkable from a build log; the floor is one copy per worker.
 reuse = format("%<rows>d rows, %<copies>d repository copies", **COPY_ACCOUNTING.slice(:rows, :copies))
 unless COPY_ACCOUNTING[:rebuilt].empty?
   warn "contract structure copy rebuilt after: #{COPY_ACCOUNTING[:rebuilt].join(', ')}"

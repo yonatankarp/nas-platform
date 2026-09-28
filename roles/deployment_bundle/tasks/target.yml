@@ -1,26 +1,7 @@
 ---
-# First, ahead of everything else this file checks, because it is the check that
-# explains the others. Issue #326: a hand-run ansible-playbook and the poller's
-# five-minute tick converged the same host at once. The poller repointed
-# `current` at its own release while the manual run was still deploying services
-# against the release that run had activated, and the manual run died 1463 tasks
-# in -- at the *last* role -- on the containment guard below, reporting an unsafe
-# deployment target whose pointer did not resolve to the expected release. That
-# message is a real security control and says exactly the right thing for the
-# cases it is for; it is simply not what was wrong. An operator cannot tell a
-# benign race from a path traversal by reading it, and the natural response to it
-# -- run it again -- adds a third converge to the two already running.
-#
-# So the probe runs here rather than only in site.yml's pre_tasks: every service
-# role re-includes this file as its first task, which is what makes a poller that
-# started *after* the manual run -- the ordering the #326 timestamps prove -- fail
-# the very next role with "a deployment is already running" instead of failing at
-# task 1463 with an integrity refusal.
-#
-# It is advisory, not a security control: the lock is cooperative, the owner
-# declaration below is an environment variable anyone able to run ansible-playbook
-# could export, and nothing here is load-bearing for containment. The guard that
-# is load-bearing is the containment validator further down, which is unchanged.
+# Probed in every service role's first task, not only in pre_tasks, so a concurrent
+# converge fails the next role with "already running" rather than much later on the
+# containment guard below (#326). Advisory only: the lock is cooperative.
 - name: Probe the deployment lock for a concurrent deployment
   ansible.builtin.command:
     argv:
@@ -30,54 +11,28 @@
       - "{{ deployment_bundle_lock_path }}"
   register: deployment_bundle_lock_probe
   changed_when: false
-  # A read, and one that has to really happen under --check. Answering it from a
-  # simulation would report every host as unlocked, which is precisely the state
-  # this exists to disprove.
+  # Must really run under --check: a simulated read would report every host unlocked.
   check_mode: false
 
-# Refused under --check too, deliberately. A check-mode review predicts against a
-# tree another converge is in the middle of rewriting, so its diff is stale before
-# it finishes printing -- and the thing the operator most needs to learn from a
-# review that cannot be trusted is *why*: a deployment is running. Reviewing again
-# once it finishes costs a few minutes; acting on a diff taken mid-converge costs
-# more.
-#
-# Exactly one held lock is tolerated: the one whose holder recorded nothing about
-# itself. The record and this guard shipped in the same commit, but the poller
-# that writes the record is installed by install-production-auto-deploy.yml,
-# which the poller only reaches *after* site.yml succeeds. So on a host still
-# running the previous poller this guard met a held lock carrying no pid, refused,
-# and deadlocked the very upgrade that installs the record-writing poller -- the
-# run of 20f97a9 on the NAS died here, at "an unnamed holder". A record-less
-# holder is by definition one that predates that poller, and this guard is
-# advisory rather than a security control, so it says what it found and continues.
-# The load-bearing containment validator below is unchanged and still catches a
-# genuine bad pointer. What #326 was actually about -- a record naming a *different*
-# pid -- is still refused exactly as before.
+# Refused under --check too: a diff taken mid-converge is stale. A held lock whose
+# holder recorded no pid is tolerated: it predates the record-writing poller, and
+# refusing it would deadlock the upgrade that installs that poller (#327).
 - name: Judge the deployment lock this host reports
   vars:
     deployment_bundle_lock_state: >-
       {{ deployment_bundle_lock_probe.stdout | from_json }}
-    # Named rather than compared inline so the message can say "operator converge
-    # (pid 4711, started ...)" when the holder wrote a record, and still say
-    # something true when it did not.
     deployment_bundle_lock_holder: >-
       {{ (deployment_bundle_lock_state.holder | default('an unnamed holder')) ~
          (' (pid ' ~ deployment_bundle_lock_state.pid ~
           (', started ' ~ deployment_bundle_lock_state.started
            if deployment_bundle_lock_state.started is defined else '') ~ ')'
           if deployment_bundle_lock_state.pid is defined else '') }}
-    # The holder is this run's own ancestor when it says so and the pids agree:
-    # `nas-platform-deploy --converge` and the poller both take the lock and then
-    # run these plays, so without this every locked converge would refuse itself.
-    # An empty declaration -- a bare ansible-playbook -- can never match.
+    # The locked launcher and the poller take the lock and then run these plays, so a
+    # matching declared pid is this run's own ancestor. An empty declaration never matches.
     deployment_bundle_lock_held_by_this_run: >-
       {{ (deployment_bundle_lock_owner | string | trim | length > 0) and
          (deployment_bundle_lock_owner | string | trim ==
           deployment_bundle_lock_state.pid | default('') | string) }}
-    # A pid is what makes a holder answerable. Without one there is nothing to
-    # tell apart from this run, so there is no second deployment to name and no
-    # refusal that could be justified by what was actually read.
     deployment_bundle_lock_identified: >-
       {{ deployment_bundle_lock_state.pid is defined }}
   block:
@@ -132,14 +87,8 @@
     deployment_target_expected_root: >-
       {{ (nas_docker_root | regex_replace('/+$', '')) ~ '/nas-platform' }}
 
-# The service a caller names is the manifest service *directory*, not its role:
-# roles/paperless_ngx deploys services/paperless-ngx, so a name derived from the
-# role would validate five paths that do not exist while the five it is about to
-# touch went unchecked. Membership in the manifest is asserted rather than
-# assumed, so that mistake fails the run at the caller instead of silently
-# weakening containment. deployment_bundle_services is absent in the playbooks
-# that validate target paths without parsing controller inputs, and the shape
-# check still applies there.
+# The caller names the manifest service directory (paperless-ngx), not the role;
+# membership is asserted so a role name fails here instead of checking five wrong paths.
 - name: Validate the named deployment target service
   ansible.builtin.assert:
     that:
@@ -157,16 +106,9 @@
     deployment_target_known_services: >-
       {{ deployment_bundle_services | default([]) | map(attribute='name') | list }}
 
-# A read-only check against pre-existing symlinks and canonical escapes, run
-# once per distinct set of paths, before the tasks that mutate them: once for
-# the play in site.yml pre_tasks, and once per role for the extra paths only
-# that role knows it is about to touch. It is deliberately not repeated beside
-# each individual mutation. That would narrow the window between check and use
-# without closing it, because nothing here excludes a
-# concurrent privileged filesystem mutation between two Ansible tasks; closing
-# it takes the check inside the operation, against a held descriptor, the way
-# library/atomic_safe_slurp.py does. A subprocess per mutation buys only the
-# narrower window, so this role no longer spends one.
+# Checked once per path set, not beside each mutation: that would only narrow the
+# window, since nothing here excludes a concurrent privileged filesystem mutation
+# between tasks; closing it needs a held descriptor (library/atomic_safe_slurp.py).
 - name: Validate target path ancestry and canonical containment
   ansible.builtin.command:
     argv:
@@ -178,14 +120,8 @@
       - "{{ platform_release_dir }}"
       - "{{ platform_current_dir }}"
       - "{{ platform_deploy_root }}/.current-{{ platform_release_id }}"
-      # Relaxed under --check, and only there. Activating the release is a
-      # command task, which check mode skips, so `current` still names the
-      # previous release when this runs -- requiring the new one would fail every
-      # --check on a host that has ever deployed, which is every real target.
-      # Containment is not weakened: the current-pointer branch still refuses a
-      # pointer that escapes releases/ or whose basename is not a release id. Only
-      # the equality check that check mode structurally cannot satisfy is dropped,
-      # and a real run still passes 1.
+      # Relaxed under --check only: check mode skips activation, so `current` still names
+      # the previous release. The pointer-escape checks still apply.
       - >-
         {{ ((deployment_target_require_current_release | bool) and
             not ansible_check_mode) | ternary('1', '0') }}
@@ -197,11 +133,7 @@
       {{ (deployment_target_paths | list) +
          (deployment_target_service_paths | list) +
          (deployment_target_extra_paths | list) }}
-    # The five paths every service role touches, built here rather than copied
-    # into fifteen role bodies: the service directory in the current release,
-    # both Compose files a selective run may deploy from, and the runtime
-    # directory holding the rendered .env. A caller owning no single service
-    # names the empty string and derives nothing.
+    # The five paths every service role touches; an empty service derives nothing.
     deployment_target_service_paths: >-
       {{ []
          if deployment_target_service | length == 0
@@ -230,9 +162,7 @@
                       | map(attribute='name') | list)
             | map('join') | list) }}
 
-# Lets deployment_bundle's own body skip a validation the play already ran,
-# while a playbook that uses the role without site.yml's pre_tasks still gets
-# one. Mirrors deployment_bundle_controller_validated in controller.yml.
+# Lets a later include skip a validation the play already ran.
 - name: Record target containment validation
   ansible.builtin.set_fact:
     deployment_bundle_target_validated: true

@@ -1,21 +1,7 @@
 ---
-# What the whole run shipped, handed to the deployment poller after every service
-# has converged: which images moved between which versions, and the commits the
-# release carries. The per-service reports say a service was recreated; the
-# poller's one Deployments message says what shipped, with links this play
-# cannot build, once verify.yml has passed.
-#
-# Silent unless the release actually moved. A converge that reinstalls the same
-# revision recreated nothing, and the per-service reports stay silent for the
-# same reason.
-#
-# ONE WAY OUT, and nothing is ever published here (#558 stage 4a). Only the
-# poller sets deployment_summary_path, and with it unset -- an operator
-# --converge, a workstation run -- this file reads nothing, writes nothing and
-# sends nothing. The plain-text summary it used to publish in that case is gone
-# on purpose: a hand-run deploy gets its per-service Containers notices and no
-# Deployments message. A poller older than the variable (before #633) loses the
-# one summary of the tick that installs its successor, which was accepted.
+# Hands the poller what the release shipped (image moves and commits) once every
+# service converged. Only the poller sets deployment_summary_path; unset, this file
+# reads, writes and sends nothing (#558).
 - name: Read the installed deployment manifest
   atomic_safe_slurp:
     path: "{{ platform_release_dir }}/manifest.yml"
@@ -38,8 +24,6 @@
     - not ansible_check_mode
     - deployment_previous_release is match('^[0-9a-f]{40}$')
 
-# A first install has no previous manifest, and every image in it is genuinely
-# new rather than unchanged.
 - name: Resolve which images the release moved
   ansible.builtin.set_fact:
     deployment_summary_changes: >-
@@ -55,9 +39,7 @@
     - not ansible_check_mode
     - deployment_summary_current_source.exists | default(false)
 
-# Delegated because the Git history lives in the controller checkout, which the
-# target never has. Best effort: a release whose predecessor the checkout no
-# longer contains still deserves the image summary rather than a failed run.
+# Delegated: Git history exists only in the controller checkout. Best effort.
 - name: Read the commit subjects this deployment carries
   ansible.builtin.command:
     argv:
@@ -92,14 +74,8 @@
     - not ansible_check_mode
     - deployment_summary_current_source.exists | default(false)
 
-# The poller links each image to the pull request that moved it, so it needs
-# the commit that introduced the image's exact pinned reference. A pickaxe on
-# the whole reference, because one Compose file can pin several images
-# (services/arr/compose.yml pins four), and only under services/, where every
-# Compose definition lives: a later commit that merely mentions the reference
-# in a document would otherwise be the newest match and take the image's link.
-# Best effort, like the log above: a lookup that finds nothing costs that image
-# its link.
+# The poller links each image to the commit that introduced its exact reference.
+# Limited to services/ so a document mentioning the reference cannot win. Best effort.
 - name: Find the commit that introduced each image the release runs
   ansible.builtin.command:
     argv:
@@ -130,16 +106,8 @@
     - deployment_previous_release is match('^[0-9a-f]{40}$')
     - item.reference is defined
 
-# Beside the poller's other state, which is where the path points, and on the
-# controller because the poller reads it there; on the NAS the two are one host.
-# It carries versions, SHAs and commit subjects, nothing secret, and is private
-# anyway like every other file in that directory.
-#
-# A write that fails is rescued, never fatal. By now every service has
-# converged, and failing here would mark the release failed and skip verify and
-# the poller's reinstall -- over a notification input a full or read-only disk
-# refused. The poller already sends nothing for a release with no summary, so
-# the cost is this release's message, and the rescue says so.
+# Rescued, never fatal: every service already converged, and failing here would skip
+# verify and the poller's reinstall over a notification input.
 - name: Hand the deployment summary to the poller
   when:
     - deployment_summary_path | length > 0

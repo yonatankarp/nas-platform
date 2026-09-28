@@ -1,7 +1,4 @@
 ---
-# Server settings. Reads the current settings, validates their schema before
-# touching them, patches only the keys this platform owns and reads the result
-# back so the run proves what it applied.
 - name: Resolve desired Audiobookshelf server settings
   ansible.builtin.set_fact:
     audiobookshelf_desired_server_settings: >-
@@ -26,25 +23,9 @@
   check_mode: false
   no_log: true
 
-# The schema assertion below was validated by hand against one Audiobookshelf
-# release, and it used to name that release as a literal. Audiobookshelf writes
-# its own package version into serverSettings.version at every start, so the
-# literal was a proxy for "the server is the release whose schema was checked",
-# and every Renovate bump went red on it without any schema having moved (#753, #765).
-# The version is now read from the pin the running container was deployed from,
-# so the assertion still refuses a server that is not the pinned release, and the
-# per-key type assertions beside it are what guard the schema itself.
-#
-# The pin is read from the INSTALLED release, and that is also what makes the
-# comparison right under --check. A review installs no release and recreates no
-# container, so on the run that bumps the image `current` still pins the old
-# version and the server still runs it: the two agree. On the live converge
-# deployment_bundle installs the new release and Compose recreates the
-# container before this runs, so both are the new version. Under --check a
-# `current` that predates this service carries no services/audiobookshelf at
-# all, so the path is statted first and three states are kept apart, the way
-# roles/vaultwarden/tasks/deploy.yml keeps them (#547): present compares,
-# absent under check mode reports, absent on a live run fails.
+# The version assertion reads the installed release's pin rather than a literal,
+# which went red on every bump (#753, #765). Under --check the installed release
+# may lack this service, so absent-in-check reports and absent-live fails (#547).
 - name: Read whether the installed release carries the Audiobookshelf Compose file
   ansible.builtin.stat:
     path: "{{ platform_current_dir }}/services/audiobookshelf/compose.yml"
@@ -103,8 +84,7 @@
       - audiobookshelf_server_settings_before.json is mapping
       - audiobookshelf_server_settings_before.json.serverSettings is mapping
       - audiobookshelf_server_settings_before.json.serverSettings.id == 'server-settings'
-      # Short-circuits before the pin, which is undefined on the one path that
-      # reaches here without it: a review whose release lacks this service.
+      # Short-circuits before the pin, undefined when the release lacks this service.
       - >-
         (ansible_check_mode and not audiobookshelf_pinned_compose_present.stat.exists)
         or audiobookshelf_pinned_version | length > 0
@@ -163,10 +143,8 @@
     headers:
       Authorization: "Bearer {{ audiobookshelf_reconcile_token }}"
     body_format: json
-    # backupPath is verified with the rest but never sent here. From 2.36.1
-    # PATCH /api/settings filters its body to ServerSettings.patchableSettingsKeys,
-    # which does not name backupPath, and answers 200 having dropped it. The
-    # dedicated route below is the one that also reloads the backup manager.
+    # backupPath is verified but not sent: PATCH /api/settings drops it silently
+    # since 2.36.1; the dedicated route below also reloads the backup manager.
     body: >-
       {{ audiobookshelf_desired_server_settings | dict2items
          | rejectattr('key', 'equalto', 'backupPath') | items2dict }}

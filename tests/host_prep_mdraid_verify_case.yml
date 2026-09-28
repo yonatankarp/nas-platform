@@ -1,8 +1,6 @@
 ---
-# One case of tests/host_prep_mdraid_verify_test.yml. Separate because a block
-# cannot be looped. The facts are reset first because set_fact and register
-# persist across iterations, and a case judged on the previous case's values is
-# a green run reporting the wrong thing.
+# One case of tests/host_prep_mdraid_verify_test.yml (a block cannot be looped).
+# Facts persist across iterations, so they are reset first.
 - name: Reset the facts this case is judged on
   ansible.builtin.set_fact:
     host_prep_mdraid_devices: {}

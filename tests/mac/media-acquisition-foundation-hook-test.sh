@@ -62,10 +62,7 @@ fixture=$(CDPATH= cd -- "$fixture" && pwd -P)
 trap 'rm -rf "$fixture"' EXIT HUP INT TERM
 mkdir -p "$fixture/bin"
 
-# The fake docker is a 100-line Ruby program that used to arrive here as a
-# `cat > ... <<'RUBY'` heredoc. It is media-acquisition-foundation-hook-fake-docker.rb
-# now, so sh -n, ruby -c and a reader can all reach it. Resolve it from this
-# script's own checkout, never from a tree under inspection.
+# The fake docker, from this script's own checkout (#315).
 cp "$repo_dir/tests/mac/media-acquisition-foundation-hook-fake-docker.rb" "$fixture/bin/docker" ||
   fail "media-acquisition-foundation-hook-fake-docker.rb is missing"
 

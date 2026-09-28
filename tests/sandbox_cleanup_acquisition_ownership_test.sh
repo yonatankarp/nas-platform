@@ -299,10 +299,8 @@ revalidate_recorded_resources() {
   done
 }
 
-# Refuse to run against a daemon that already holds any resource this fixture
-# would create or cleanup would collect, across every registered project of both
-# namespaces the sandbox owns. The probes are batched exactly as cleanup batches
-# them, so the fixture observes the same daemon state the code under test does.
+# Refuse a daemon already holding anything cleanup would collect, probed in the
+# same batches cleanup uses.
 preflight_project_cleanup_targets() {
   [ -n "$active_sandbox" ] || return 0
 
@@ -513,10 +511,7 @@ require_network_unchanged() {
   [ "$actual_id" = "$expected_id" ] || fail "cleanup replaced unrelated $description network"
 }
 
-# A production-named resource is unrelated whether this fixture created it or an
-# earlier run left it behind. One that already exists is borrowed rather than
-# recreated: it is never recorded, so the execution guard refuses any attempt to
-# remove it, and the fixture never deletes it either.
+# An existing production-named resource is borrowed, never recorded or deleted.
 borrow_or_create_container() {
   borrow_name=$1
   borrow_id=$("$real_docker" container inspect "$borrow_name" \
@@ -835,11 +830,7 @@ case ${1-} in
 esac
 ensure_cleanup_image
 
-# Production-looking names without sandbox ownership are unrelated resources and
-# must survive cleanup unchanged. The roster covers a container and a Compose
-# network of an acquisition stack and of the pre-existing stacks, plus the
-# production media-control bridge, which carries the platform purpose label under
-# another project.
+# Production-looking names without sandbox ownership must survive cleanup.
 unrelated_container_names='radarr sabnzbd beszel dozzle_socket_proxy immich_postgres paperless_webserver'
 unrelated_network_names='arr_default downloaders_default immich_default beszel_default'
 new_sandbox
@@ -866,8 +857,6 @@ for unrelated_id in $unrelated_network_ids $borrowed_network_ids; do
   require_network_unchanged "$unrelated_id" production-named
 done
 
-# Only what this fixture created is removed; a borrowed resource stays exactly
-# as it was found.
 for unrelated_id in $unrelated_container_ids; do
   "$real_docker" rm -f "$unrelated_id" >/dev/null
 done
@@ -876,11 +865,8 @@ for unrelated_id in $unrelated_network_ids; do
 done
 clear_active_records
 
-# Exact namespace-derived permanent resources, the media-control bridge, and a
-# strict Configarr one-shot are owned by this disposable namespace and must be
-# removed. The roster is taken from the cleanup registry itself, so every
-# registered service of every registered project is proven, not just the two
-# acquisition stacks.
+# Namespace-owned resources must be removed; the roster comes from the cleanup
+# registry itself.
 new_sandbox
 owned_container_ids=
 owned_network_ids=
@@ -926,8 +912,7 @@ for owned_id in $owned_network_ids; do
 done
 clear_active_records
 
-# Exact names with missing/wrong project labels and project labels on unexpected
-# names must refuse atomically for both acquisition Compose projects.
+# Mismatched names or project labels refuse atomically.
 for negative_kind in arr downloaders immich; do
   for project_mismatch in missing wrong; do
     new_sandbox
@@ -973,8 +958,6 @@ for negative_kind in arr downloaders immich; do
   release_owned_refused_sandbox
 done
 
-# Network project, name, and default-network-label mismatches are independently
-# table-driven across Arr and downloader ownership, with collected peers intact.
 for negative_kind in arr downloaders immich; do
   for network_project_mismatch in missing wrong; do
     new_sandbox
@@ -1075,10 +1058,7 @@ for negative_kind in arr downloaders immich; do
   done
 done
 
-# Karakeep's named networks are owned only under a declared key, with the exact
-# project label and a network label naming that same key. An undeclared key under
-# the right project label, a declared name labelled as another declared key, and
-# a declared name under another project each refuse, with a declared peer intact.
+# Karakeep networks are owned only under a declared key with matching labels.
 for karakeep_mismatch in undeclared-key network-label project-label; do
   new_sandbox
   karakeep_project=$fixture_namespace-karakeep
@@ -1116,14 +1096,11 @@ for karakeep_mismatch in undeclared-key network-label project-label; do
   release_owned_refused_sandbox
 done
 
-# The media-control bridge is not a Compose resource: it is owned only when its
-# namespace-derived name, bridge driver, and exactly two platform labels all
-# match. A wrong project, an extra label, and a labelled network under another
-# name each refuse before anything is deleted.
+# The media-control bridge is owned only when name, driver and exactly two
+# platform labels all match.
 for bridge_purpose in media-control alert-relay; do
   for media_mismatch in project extra-label unexpected-name; do
     new_sandbox
-    # After new_sandbox, which is what derives this run's namespace.
     bridge_network=$fixture_namespace-$bridge_purpose
     case $media_mismatch in
       project)
@@ -1163,8 +1140,6 @@ for bridge_purpose in media-control alert-relay; do
   done
 done
 
-# A generated Configarr name outside the exact project is not owned by this
-# sandbox cleanup and must survive, whether the project label is absent or wrong.
 for configarr_project_mismatch in missing wrong; do
   new_sandbox
   if [ "$configarr_project_mismatch" = missing ]; then
@@ -1187,8 +1162,7 @@ for configarr_project_mismatch in missing wrong; do
   clear_active_records
 done
 
-# Configarr ownership requires the generated name, service label, and one-off
-# label together. Missing and wrong labels independently refuse before deletion.
+# Configarr ownership needs the generated name, service and one-off labels together.
 for configarr_mismatch in name service-missing service-wrong oneoff-missing oneoff-wrong; do
   new_sandbox
   configarr_name=$fixture_namespace-arr-configarr-run-a1b2c3

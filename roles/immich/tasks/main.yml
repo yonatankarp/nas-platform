@@ -36,20 +36,9 @@
     mode: "0600"
   no_log: true
 
-# Before the restore classification and every Compose operation below it --
-# the check-mode end_role, the application stop, the data services and the
-# deployment -- because recreating the server from an older image is the act
-# being refused. immich-server runs its database migrations when it starts and
-# they are one-way, so a pin older than one that has already run here would
-# crash-loop inside the container rather than fail in a play (#511, #826).
-# immich-server and not the database: the PostgreSQL major is capped by its own
-# Renovate ceiling and a major change there is a restore, not a migration this
-# guard could judge -- classify_restore.py refuses a data directory of another
-# major instead, when the deploy account can read its PG_VERSION, and warns
-# and proceeds when it cannot; machine-learning holds no store. The five paths
-# this reads are the ones the containment re-include at the top of this file
-# already declared through deployment_target_service, so it needs no
-# extra_paths.
+# Before every Compose operation: immich-server's migrations are one-way, so an
+# older pin would crash-loop in the container (#511, #826). The database major
+# is capped by Renovate and checked by classify_restore.py instead.
 - name: Refuse an Immich image older than the database this host has migrated
   ansible.builtin.include_role:
     name: image_downgrade_guard
@@ -59,32 +48,17 @@
     image_downgrade_guard_project_name: "{{ immich_compose_project_name }}"
     image_downgrade_guard_store_description: "{{ nas_docker_root }}/immich/postgres"
 
-# Immich writes its own version and its PostgreSQL version into the name of every
-# database dump it produces, so the versions the restore preflight must expect
-# are the versions of the images about to start. Reading them from the pinned
-# Compose definition is what keeps that true across an image bump; a restated
-# literal goes stale on the next one and refuses the backup the previous image
-# just wrote.
-#
-# The controller's checkout rather than platform_current_dir, and not only to
-# stay off the latent read #547 describes. Activating a release is a command
-# task, so check mode skips it and `current` still names the PREVIOUS release
-# during a review -- which would derive the version being replaced and report a
-# refusal for the bump under review. The release is assembled from this checkout
-# in this same run, so the file read here is the one the target will hold;
-# roles/deployment_bundle/templates/manifest.yml.j2 reads the images the same
-# way, for the same reason.
+# Immich names each dump after its own and PostgreSQL's versions, so read the
+# pins about to start. The controller checkout, not `current`, because under
+# --check `current` still names the previous release.
 - name: Resolve the pinned Immich images
   ansible.builtin.set_fact:
     immich_pinned_images: >-
       {{ (lookup('file', playbook_dir ~ '/services/immich/compose.yml')
           | from_yaml).services }}
 
-# Both tags are read the same way, and the difference between them is why the
-# search stops at the first non-version character rather than reading the whole
-# tag: the server pins a bare `vX.Y.Z`, while the database pins a major followed
-# by the extension versions its schema is coupled to. Neither version is
-# restated here, so neither can go stale -- read the pins themselves.
+# Stop at the first non-version character: the database tag carries extension
+# versions after its major.
 - name: Derive the expected Immich version from the pinned server image
   ansible.builtin.set_fact:
     immich_restore_expected_immich_version: >-
@@ -102,9 +76,7 @@
          | regex_search('(?<=:)[0-9]+') | default('0', true) }}
   when: immich_restore_expected_postgres_major | int == 0
 
-# An unreadable tag would otherwise reach the classifier as an empty expected
-# version, which refuses every backup under a category that names the backup
-# rather than the pin that could not be read.
+# An empty expected version would refuse every backup under a misleading category.
 - name: Require the expected restore versions to have resolved
   ansible.builtin.assert:
     that:
@@ -165,8 +137,7 @@
   ansible.builtin.assert:
     that:
       - immich_restore_classification_command.rc | default(1) | int == 0
-    # A major mismatch is the one refusal an operator causes on purpose, by
-    # repinning the database image, so it is the one that says what to do. It
+    # The one refusal an operator causes on purpose, so it says what to do. It
     # names no path: the negative restore matrix refuses output carrying one.
     fail_msg: >-
       Immich restore preflight refused deployment
@@ -193,10 +164,7 @@
       if immich_restore_classification_status == 'stale-newest-backup'
       else 'repair the protected storage or backup condition and rerun.' }}
 
-# The classifier proceeds, as it did before it checked the major at all, when
-# the deploy account may list the cluster but is denied its PG_VERSION: refusing
-# there would stall every deployment on a permission nobody has measured. It
-# says so on stderr, and this is where the operator sees it.
+# The classifier proceeds when PG_VERSION is unreadable; this surfaces its stderr warning.
 - name: Warn that the Immich PostgreSQL major could not be verified
   ansible.builtin.debug:
     msg: >-
@@ -215,13 +183,8 @@
     immich_restore_classification: >-
       {{ immich_restore_classification_command.stdout | from_json }}
 
-# Deliberately not redacted, matching the treatment the Immich contract already
-# requires of "Require the managed Immich database credential": the credential-bearing
-# probe stays redacted and only its classified category is asserted in the open. This
-# assert reads nothing but that category, whose four keys are a filename, a fresh or
-# existing marker, and two booleans. Unlooped, so no item reaches the result dict, and
-# without it the fail_msg reports an invalid classification without saying which of the
-# ten shape and consistency rules the classifier broke.
+# Not redacted: reads only the classified category (no credential), so the
+# failing condition names which rule the classifier broke.
 - name: Require exact Immich storage classification
   ansible.builtin.assert:
     that:
@@ -288,12 +251,8 @@
     - immich_restore_required | bool
     - not ansible_check_mode
 
-# The database and the cache come up first and alone. PostgreSQL honors
-# POSTGRES_USER, POSTGRES_DB and POSTGRES_PASSWORD only when it initializes an
-# empty data directory; against an existing cluster it ignores them silently.
-# Bringing the data services up before the application is what lets the next
-# task refuse a rotated credential with a clear message instead of letting the
-# whole stack fail later as an opaque application startup timeout.
+# PostgreSQL honours POSTGRES_* only on an empty data directory, so the data
+# services come up first and the next task refuses a rotated credential clearly.
 - name: Deploy the Immich data services
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/immich"
@@ -313,11 +272,8 @@
     - immich_restore_required | bool
     - not ansible_check_mode
 
-# Loopback inside the PostgreSQL container is trust-authenticated, so this
-# deliberately connects to the Compose service name instead: that leaves the
-# loopback interface, matches the final scram-sha-256 rule in the image's
-# pg_hba.conf, and so verifies the database name, the role and the password
-# together rather than only the first two.
+# Loopback is trust-authenticated, so connect via the service name to hit the
+# scram-sha-256 rule and verify the password too.
 - name: Refuse a rotated Immich database credential
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/immich"
@@ -392,9 +348,7 @@
     container_cpu_service_name: immich
     container_cpu_project_name: "{{ immich_compose_project_name }}"
 
-# Unlike some other services in this platform, the API answers before the
-# container health check reports healthy, so this waits on the application's own
-# statement about whether it has an administrator yet.
+# The API answers before the health check passes, so ask it directly.
 - name: Read Immich initialization state
   ansible.builtin.uri:
     url: "{{ immich_api }}/server/config"
@@ -434,9 +388,7 @@
     - not immich_initialized | bool
   changed_when: true
 
-# Immich accepts this exactly once: with an administrator present the server
-# answers 400 regardless of the address offered, which is what makes creating
-# the account and reconciling it afterwards two different code paths.
+# Accepted exactly once: with an administrator present the server answers 400.
 - name: Create the vault Immich administrator
   ansible.builtin.uri:
     url: "{{ immich_api }}/auth/admin-sign-up"
@@ -528,12 +480,8 @@
   check_mode: false
   no_log: true
 
-# The whole document goes back, so the desired state is the server's own
-# configuration with only the managed leaves overlaid. Anything an operator
-# changed outside that set survives the converge untouched.
-# Redacted: /system-config carries the whole Immich server configuration,
-# including the SMTP transport password and the OAuth client secret, whether or
-# not this platform sets them.
+# The whole document goes back, with only managed leaves overlaid. Redacted: it
+# carries the SMTP password and OAuth client secret.
 - name: Resolve the desired Immich system configuration
   ansible.builtin.set_fact:
     immich_desired_config: >-
@@ -584,8 +532,7 @@
   check_mode: false
   no_log: true
 
-# Without this the UI greets every operator with the first-run wizard and
-# invites them to redo the decisions this role already made.
+# Otherwise the UI greets every operator with the first-run wizard.
 - name: Complete Immich administrator onboarding
   ansible.builtin.uri:
     url: "{{ immich_api }}/system-metadata/admin-onboarding"
@@ -691,8 +638,6 @@
   check_mode: false
   no_log: true
 
-# Overlaying the managed settings onto what the server reports must be a no-op.
-# Any managed leaf that drifted makes the combined document differ.
 - name: Require the managed Immich settings
   tags: [platform_verify_immich]
   ansible.builtin.assert:

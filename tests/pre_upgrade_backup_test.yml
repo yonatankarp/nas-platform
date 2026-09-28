@@ -1,37 +1,6 @@
 ---
-# Behaviour of roles/pre_upgrade_backup, the copy Kapowarr, Vaultwarden and Karakeep take
-# of their SQLite store before a pinned upgrade (#836), and the database dump
-# Nextcloud and Paperless-ngx take through its pg_dump entry (#826). No integration lane can
-# reach it: every lane starts from an empty store, where no upgrade is pending,
-# and the upgrade lane converges neither Vaultwarden nor a failing copy. So its
-# stop, its copy and its rescue would otherwise first run on the NAS, against
-# the one store on the platform nothing can rebuild.
-#
-# This runs the shipped role through include_role, the way its callers do. The
-# release tree, the store and the Docker daemon are fixtures, and the daemon is a
-# `docker` stub on PATH that answers what the role and
-# community.docker.docker_compose_v2 actually ask of the CLI:
-#
-#   version --format {{ json . }}       the module's client probe, at start-up
-#   compose version --format json       the module's Compose version probe
-#   compose ... images --format json     the module's image listing around an `up`
-#   compose ... up --no-start ...        `state: stopped` creates before it stops
-#   compose ... ps --format json --all   ...and stops only what is not stopped
-#   compose ... stop -- <service>        the stop
-#   compose ... up ... --wait ...        the rescue's start
-#   compose ... exec -- <service> argv   the dump, run here with a fake pg_dump
-#   container ls / container inspect     the role's own reads
-#   run ... <image> -c <script> <args>    the code archive, run here
-#
-# The stub reports Compose 2.20.0, which keeps the module on its plain-text
-# progress path and its single-document `ps` read; the JSON-event path Compose
-# 2.29 enables changes how output is parsed, not which commands are run, and
-# nothing here asserts on output. What makes it faithful where it matters: an
-# `up` without --no-recreate recreates the container onto the pinned image,
-# which is what Compose does and the failure `recreate: never` exists to
-# prevent; a stop checkpoints the store, so a copy taken before it lacks the
-# line the stop writes; and the stop and start flip a state the role's own
-# `container ls --filter status=running` reads back.
+# Behaviour of roles/pre_upgrade_backup (#836, #826), which no integration lane
+# reaches, run through include_role against fixture trees and a `docker` stub.
 - name: Prove the pre-upgrade copy
   hosts: localhost
   gather_facts: false
@@ -40,9 +9,7 @@
   environment:
     PATH: "{{ backup_root }}/bin:{{ lookup('env', 'PATH') }}"
   vars:
-    # Per worktree, for the reason tests/image_downgrade_guard_test.yml gives:
-    # the environment above is templated before any task runs, and several
-    # worktrees of this repository run the gate at once.
+    # Per worktree: several worktrees run the gate at once.
     backup_root: "{{ lookup('env', 'TMPDIR') | default('/tmp', true) }}/nas-platform-pre-upgrade-backup-{{ backup_worktree_id }}"
     backup_worktree_id: "{{ (playbook_dir | hash('sha1'))[:12] }}"
     backup_store_file: db.sqlite3
@@ -52,22 +19,17 @@
     platform_compose_wait_timeout: 5
     backup_old: registry.example/fixture:v1.0.0@sha256:aaaa
     backup_new: registry.example/fixture:v1.1.0@sha256:bbbb
-    # What the candidate checkout pins in every live case: an image no case runs,
-    # so a live run that read the candidate instead of `current` finds an
-    # upgrade on the converged cases and stops a container they declare running.
+    # The candidate's pin in every live case, so reading it instead of `current`
+    # fails the converged cases.
     backup_decoy: registry.example/fixture:v9.9.9@sha256:ffff
     # Another Compose service in the same stack, listed ahead of the fixture's,
     # so a pin read off anything but the key the role is given reads this.
     backup_other: registry.example/other:v1.1.0@sha256:cccc
-    # What `state: stopped` asks: create without starting, read the state, stop
-    # what is not stopped, and read the state again for its result. The
-    # rescue's start adds an `up` and the same read after it.
+    # The CLI calls `state: stopped` makes.
     backup_stop_calls: ["up --no-start --no-recreate", "ps", "stop", "ps"]
     backup_cases:
-      # A -journal beside a -wal is not a state SQLite leaves, but the copy reads
-      # the set rather than the journal mode, so one case carries all three:
-      # Karakeep's store runs the rollback journal, and a hot one after an
-      # unclean stop is part of the store.
+      # Not a real SQLite state, but the copy reads the set rather than the
+      # journal mode, so one case carries all three.
       - name: a pending upgrade copies the store, its journals and the signing key privately after the stop
         deployed: "{{ backup_old }}"
         pinned: "{{ backup_new }}"
@@ -109,8 +71,7 @@
         expect_state: running
         expect_copy_absent: true
       # A review reads the candidate, because `current` still names the release
-      # the run replaces (#858): here `current` pins what is running and the
-      # candidate is the bump, which is what a review of a bump looks like.
+      # the run replaces (#858).
       - name: a review of a bump reports the copy against the candidate's pin and stops and writes nothing
         check_mode: true
         deployed: "{{ backup_old }}"
@@ -165,11 +126,8 @@
         expect_message: FIXTURE IS STOPPED, and was deliberately not started again
         expect_calls: "{{ backup_stop_calls }}"
         expect_state: exited
-      # The pin is read from the Compose service key the role is given (#858).
-      # Callers used to hand in roles/image_downgrade_guard's host-scoped fact,
-      # and a stale one named another service's image: an "upgrade" on every
-      # converge. Here the stack's other service and that stale fact both name
-      # another image, and a converged host must still stop nothing.
+      # The pin is read from the Compose service key the role is given, never a
+      # stale host-scoped guard fact (#858).
       - name: a pin is read from the given Compose service, never another service or a stale guard fact
         deployed: "{{ backup_new }}"
         pinned: "{{ backup_new }}"
@@ -205,11 +163,8 @@
         expect_message: FIXTURE IS NOT SERVING
         expect_calls: "{{ backup_stop_calls + ['up --no-recreate', 'ps'] }}"
         expect_state: exited
-      # tasks_from: pg_dump, the entry Nextcloud and Paperless-ngx take (#826):
-      # their store is PostgreSQL in a container of its own, so the application
-      # is stopped and the database, still running, dumps itself. The stub runs
-      # the exec'd script for real against a fake pg_dump that writes the state
-      # the application container is in, so a dump taken before the stop says so.
+      # tasks_from: pg_dump (#826): the application stops, the database dumps
+      # itself; the fake pg_dump records the application's state at dump time.
       - name: a pending upgrade dumps the database privately after stopping the application
         method: pg_dump
         deployed: "{{ backup_old }}"
@@ -248,9 +203,7 @@
           failed at "Dump the database before the pinned upgrade".*was not performed.*is running on its old image
         expect_calls: "{{ backup_stop_calls + ['exec', 'up --no-recreate', 'ps'] }}"
         expect_state: running
-      # The code archive Nextcloud takes beside its dump (#884), from a one-shot
-      # container of the image the application ran, so the older image can be
-      # started again over the code, version.php and config it wrote.
+      # The code archive Nextcloud takes beside its dump (#884).
       - name: a pending upgrade archives the code tree beside the dump, without the user's data
         method: pg_dump
         code: true
@@ -347,9 +300,7 @@
         mode: "0755"
       loop: [bin, current/services/fixture, candidate/services/fixture, runtime/services/fixture]
 
-    # The database container's pg_dump, run by the stub's `exec`. It writes the
-    # application's state into the dump, so a dump taken while the application
-    # still ran is visible in the copy, and fails when the case arms it to.
+    # The database container's pg_dump, run by the stub's `exec`.
     - name: Install the pg_dump the database container runs
       ansible.builtin.copy:
         dest: "{{ backup_root }}/bin/pg_dump"
@@ -365,8 +316,6 @@
           fi
           echo "-- dumped while the application was $(cat "$daemon/state")"
 
-    # Each case writes the two Compose files, `current` and the candidate, with
-    # its own pins; the stub never reads them.
     - name: Write the fixture's rendered environment
       ansible.builtin.copy:
         dest: "{{ backup_root }}/runtime/services/fixture/.env"
@@ -526,14 +475,8 @@
       changed_when: false
       check_mode: false
 
-    # A managed copy is chowned to nas_uid and nas_gid, so the proof needs a
-    # group that differs from the one a file takes by default and that this
-    # account may still hand a file to: any supplementary group. With none, the
-    # primary group stands in and the managed case proves the chown ran without
-    # proving it changed anything. The unmanaged case is proved the other way
-    # round: it is handed an owner no account can chown to, so a copy that
-    # chowned regardless fails. Which group an unmanaged file then takes differs
-    # between Linux and macOS, so it is not asserted.
+    # Prefer a supplementary group, so the managed chown is seen to change
+    # something; the primary group stands in when there is none.
     - name: Resolve the owner a managed copy is handed to
       ansible.builtin.set_fact:
         backup_owner_uid: "{{ backup_uid.stdout | int }}"
@@ -548,9 +491,7 @@
       loop_control:
         label: "{{ item.name }}"
 
-    # A case list that shrank reaches no per-case assertion, so the list itself
-    # is held: every case ran, and both verdicts were reached often enough that
-    # the rescue's three outcomes and the refusal before the stop are all here.
+    # A shrunken case list reaches no per-case assertion, so hold the list.
     - name: Require the case list to have run whole
       ansible.builtin.assert:
         that:

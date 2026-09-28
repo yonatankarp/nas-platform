@@ -17,10 +17,8 @@ NUMBER_WORDS = %w[
   fourteen fifteen sixteen seventeen eighteen nineteen twenty
 ].freeze
 
-# A count a document states, as an integer. Documentation here spells small
-# numbers and writes larger ones as digits, so both have to read the same;
-# anything else is nil, which callers report as a sentence that no longer has
-# the shape they can read rather than silently letting the comparison pass.
+# A stated count as an integer, spelled or in digits; nil when the sentence
+# changed shape, which callers report rather than passing.
 def stated_count(value)
   return if value.nil?
   return Integer(value, 10) if value.match?(/\A\d+\z/)
@@ -475,22 +473,13 @@ def check_sources(root, sources)
   failures
 end
 
-# The lanes CLAUDE.md documents, from the one backticked span that names them.
-# Read out of the raw source rather than out of the whitespace-flattened copy the
-# regex contracts below use, because the span wraps a line and its own content is
-# whitespace separated: flattening first would leave nothing to tell the two
-# apart. nil means the sentence no longer has the shape this can read, which is a
-# distinct failure from a lane list that disagrees.
+# Read from the raw source: the span wraps a line. nil means the sentence changed shape.
 def documented_integration_lanes(claude_md)
   span = claude_md[/^Lanes: `([^`]+)`/, 1]
   span&.split
 end
 
-# The lanes that exist, from the command CLAUDE.md tells the reader to run. Going
-# through the harness rather than reading tests/ci/suites.conf directly means the
-# doc is pinned against exactly what a reader is told to compare it to, and a
-# change to the table's format cannot make this agree with a doc the harness
-# would contradict.
+# Through the harness, so the doc is pinned against what a reader is told to run.
 def real_integration_lanes(root)
   output, _stderr, status = Open3.capture3(
     "sh", root.join("tests/integration.sh").to_s, "--list-suites"
@@ -501,21 +490,13 @@ def real_integration_lanes(root)
   lanes unless lanes.empty?
 end
 
-# The same shape as the lane roster above, for the workflow's jobs. The CI
-# section opened by calling the workflow "a `static` job and a matrix of
-# integration `suites`" long after `docs` and `mutation` had been extracted from
-# `static` -- extractions that same section documents the cost of -- and nothing
-# noticed, because no check read the workflow's job list (issue #412). nil is
-# again the distinct failure of a roster that no longer has a readable shape.
+# Same shape for the workflow's jobs (#412).
 def documented_workflow_jobs(claude_md)
   span = claude_md[/^Jobs: `([^`]+)`/, 1]
   span&.split
 end
 
-# The jobs that exist, from the workflow itself. Keys rather than the names
-# `gh pr checks` prints: `reconciliation` and `suites` carry display names built
-# from their matrix, so the check-run list is not the job list and pinning the
-# doc against it would pin a rendering.
+# Job keys, not `gh pr checks` display names, which render the matrix.
 def real_workflow_jobs(root)
   workflow = root.join(".github/workflows/ci.yml")
   return unless workflow.file?
@@ -524,24 +505,14 @@ def real_workflow_jobs(root)
   jobs unless jobs.empty?
 end
 
-# A repository path written in backticks is a reference exactly as a link is, but
-# nothing read it until #841: docs/adding-a-service.md went on citing a contract
-# #712 deleted, and docs/dossier-trailarr.md a role #558 removed. Only a span that
-# is wholly a path under one of these top-level directories is read; a span
-# carrying a placeholder, a glob or a line suffix is not a path to test.
-#
-# docs/superpowers/ is left out, as tests/policy_test.rb leaves it out of its
-# retired-declaration sweep: those are dated plans and specs recording the tree
-# they were written against, and about seventy of their citations name files
-# retired since, correctly for when they were written.
+# A backticked repository path is a reference like a link (#841). Only whole-path
+# spans under these roots are read. docs/superpowers/ is excluded: dated plans.
 BACKTICKED_PATH_ROOTS = %w[
   .github config docs filter_plugins inventory library module_utils roles scripts services tests
 ].freeze
 BACKTICKED_PATH_SOURCES = SOURCES.reject { |source| source.to_s.start_with?(ROOT.join("docs/superpowers").to_s + "/") }
                                  .freeze
-# Paths a document names deliberately although they are not in this repository.
-# Closed both ways: an entry that starts existing, or that no document cites any
-# longer, fails, so this cannot become a list of excuses nobody re-reads.
+# Paths cited deliberately though absent. Closed both ways.
 ABSENT_PATH_CITATIONS = {
   "config/config.xml" => "the *arr applications' own file inside their containers",
   "config/runtime.exs" => "Pinchflat's own file inside its image",
@@ -565,9 +536,7 @@ ABSENT_PATH_CITATIONS = {
   "tests/contracts/seafile.sh" => "retired by #501; docs/dossier-seafile.md says so at its head"
 }.freeze
 
-# Returns the failures and how many distinct paths were read, so the caller can
-# hold a floor under the second: a span pattern that stops matching would
-# otherwise read nothing and pass.
+# Returns the distinct-path count too, so the caller can hold a floor under it.
 def backticked_path_failures(root, sources, absent)
   roots = BACKTICKED_PATH_ROOTS.map { |name| Regexp.escape(name) }.join("|")
   pattern = %r{\A(?:#{roots})/[\w./-]*\z}
@@ -590,9 +559,6 @@ def backticked_path_failures(root, sources, absent)
   [failures, cited.length]
 end
 
-# The document check_sources is proved against in the self-test. It is a
-# constant only so the method that writes it stays short; its bytes are the
-# ones the self-test has always written.
 SELF_TEST_SAMPLE_MARKDOWN = <<~MARKDOWN
   [file](valid%20file.md)
   prose < unmatched [after-prose](after-prose-missing.md)
@@ -702,8 +668,7 @@ unless !escaped_probe.key?(0) && paired_probe[0] == 9
 end
 end
 
-# Returns the fixtures written beside the sample, which
-# self_test_unclosed_fixtures checks after every other case has run.
+# Returns the fixtures self_test_unclosed_fixtures checks at the end.
 def self_test_sample_links(root, docs)
   source = docs.join("sample.md")
   source.write(SELF_TEST_SAMPLE_MARKDOWN)
@@ -993,21 +958,12 @@ if ARGV == ["--self-test"]
   self_test
 else
   failures = check_sources(ROOT, SOURCES)
-  # The floor belongs here rather than in check_sources: the self-test drives
-  # that helper one synthetic document at a time and compares an exact failure
-  # count, so a floor inside it would fail every case.
-  #
-  # documentation_contracts below pins about ten documents by path, which is why
-  # this is the mildest of the four sweeps -- but every document it does not name
-  # is checked for broken links only by this glob, so a relocated docs/ tree
-  # still passes for all of them. 40 against today's 79 under docs/: the tree has
-  # only grown, and halving it is a restructuring rather than the churn of
-  # retiring a page.
+  # The floor lives here, not in check_sources, which the self-test drives one
+  # document at a time. Only this glob checks the undocumented pages for links.
   TestScaffold.check_floor(failures, DOCS_SOURCES.length, 40,
                            "the documentation link sweep found too few documents under docs/")
   path_failures, cited_paths = backticked_path_failures(ROOT, BACKTICKED_PATH_SOURCES, ABSENT_PATH_CITATIONS)
   failures.concat(path_failures)
-  # 150 against the 191 distinct paths read when this landed.
   TestScaffold.check_floor(failures, cited_paths, 150,
                            "the backticked-path sweep read too few repository paths")
   documentation_contracts = {
@@ -1037,11 +993,8 @@ else
       /four labeled.*MEDIA_ACQUISITION_FOUNDATION.*MEDIA_ACQUISITION_STORAGE.*MEDIA_ACQUISITION_TRANSPORTS.*MEDIA_ACQUISITION_CONTAINERS/im =>
         "describe the bounded four-line acquisition evidence"
     },
-    # The handoff used to state ordinary-user denial as an acceptance item the
-    # platform provides no way to check. These four contracts pin the honest
-    # replacement instead: what the tagged run asserts, that POSIX does not
-    # enforce the denial, the exact manual command, and what a pass looks like.
-    # Dropping any one of them would let the old overclaim return.
+    # These four contracts pin the honest replacement for an uncheckable
+    # ordinary-user denial claim.
     "docs/getting-started-nas.md" => {
       /What the platform asserts.*platform_verify_media_acquisition_foundation.*Media\/\.acquisition.*Books\/\.acquisition.*asserted\s+by name/im =>
         "name what the tagged verification run asserts about both acquisition trees",
@@ -1049,8 +1002,7 @@ else
         "state plainly that no POSIX permission enforces the acquisition denial",
       /non-administrator.*ls \/Volumes\/Media\/\.acquisition.*ls \/Volumes\/Books\/\.acquisition/im =>
         "give the exact manual command from a non-administrator SMB account",
-      # Backticks are stripped from the document before matching, so the
-      # pattern must not contain them.
+      # Backticks are stripped before matching, so the pattern must not contain them.
       /A pass is permission denied.*Listing\s*usenet torrents is the finding/im =>
         "name both the pass and the finding for the manual ADM share check"
     },
@@ -1072,14 +1024,8 @@ else
   readme = ROOT.join("README.md").read.gsub("`", "").gsub(/\s+/, " ")
   failures << "README.md must not describe every manifest service stack as implemented" if
     readme.match?(/service stacks in .*services\/manifest\.yml.* are implemented/i)
-  # The two claims below are derived and compared, not matched by regex, because
-  # a regex contract can only require the wording it already names. CLAUDE.md
-  # documented a lane for a service retired months earlier while omitting seven
-  # real ones, and called the platform nine service stacks while the manifest
-  # held fifteen; both are lists a reader trusts and nothing checked, and the
-  # stale lane list cost a change its strongest evidence (issue #276). Equality
-  # in both directions is the only shape that fails on an omission — "every
-  # documented lane exists" would have passed throughout that drift.
+  # Derived and compared both ways, not regex-matched: CLAUDE.md once listed a
+  # retired lane and omitted seven real ones (#276).
   claude_md = ROOT.join("CLAUDE.md").read
   real_lanes = real_integration_lanes(ROOT)
   documented_lanes = documented_integration_lanes(claude_md)
@@ -1096,9 +1042,6 @@ else
     failures << "CLAUDE.md must not list integration lanes " \
                 "tests/integration.sh --list-suites does not print: #{extra.join(', ')}" if extra.any?
   end
-  # Equality in both directions again, for the reason the lane roster gives: an
-  # omission is the drift that happened, and "every documented job exists" would
-  # have passed throughout it.
   real_jobs = real_workflow_jobs(ROOT)
   documented_jobs = documented_workflow_jobs(claude_md)
   if real_jobs.nil?
@@ -1108,12 +1051,7 @@ else
     failures << "CLAUDE.md must name the workflow's jobs as a single backticked, " \
                 "whitespace-separated list on a line beginning \"Jobs: \""
   else
-    # A floor rather than today's eight, and rather than mere non-emptiness. A
-    # derivation that stopped reading the workflow would find no jobs and report
-    # every job documented; a floor at today's count would report a deliberately
-    # retired job as the derivation breaking. There is no mutation fixture to
-    # size this against, because tests/docs_links_test.rb is not one of the eight
-    # POLICY_SCRIPTS and so never runs inside a planted-defect sandbox.
+    # A floor, not today's count: a retired job is not a broken derivation.
     failures << "the workflow declares #{real_jobs.length} jobs, expected at least six: " \
                 "the derivation has stopped reading it" if real_jobs.length < 6
     missing = real_jobs - documented_jobs
@@ -1123,16 +1061,9 @@ else
     failures << "CLAUDE.md must not list CI jobs " \
                 ".github/workflows/ci.yml does not declare: #{extra_jobs.join(', ')}" if extra_jobs.any?
   end
-  # The controller pins are authored once, in controller-requirements.in, and
-  # compiled into the hash-locked controller-requirements.txt that CI and the
-  # production poller install (#827); Renovate bumps the .in and recompiles the
-  # lock. A version restated in prose is a copy nothing bumps, and
-  # tests/policy_test.rb already refuses one in the beginner guides for the
-  # reason a reader following it builds a controller CI never validated against.
-  # CLAUDE.md carried the pair anyway until #360, in the same sentence that calls
-  # the file the source of truth. Matched on the prose form as well as the
-  # requirement form: what was there read "ansible-core 2.21.3", which a check
-  # written for "ansible-core==" would have passed over.
+  # Pins are authored once in controller-requirements.in (#827); a version restated
+  # in prose is a copy nothing bumps (#360). Prose forms like "ansible-core 2.21.3"
+  # are matched too.
   failures << "CLAUDE.md must not restate an ansible-core or ansible-lint version: " \
               "controller-requirements.txt authors them and nothing bumps a copy in prose" if
     claude_md.match?(/ansible-(?:core|lint)[ \t]*=*[ \t]*v?\d+\.\d+\.\d+/)
@@ -1150,19 +1081,8 @@ else
     failures << "CLAUDE.md must call the platform #{counted_in_words} Compose service stacks, " \
                 "the number services/manifest.yml marks implemented, not #{service_stack_count.inspect}"
   end
-  # The same shape again, for the two figures CLAUDE.md quotes out of
-  # docs/adding-a-service.md. Both were stale by the time anyone noticed: the
-  # summary said thirteen files and six credential places while the guide had
-  # measured 56 and ten, and understating the cost fourfold in the file every
-  # contributor reads first is what issue #350 was (issue #276 item 3 asked for
-  # this sweep and stopped at the lane roster above).
-  #
-  # What is pinned is that the two documents agree, not that either is right.
-  # The guide is where the figure is measured and CLAUDE.md quotes it, so a
-  # re-measurement that updates only the guide fails here until the summary
-  # follows. Measuring the Pinchflat diff from here was considered and rejected:
-  # the commit is immutable history a depth-1 CI checkout does not have, so the
-  # check would have to skip itself on the runner that matters.
+  # The two figures CLAUDE.md quotes from docs/adding-a-service.md must agree (#350);
+  # the guide is where they are measured.
   guide_source = ROOT.join("docs/adding-a-service.md").read
   guide = guide_source.gsub(/\s+/, " ")
   claude_summary = claude_md.gsub(/\s+/, " ")
@@ -1191,21 +1111,8 @@ else
                   "docs/adding-a-service.md states, not #{quoted_count}"
     end
   end
-  # The current cost the row above pins is not a measurement of anything. The
-  # Pinchflat diff is a fixed 56 and cannot move; what moves is the set of
-  # per-service obligations added since, and #379 added one within a day of the
-  # two numbers being pinned without either document noticing, because a pin
-  # between two prose documents catches a document that drifts from the other
-  # and not two that go stale together.
-  #
-  # Nothing in the tree can derive this number -- the guide's own reason is that
-  # the registries are stated rather than derived, so that a service cannot
-  # authorize itself by the arrival of its own files. So the ledger is the
-  # mechanism instead: the guide names each obligation added since the
-  # measurement, and the total has to be the measurement plus that many. It
-  # still cannot tell that an obligation is missing, but it turns bumping a
-  # total into naming the thing that moved it, and a row format that stops
-  # matching breaks the arithmetic rather than passing an empty ledger.
+  # The ledger: the total must be the measurement plus one per named obligation, so
+  # bumping the total means naming what moved it.
   ledger = guide_source[/each named here as it lands:\n(.*?)\*\*So adding a service today/m, 1]
   measured_base = stated_count(guide[/promoting Pinchflat changed \*{0,2}([a-z0-9]+) files/, 1])
   current_total = stated_count(guide[/So adding a service today changes ([a-z0-9]+) files/, 1])
@@ -1224,21 +1131,14 @@ else
                   "moved it, in the ledger's own \"- `path` — why\" form"
     end
   end
-  # The Python floor was stated in this one sentence and enforced nowhere, so a
-  # contributor on 3.11 met the guide's first command with a pip resolver wall of
-  # text naming no cause (#655). .python-version is the enforced copy now -- CI's
-  # four toolchain jobs read it and pyenv reads it -- and this holds the prose to
-  # it, because a floor a bump raises in one place and not the other is the same
-  # defect one release later.
+  # .python-version is the enforced Python floor (#655); hold the prose to it.
   declared_python_series = ROOT.join(".python-version").read.strip
   getting_started = ROOT.join("docs/getting-started-nas.md").read
   failures << "docs/getting-started-nas.md must state the Python floor as " \
               "#{declared_python_series}, the series .python-version authors" unless
     getting_started.include?("Python #{declared_python_series} or newer")
 
-  # Deliberately source text. Both subjects are the wording of a comment, which
-  # is what a reader of the file sees and what YAML parsing erases; there is no
-  # parsed structure that carries it.
+  # Deliberately source text: the subjects are comment wording, which YAML erases.
   jellyfin_compose = ROOT.join("services/jellyfin/compose.yml").read
   failures << "Jellyfin media-mount comment must assign adjacent metadata to neutral media writers" unless
     jellyfin_compose.match?(/media writers own adjacent metadata.*Jellyfin remains read-only/im)

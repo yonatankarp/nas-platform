@@ -1,28 +1,9 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# The pinned Bazarr provider schemas must be usable and current.
-#
-# media_bazarr_providers is validated against no list of known providers: any
-# lowercase name with a settings mapping passes, empty included. A misspelled key
-# therefore converges and fetches nothing, so the operator's protection is that
-# docs/bazarr-providers.md carries blocks derived from the deployed version
-# rather than remembered.
-#
-# Two ways that protection rots, and both are checked here. The blocks stop
-# matching what the role accepts, which this catches by running them through
-# the real filter. Or Bazarr is upgraded and upstream renames a setting, which
-# this catches by pinning the minor release the file was derived from to the one
-# the compose file deploys.
-#
-# Minor, not patch, and that is a trade rather than an oversight. Bazarr is not
-# semver: 1.6.1 and 1.6.2 both changed provider settings, though only by adding
-# keys. Compared at patch level, every Bazarr bump red the Renovate batch it rode
-# in and held back unrelated images for a one-line stamp edit. What that gives
-# up is a patch that renames a documented key, which goes unflagged here until
-# the next minor.
-#
-# Run with --self-test to prove the check detects its own regression.
+# docs/bazarr-providers.md must pass the real filter and be stamped with the
+# deployed Bazarr minor (not patch: patches only add keys, and a patch-level
+# stamp redded every Renovate batch). --self-test proves the check bites.
 
 require "json"
 require "open3"
@@ -48,9 +29,7 @@ def documented_providers(text)
       # A complete declaration, carrying its own key.
       Array(parsed["media_bazarr_providers"])
     when Array
-      # A block a reader appends to one: the indented list fragment parses as a
-      # sequence on its own. Skipping these silently is how this file came to
-      # validate only its first provider.
+      # An appended block parses as a bare sequence; skipping it validated only the first.
       parsed
     else
       []
@@ -66,8 +45,7 @@ def ansible_python
   path if path && File.executable?(path)
 end
 
-# The filter is the authority on what converges, so the documented blocks are
-# run through it rather than re-checked against a copy of its rules.
+# The filter is the authority, so run the blocks through it.
 VALIDATION_PROGRAM = <<~PYTHON
   import importlib.util, json, pathlib, sys
 
@@ -147,8 +125,7 @@ def collect_failures(doc_text, compose_text)
   end.flatten
   failures << "the provider reference documents no language example" if languages.empty?
 
-  # Every documented block must be one the role would accept, together and
-  # individually: a reader copies one provider, not the file.
+  # Together and individually: a reader copies one provider, not the file.
   error = validate(providers, languages)
   failures << "the documented providers are rejected by the role: #{error}" if error
   providers.each do |provider|

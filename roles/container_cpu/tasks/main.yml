@@ -1,14 +1,6 @@
 ---
-# The verification below reads the live Docker daemon: it lists the running
-# containers of the Compose project and inspects the CPU controls Docker
-# actually applied. Under `--check` no stack was started, so there is nothing
-# truthful to inspect and the assertions would fail on a state the run never
-# created.
-#
-# The gate lives here rather than at each call site because twelve callers
-# copied it and a thirteenth that forgot it would break `--check`. A dynamic
-# `include_tasks` under a false condition includes nothing, so check mode stays
-# exactly as quiet as it was when the callers guarded the include themselves.
+# Under --check no stack started, so there is nothing truthful to inspect. Gated
+# here rather than at each call site so no caller can forget it.
 - name: Verify the effective container CPU policy
   ansible.builtin.include_tasks: inspect.yml
   when: not ansible_check_mode

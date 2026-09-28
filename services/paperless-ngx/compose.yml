@@ -1,9 +1,6 @@
 ---
-# Platform fragments. Compose resolves a YAML anchor only inside the file that
-# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
-# copies equal and records there why cross-file sharing was not taken. A
-# container needing different health-check timing overrides only the fields it
-# changes, so a deviation reads as a deviation.
+# Platform fragments, one copy per stack (anchors are file-local); policy_test
+# pins the copies equal. Health-check deviations override only changed fields.
 x-logging: &default-logging
   driver: json-file
   options:
@@ -12,13 +9,8 @@ x-logging: &default-logging
 
 x-service-defaults: &service-defaults
   cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
-  # These containers carry no `user:`, so PID 1 starts as root and the
-  # entrypoints drop to their service accounts with setuid(2), which
-  # no_new_privs does not restrict. Nothing here executes a setuid binary, so
-  # refusing the escalation outright costs the stack nothing — Chromium's setuid
-  # sandbox helper is the one binary that would be disarmed, and Gotenberg never
-  # reaches it: it launches Chromium with --no-sandbox, the only mode that works
-  # under Docker's default seccomp profile.
+  # Entrypoints drop privileges via setuid(2), which no_new_privs allows.
+  # Gotenberg runs Chromium with --no-sandbox, so its setuid helper is never used.
   security_opt:
     - no-new-privileges:true
   restart: unless-stopped
@@ -43,18 +35,11 @@ services:
       - ${PAPERLESS_REDIS_PATH:?}:/data
     environment:
       TZ: ${TZ:?}
-    # Valkey answers SIGTERM by writing one final snapshot to /data before it
-    # exits. That directory is recovery: cache — the task queue is rebuilt from
-    # Postgres — so this window is about exiting with the write finished rather
-    # than about protecting the data. 30s is well past what the snapshot costs.
+    # Valkey writes a final snapshot on SIGTERM; the data is cache, 30s is ample.
     stop_grace_period: 30s
     healthcheck:
-      # Deliberately not merged from the platform fragment. This check declares
-      # no start_period at all, so failures count from the first probe, and a
-      # merged default cannot be taken back out again. The webserver gates its
-      # own start on this one, and the tighter interval is what makes that gate
-      # open promptly. Preserved as it was; the repository records no reason for
-      # the 10s/5s/12 numbers themselves.
+      # Not merged from the fragment: no start_period, and the webserver gates
+      # its start on this check (10s/5s/12 unrecorded reason).
       test: [CMD, valkey-cli, ping]
       interval: 10s
       timeout: 5s
@@ -75,20 +60,12 @@ services:
       POSTGRES_DB: ${DB_NAME:?}
       POSTGRES_USER: ${DB_USER:?}
       POSTGRES_PASSWORD: ${DB_PASSWORD:?}
-    # The image's STOPSIGNAL is SIGINT, which is a Postgres fast shutdown:
-    # connections dropped, open transactions aborted, then a checkpoint that
-    # flushes every dirty buffer. A document archive's working set is small, so
-    # a minute is far past what that checkpoint costs — and this directory is
-    # recovery: critical, where being killed mid-checkpoint means coming back
-    # through WAL recovery.
+    # STOPSIGNAL SIGINT is a fast shutdown ending in a checkpoint; recovery:
+    # critical data should not come back through WAL recovery.
     stop_grace_period: 1m
     healthcheck:
-      # Deliberately not merged from the platform fragment. This check declares
-      # no start_period at all, so failures count from the first probe, and a
-      # merged default cannot be taken back out again. The webserver gates its
-      # own start on this one, and the tighter interval is what makes that gate
-      # open promptly. Preserved as it was; the repository records no reason for
-      # the 10s/5s/12 numbers themselves.
+      # Not merged from the fragment: no start_period, and the webserver gates
+      # its start on this check (10s/5s/12 unrecorded reason).
       test: [CMD-SHELL, "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
@@ -111,9 +88,8 @@ services:
         condition: service_healthy
       tika:
         condition: service_healthy
-    # The webserver joins the stack's default Compose network like every other
-    # service, so broker, db, gotenberg and tika are reached by service name and
-    # publish nothing of their own. Only this port is visible on the host.
+    # Siblings are reached by service name and publish nothing; only this port
+    # is visible on the host.
     ports:
       - "8000:8000"
     volumes:
@@ -157,14 +133,10 @@ services:
       <<: *healthcheck-defaults
       test: [CMD, curl, --fail, --silent, --show-error, http://localhost:8000]
       retries: 4
-      # A fresh database applies every migration before binding port 8000. The
-      # production NAS needed just over three minutes for that first boot.
+      # A fresh database migrates before binding; first NAS boot took over 3 min.
       start_period: 300s
-    # Consumption moves a scanned original into the recovery: critical media
-    # tree and writes its record to Postgres. A minute lets the document being
-    # consumed reach both, so a shutdown does not leave a file in the archive
-    # that no record names. OCR of a queued document is not waited for: it is
-    # re-queued in the broker and runs again.
+    # Lets the document being consumed reach both archive and Postgres; queued
+    # OCR is re-queued in the broker.
     stop_grace_period: 1m
 
   gotenberg:
@@ -184,9 +156,7 @@ services:
     healthcheck:
       <<: *healthcheck-defaults
       test: [CMD, curl, --fail, --silent, --show-error, http://localhost:3000/health]
-      # Deviation carried over unchanged from before the defaults existed; the
-      # repository records no reason for it, and a de-duplication is not where a
-      # readiness window gets renegotiated.
+      # Deviation kept from before the defaults; reason unrecorded.
       retries: 4
       start_period: 30s
 
@@ -195,27 +165,9 @@ services:
     container_name: paperless_tika
     image: docker.io/apache/tika:3.3.1.0@sha256:90b7fa1dc018434075fce9e1d9b88b1e3d0ea6979d0cf86e116c79a8073ae973
     cpus: 2.0
-    # The only container here that needs a memory ceiling, and it needs one for
-    # a reason no other container has: it is a JVM, so it picks its own heap out
-    # of whatever memory it can see. Unlimited, it saw the host and computed
-    # MaxHeapSize=4135583744 -- a quarter of 16 GB -- which measurement on the
-    # NAS 2026-09-08 confirmed, and which the 4 GB to 16 GB RAM upgrade had
-    # quadrupled with nothing in this repository recording either number.
-    #
-    # The heap is deliberately not written here. With a limit in place the JVM
-    # derives it from the limit at its own default MaxRAMPercentage of 25%, so
-    # 2g yields a 512 MiB heap and leaves about 1.5 GiB for off-heap and the
-    # page cache Tika's document parsing touches. Restating 25% as a flag would
-    # be a second place for the number to live while deciding nothing the limit
-    # has not already decided; the image is digest-pinned, so that default
-    # cannot move without a reviewed bump. Against a 213 MiB resident reading
-    # and a 341 MiB high-water mark that includes cache, 2g is generous on
-    # purpose: a limit that is too low does not throttle a JVM, it kills it.
-    #
-    # A heap stated outright would have to satisfy the other half of the rule in
-    # tests/policy_test.rb -- at most half the limit -- which is what
-    # Elasticsearch will need, because it fails a bootstrap check unless -Xms
-    # equals -Xmx.
+    # A JVM sizes its heap from visible memory (a quarter of the host without a
+    # limit, #447). With 2g the default 25% gives a 512 MiB heap. A heap stated
+    # outright must be at most half the limit (tests/policy_test.rb).
     mem_limit: 2g
     labels:
       dev.dozzle.group: paperless
@@ -225,8 +177,6 @@ services:
     healthcheck:
       <<: *healthcheck-defaults
       test: [CMD, bash, -ec, "exec 3<>/dev/tcp/127.0.0.1/9998"]
-      # Deviation carried over unchanged from before the defaults existed; the
-      # repository records no reason for it, and a de-duplication is not where a
-      # readiness window gets renegotiated.
+      # Deviation kept from before the defaults; reason unrecorded.
       retries: 4
       start_period: 30s

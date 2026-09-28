@@ -115,15 +115,9 @@ argument_specs:
       vault_audiobookshelf_admin_password:
         type: str
         required: true
-      # The managed-user parameters this role hands roles/managed_users. Only
-      # the ones that resolve at role entry are declared: Ansible templates
-      # every declared option before the role's first task, so declaring
-      # audiobookshelf_managed_users_create_body, _repair_body,
-      # _repair_condition, _reconcile_path, _authenticate_body,
-      # _authenticate_identity or _list_json -- each a template over the shared
-      # role's per-identity `item`, its bound match or user, or the listing it
-      # registers -- would fail this role at "Validating arguments against arg
-      # spec 'main'". roles/managed_users asserts their presence instead.
+      # Only parameters that resolve at role entry are declared: the per-item templates
+      # (create/repair bodies, reconcile path, authenticate, list_json) would fail
+      # argument validation, so roles/managed_users asserts their presence instead.
       audiobookshelf_managed_users_identity_attribute:
         type: str
         required: false

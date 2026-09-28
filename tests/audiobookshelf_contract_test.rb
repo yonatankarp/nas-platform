@@ -1,41 +1,9 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#
-# Behaviour of the Audiobookshelf service contract's two Ruby programs.
-#
-# Until #147 both lived in `<<'RUBY'` heredocs inside
-# tests/contracts/audiobookshelf.sh -- 1,485 of that file's 1,537 lines. `sh -n`
-# reads a quoted heredoc as opaque text, so nothing but an integration lane with
-# Docker, a converged Audiobookshelf and a real vault ever executed either one.
-# tests/contracts/audiobookshelf-static.rb and
-# tests/contracts/audiobookshelf-runtime.rb are files now, so both are reachable
-# here.
-#
-# Three layers, because the contract has three kinds of property:
-#
-#   Static -- build a fixture repository out of the files the contract reads,
-#   break exactly one thing in it, and require the program to name that thing.
-#   The assertion text is the interface: a guard that fails for the wrong reason
-#   has stopped guarding what it names, so every row pins the exact diagnostic.
-#
-#   Runtime -- the six modes that reach the runtime half's own code without a
-#   vault, a container or a network: the audio fixture, diagnostic redaction,
-#   administrator selection, the authentication budget, drift snapshot recovery
-#   and the media pre-seed. They are what tests/contracts/audiobookshelf-audio-test.sh
-#   and tests/mac/audiobookshelf-drift-hook-test.sh already drive, one process at
-#   a time; here each is also driven against a broken inspected tree so its
-#   refusals move one at a time. This layer deliberately stops before the vault
-#   read at audiobookshelf-runtime.rb:781 -- everything past it needs a served
-#   Audiobookshelf interface, and fixturing login, libraries, settings drift and
-#   the check-mode lifecycle is a separate piece of work.
-#
-#   Wrapper -- tests/contracts/audiobookshelf.sh is what turns a mode into two
-#   invocations. Its rows prove both programs are reached, that each is resolved
-#   from the script's own checkout while the tree to inspect is passed in, and
-#   that neither can consume the caller's stdin.
-#
-# Run with --self-test to plant a regression in each program and prove the rows
-# above detect it.
+
+# Behaviour of the Audiobookshelf contract's static and runtime programs, in three
+# layers: static rows, runtime modes needing no vault/container/network, and the
+# wrapper. --self-test plants a regression per guard and proves a row catches it.
 
 require "fileutils"
 require "open3"
@@ -52,24 +20,15 @@ include TestScaffold
 include ContractTestSupport
 
 ROOT = File.expand_path("..", __dir__)
-# The prefix every refusal this file judges has to carry. Matching the
-# fragment alone accepted a backtrace or an echoed argument as a refusal.
 DIAGNOSTIC_PREFIX = "Audiobookshelf contract failed: "
 CONTRACT = File.join(ROOT, "tests", "contracts", "audiobookshelf.sh")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "audiobookshelf-static.rb")
 RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "audiobookshelf-runtime.rb")
 
-# The `-ryaml` preload tests/contracts/audiobookshelf.sh carries, because the
-# static program does not require yaml itself. Every invocation of it here must
-# carry the same preload or every row fails identically on an uninitialized
-# constant, which would read as the extraction having broken everything.
+# The `-ryaml` preload the wrapper carries; the static program does not require yaml.
 STATIC_COMMAND = [RbConfig.ruby, "-ryaml"].freeze
 
-# Exactly what the two halves read out of the tree they inspect. A fixture
-# holding only these is the proof that the list is the list they actually need --
-# audiobookshelf-runtime.rb included, because the static half reads the runtime
-# half's drift-commit branch out of the inspected tree, and the runtime half
-# counts its own direct logins the same way.
+# Exactly what the two halves read from the inspected tree.
 FIXTURE_FILES = %w[
   roles/audiobookshelf/tasks/main.yml
   roles/audiobookshelf/tasks/deploy.yml
@@ -94,16 +53,9 @@ FIXTURE_FILES = %w[
   tests/contracts/audiobookshelf-runtime.rb
 ].freeze
 
-# Deliberately absent from that list: tests/contracts/audiobookshelf.sh and
-# tests/contracts/audiobookshelf-static.rb. Neither program reads them out of the
-# inspected tree, and a fixture that carried them would shadow the defect #251
-# shipped -- a sibling resolved from $repo_dir finds a copy there and nothing
-# looks wrong. audiobookshelf-runtime.rb is present because both halves really do
-# read it from the tree they are inspecting.
+# Deliberately absent: the wrapper and the static program. Carrying them would
+# shadow #251 (a sibling resolved from $repo_dir).
 
-# The arguments tests/contracts/audiobookshelf.sh passes the static half, in its
-# order. Kept here rather than spelled out at each call site so a row cannot
-# silently drift from the wrapper's own invocation.
 STATIC_ARGUMENTS = %w[
   services/audiobookshelf/compose.yml
   services/audiobookshelf/compose.mac.yml
@@ -144,10 +96,7 @@ end
 
 ROLE_STAGES = FIXTURE_FILES.grep(%r{\Aroles/audiobookshelf/tasks/}).freeze
 
-# Finds one task by name anywhere in the role -- any stage file, and through the
-# block/rescue/always sections a task list nests into -- and hands it to the
-# caller to edit in place. Locating the task rather than naming its file keeps a
-# row honest when a stage is split again, which has happened twice.
+# Finds a task by name anywhere in the role, so a row survives stage splits.
 def edit_role_task(root, name)
   ROLE_STAGES.each do |relative|
     path = File.join(root, relative)
@@ -178,10 +127,7 @@ def find_task(tasks, name)
 end
 
 # --- static layer ----------------------------------------------------------
-#
-# One row per assertion family rather than one per abort site. A family shares
-# its read, its parse and its shape, so covering each site individually would put
-# this file on the policy gate's critical path for no additional signal.
+# One row per assertion family rather than per abort site.
 
 STATIC_ROWS = [
   { name: "an intact repository", break: ->(_root) {}, expects: nil },
@@ -261,8 +207,6 @@ STATIC_ROWS = [
     expects: "backup policy defaults differ"
   },
   {
-    # A commented-out sample of the right assignment is the regression the
-    # environment file is parsed rather than grepped for.
     name: "the backup path assignment surviving only as a comment",
     break: lambda { |root|
       edit_text(root, "roles/audiobookshelf/templates/env.j2") do |source|
@@ -336,8 +280,7 @@ STATIC_ROWS = [
     expects: "unsupported GET /api/settings is assumed"
   },
   {
-    # The literal #753 went red on: every Renovate bump failed a gate whose
-    # schema had not moved. The version is read from the pin instead.
+    # #753: the schema gate must read the version from the pin, not a literal.
     name: "the settings schema gate pinned to a literal version",
     break: lambda { |root|
       edit_role_task(root, "Validate current Audiobookshelf server settings schema") do |task|
@@ -401,9 +344,7 @@ STATIC_ROWS = [
         document.fetch("audiobookshelf_owned_server_settings")["timeZone"] = "Europe/Berlin"
       end
     },
-    # The owned settings are pinned exactly, so adding a key trips the equality
-    # check before it can reach the PATCH-body assertion. Both refuse; this row
-    # records which one gets there first.
+    # The equality check refuses before the PATCH-body assertion is reached.
     expects: "owned server settings differ"
   },
   {
@@ -424,11 +365,6 @@ STATIC_ROWS = [
     },
     expects: "integration is missing AUDIOBOOKSHELF_DRIFT_REPAIRED"
   },
-  # The assertion the extraction repointed. It reads the runtime half's source
-  # out of the tree under inspection and requires the drift-commit branch to
-  # leave the reconciliation snapshot alone. Two rows, because the interesting
-  # failure is not only "the branch consumes it" but "the file it is read from is
-  # the wrong one".
   {
     name: "a drift commit that consumes its own reconciliation evidence",
     break: lambda { |root|
@@ -442,15 +378,9 @@ STATIC_ROWS = [
     name: "the runtime half absent from the tree under inspection",
     break: ->(root) { FileUtils.rm(File.join(root, "tests/contracts/audiobookshelf-runtime.rb")) },
     expects: nil,
-    # Honestly a crash rather than a diagnostic: the drift-commit read has no
-    # existence guard in front of it, where the six files the wrapper checks with
-    # [ -f ] do. Both fragments are required so the row cannot pass on the
-    # filename alone.
+    # A crash rather than a diagnostic: the drift-commit read has no existence guard.
     expects_crash: ["audiobookshelf-runtime.rb", "No such file or directory"]
   },
-  # The mode argument. Everything above the `if mode == "static"` block runs for
-  # every mode; everything inside it is the deployment-order and role-shape
-  # sweep, which a deployed run has no business repeating.
   {
     name: "a role-shape defect under a non-static mode",
     mode: "run",
@@ -483,12 +413,6 @@ def static_failures(program = STATIC_PROGRAM, rows = STATIC_ROWS)
 end
 
 # --- runtime layer ---------------------------------------------------------
-#
-# The runtime half's first `case MODE` handles every mode that needs no vault,
-# no container and no network: it is the half of the program the audio test and
-# the drift hook test already drive. Each row below runs one of those modes
-# against a fixture repository, so the modes that read the inspected tree can be
-# moved one property at a time.
 
 RUNTIME_ROWS = [
   {
@@ -564,8 +488,6 @@ RUNTIME_ROWS = [
     expects: "Audiobookshelf integration session cleanup lifecycle differs"
   },
   {
-    # The runtime half's own second self-read. It counts the direct logins this
-    # very program makes, against the copy in the tree it is inspecting.
     name: "a runtime half with no direct authentication of its own",
     mode: "authentication-budget-self-test",
     break: lambda { |root|
@@ -576,9 +498,7 @@ RUNTIME_ROWS = [
     expects: "Audiobookshelf direct authentication proof is absent"
   },
   {
-    # Since #647 the per-user logins the budget counts are roles/managed_users'
-    # generic request, and only the shim's bindings make that request this
-    # service's /login. A shim pointed elsewhere must not still be counted.
+    # The counted logins are roles/managed_users' generic request (#647).
     name: "a managed-user shim whose login path is no longer /login",
     mode: "authentication-budget-self-test",
     break: lambda { |root|
@@ -589,9 +509,6 @@ RUNTIME_ROWS = [
     expects: "Audiobookshelf managed-user shim does not bind the shared login"
   },
   {
-    # The shared role re-proves every credential in the verify phase for a
-    # service that binds authenticated identities (#647, beszel). A shim that
-    # turned that on here would double the per-user logins the budget counts.
     name: "a managed-user shim that binds authenticated identities",
     mode: "authentication-budget-self-test",
     break: lambda { |root|
@@ -603,8 +520,6 @@ RUNTIME_ROWS = [
     expects: "Audiobookshelf managed-user shim binds authenticated identities"
   },
   {
-    # The other half: the shared role is what is actually read. Renaming its
-    # authenticate request must change the model rather than go unseen.
     name: "a shared managed-user role whose login request was renamed",
     mode: "authentication-budget-self-test",
     break: lambda { |root|
@@ -616,8 +531,6 @@ RUNTIME_ROWS = [
     expects: "Audiobookshelf managed-user authentication task model differs"
   },
   {
-    # Diagnostics and drift snapshots are written under the report root, so a
-    # report root that is a symlink is somewhere else's directory.
     name: "a report root that is a symlink",
     mode: "drift-recovery-self-test",
     break: ->(_root) {},
@@ -659,9 +572,6 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
       )
       failures = judge("runtime: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
                        prefix: DIAGNOSTIC_PREFIX)
-      # Only worth asking what a passing mode reported; a mode that refused has
-      # already been judged, and a second failure line about the missing success
-      # line says nothing the first did not.
       if failures.empty? && row[:reports] && !stdout.include?(row.fetch(:reports))
         failures << "runtime: #{row.fetch(:name)}: did not report " \
                     "#{row.fetch(:reports).inspect}, got #{stdout.strip.inspect}"
@@ -672,12 +582,8 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
 end
 
 # --- wrapper layer ---------------------------------------------------------
-#
-# tests/contracts/audiobookshelf.sh resolves both programs from its own checkout
-# rather than from the tree it is inspecting, so a copy of the three files into a
-# throwaway tests/contracts/ is a whole working contract. That is what lets a row
-# point PLATFORM_CONTRACT_REPO_DIR at a broken fixture and still exercise the
-# real wrapper.
+# The wrapper resolves both programs from its own checkout, so a copy of the three
+# files is a working contract that can be pointed at a broken fixture.
 
 def with_contract_copy(static: File.read(STATIC_PROGRAM), runtime: File.read(RUNTIME_PROGRAM),
                        wrapper: File.read(CONTRACT), &block)
@@ -708,7 +614,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     failures << "wrapper: static mode did not report the property it proved" unless
       stdout.include?("Audiobookshelf static contract passed")
 
-    # Each of the six files the wrapper checks before it runs anything.
     {
       "roles/audiobookshelf/tasks/main.yml" => "roles/audiobookshelf/tasks/main.yml is absent",
       "roles/audiobookshelf/defaults/main.yml" => "roles/audiobookshelf/defaults/main.yml is absent",
@@ -731,8 +636,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
       end
     end
 
-    # The row that proves the wrapper still runs the static program at all: the
-    # tree under inspection is broken, the wrapper's own checkout is not.
     broken_fixture_repository do |broken|
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => broken }, contract, "static"
@@ -742,9 +645,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
         (stdout + stderr).include?("restart policy differs")
     end
 
-    # ... and that it is the *inspected* tree that is read, not the checkout the
-    # programs came from. Breaking the copy's own compose.yml while pointing the
-    # variable at this repository must change nothing.
     compose_service(copy_root) { |spec| spec["restart"] = "always" }
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, "static"
@@ -753,10 +653,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
                 "#{(stdout + stderr).strip}" unless status.success?
   end
 
-  # The branch every deployment actually takes. Neither tests/integration.sh nor
-  # run_contracts.rb --execute sets PLATFORM_CONTRACT_REPO_DIR, so the default is
-  # the only path in production -- and it is the one where resolving the programs
-  # from the script's own checkout is load-bearing rather than shadowed.
+  # The default branch (no PLATFORM_CONTRACT_REPO_DIR) is the only production path.
   with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => nil }, contract, "static"
@@ -776,14 +673,8 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
       (stdout + stderr).include?("restart policy differs")
   end
 
-  # The runtime half's own roots. PLATFORM_REPO_ROOT and
-  # PLATFORM_CONTRACT_REPO_DIR must both reach it bound to the inspected tree
-  # rather than to the checkout the program was loaded from -- the second and
-  # third sites of the same two-roots defect, a few lines over from the first.
-  # The two trees have to be genuinely different files for the question to have
-  # an answer, so the contract's own checkout is broken and the tree it is
-  # pointed at is not, and then the other way round. The authentication budget
-  # mode reads both variables.
+  # PLATFORM_REPO_ROOT and PLATFORM_CONTRACT_REPO_DIR must reach the runtime half
+  # bound to the inspected tree; break each tree in turn to tell them apart.
   with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
     media, reports = runtime_sandbox(copy_root)
     sandbox = { "PLATFORM_MEDIA_ROOT" => media, "PLATFORM_REPORT_ROOT" => reports }
@@ -817,10 +708,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     end
   end
 
-  # The programs themselves, in the direction absence cannot prove. A tree that
-  # is pointed at holds a *different* program at each sibling path; running
-  # either of them is the defect, and it is visible as a sentinel rather than as
-  # a missing file, so it stays visible however the fixture is assembled.
   with_contract_copy(wrapper: wrapper_source) do |contract|
     Dir.mktmpdir("nas-platform-audiobookshelf-sentinel.") do |raw|
       inspected = File.realpath(raw)
@@ -843,10 +730,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     end
   end
 
-  # The runtime half's *source*, which the static half reads for its drift-commit
-  # branch, is a fourth binding to the inspected tree: the wrapper hands it over
-  # as $runtime_source. Poison the inspected tree's copy and leave the checkout's
-  # alone -- the refusal is what says which one was read.
   with_contract_copy(wrapper: wrapper_source) do |contract|
     Dir.mktmpdir("nas-platform-audiobookshelf-source.") do |raw|
       inspected = File.realpath(raw)
@@ -865,10 +748,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     end
   end
 
-  # PLATFORM_CONTRACT_REPO_DIR is what both programs require tests/policy_support
-  # from, and it too must name the inspected tree. An inspected tree without that
-  # file has to be a LoadError naming *its* path, not a silent fallback to the
-  # checkout's copy.
   with_contract_copy(wrapper: wrapper_source) do |contract|
     Dir.mktmpdir("nas-platform-audiobookshelf-nosupport.") do |raw|
       inspected = File.realpath(raw)
@@ -886,13 +765,8 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     end
   end
 
-  # The run-mode environment contract, as tests/pinchflat_contract_test.rb
-  # holds it. Each name is set to "" rather than deleted, because ${VAR:?}
-  # refuses null as well as unset, and one name at a time with the other valid,
-  # so the earlier guard cannot shadow the later one. The wrapper's own message
-  # is asserted, never the shell's wording. The port is unparseable so a guard
-  # planted as `:=` fails fast in the runtime program rather than polling a port
-  # nothing listens on; chdir keeps the "" it expands to off this checkout.
+  # Run-mode environment: each name set to "" (${VAR:?} refuses null) one at a
+  # time; the wrapper's own message is asserted.
   with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
     full = { "PLATFORM_CONTRACT_REPO_DIR" => copy_root,
              "PLATFORM_MEDIA_ROOT" => copy_root, "PLATFORM_REPORT_ROOT" => copy_root,
@@ -908,20 +782,15 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures
 end
 
-# Reports what each program saw on stdin and what the caller still has, which is
-# the only way the redirect is observable: neither real program reads stdin, so
-# the redirect is what keeps that true rather than something that changes an
-# outcome today.
+# Neither program reads stdin, so a probe program is the only way to observe the redirect.
 def stdin_failures(wrapper_source: File.read(CONTRACT))
   failures = []
-  # The static invocation, which runs for every mode.
   with_contract_copy(static: STDIN_PROBE, wrapper: wrapper_source) do |contract|
     failures.concat(stdin_probe_failures(contract, %w[static], { "PLATFORM_CONTRACT_REPO_DIR" => ROOT },
                                          subject: "the static program"))
   end
 
-  # The runtime invocation, which is `exec`ed and so is the last thing the script
-  # does -- its redirect needs its own row because the static one cannot cover it.
+  # The runtime invocation is exec'ed, so its redirect needs its own row.
   with_contract_copy(runtime: STDIN_PROBE, wrapper: wrapper_source) do |contract, copy_root|
     media, reports = runtime_sandbox(copy_root)
     environment = { "PLATFORM_CONTRACT_REPO_DIR" => ROOT,
@@ -933,9 +802,6 @@ def stdin_failures(wrapper_source: File.read(CONTRACT))
 end
 
 # --- planted regressions ---------------------------------------------------
-#
-# Each entry removes one guard from one program and names the rows that must
-# catch it. A row that survives its own guard being deleted is proving nothing.
 
 PROGRAM_MUTATIONS = [
   {
@@ -974,11 +840,8 @@ PROGRAM_MUTATIONS = [
     rows: ["an owned server setting changed"]
   },
   {
-    # The same guard, and the timezone row's cascade recorded rather than
-    # tolerated: the owned settings are pinned exactly, so the equality check is
-    # what refuses a repository that adds timeZone. Remove it and the row still
-    # refuses -- from the PATCH-body assertion further down, with a different
-    # sentence, which is the regression.
+    # The equality check is what refuses timeZone; without it the PATCH-body
+    # assertion refuses with a different sentence, which is the regression.
     label: "the owned server settings check, behind the timezone assertion",
     program: :static,
     from: 'defaults.fetch("audiobookshelf_owned_server_settings") == expected_owned_settings',
@@ -1060,21 +923,11 @@ PROGRAM_MUTATIONS = [
     rows: ["an integration marker that stopped being asserted"]
   },
   {
-    # The assertion #147 repointed. Restoring the old path is the exact
-    # regression the repoint exists to prevent: the wrapper is 74 lines now and
-    # holds no drift-commit branch, so the slice would be empty forever and the
-    # guard would accept anything.
     label: "the drift-commit read pointed back at the wrapper",
     program: :static,
     from: "drift_commit_branch = File.read(contract_source_path)",
     to: 'drift_commit_branch = File.read(File.join(File.dirname(contract_source_path), "audiobookshelf.sh"))',
     rows: ["a drift commit that consumes its own reconciliation evidence"],
-    # In this repository the mutant would accept every tree in silence: the
-    # wrapper is still there, holds no drift-commit branch, and rpartition on an
-    # absent separator yields a slice with nothing in it. Against the fixture,
-    # which carries no wrapper because neither program reads one, the same
-    # mutation is an Errno instead. Either way the row refuses -- and the reason
-    # it gives is the regression.
     detects: "refused for the wrong reason"
   },
   {
@@ -1083,9 +936,6 @@ PROGRAM_MUTATIONS = [
     from: 'if mode == "static"',
     to: "if true",
     rows: ["a role-shape defect under a non-static mode"],
-    # Removing the guard does not accept anything -- it makes a mode that should
-    # have said nothing refuse. The row's own expectation is success, so it
-    # reports the refusal rather than an acceptance.
     detects: "expected success"
   },
   {
@@ -1110,9 +960,6 @@ PROGRAM_MUTATIONS = [
     rows: ["the integration lane losing its cleanup trap"]
   },
   {
-    # The runtime half's own self-read, the second one this extraction had to
-    # repoint. Pointing it back at the wrapper makes it count zero logins in a
-    # 74-line file and refuse every repository forever.
     label: "the direct-login count pointed back at the wrapper",
     program: :runtime,
     from: 'repo_root.join("tests/contracts/audiobookshelf-runtime.rb").read',
@@ -1147,9 +994,6 @@ PROGRAM_MUTATIONS = [
     from: 'fail_contract("Audiobookshelf direct authentication proof is absent") unless count.positive?',
     to: "nil unless true",
     rows: ["a runtime half with no direct authentication of its own"],
-    # With no proof required the login count is zero, which lowers the budget
-    # total rather than raising it -- so the mode reaches its success line and
-    # the row reports an acceptance.
     detects: "accepted what it must refuse"
   },
   {
@@ -1157,16 +1001,9 @@ PROGRAM_MUTATIONS = [
     program: :runtime,
     from: "REPORT_ROOT.directory? && !REPORT_ROOT.symlink?",
     to: "true",
-    # The guard stands in four places -- the entry check and each of the three
-    # writers -- and this row removes all four. Under the presence-only plant
-    # this file used to carry it removed the first and left the writers to
-    # refuse for their own reasons, so the row proved a quarter of what it
-    # named (#393). A new call site raises this count rather than invalidating
-    # the row; the plant aborts naming both numbers until it does.
+    # The guard stands in four places; the plant removes all four (#393).
     occurrences: 4,
     rows: ["a report root that is a symlink"],
-    # Nothing downstream re-checks it, so the snapshot lands in the symlink's
-    # target and the mode reaches its success line.
     detects: "accepted what it must refuse"
   }
 ].freeze
@@ -1198,11 +1035,7 @@ if ARGV.include?("--self-test")
     []
   end
 
-  # The redirects' own regression, one per invocation. Neither real program reads
-  # stdin, so dropping `</dev/null` changes no outcome today -- which is exactly
-  # why it needs a program that does read, and why the rule cannot be proven by
-  # the contract passing. The third drains the caller's stdin before the runtime
-  # exec, which only the check that the caller's input survived can see.
+  # Neither program reads stdin, so dropping `</dev/null` needs a program that does.
   planted_redirects = 0
   [
     ["  \"$runtime_source\" \"$mode\" </dev/null\n", "  \"$runtime_source\" \"$mode\"\n"],
@@ -1218,10 +1051,7 @@ if ARGV.include?("--self-test")
     planted_redirects += 1
   end
 
-  # The defect #251 shipped one version of and #259 found a second site for:
-  # resolving a program from the tree being inspected rather than from the
-  # script's own checkout. Both sites, and the reverse direction of the two the
-  # wrapper binds to the inspected tree on purpose.
+  # #251 and #259: programs must resolve from the script's own checkout.
   planted_roots = 0
   [
     ['ruby -ryaml "$contract_repo_dir/tests/contracts/audiobookshelf-static.rb"',
@@ -1243,8 +1073,6 @@ if ARGV.include?("--self-test")
     planted_roots += 1
   end
 
-  # Each run-mode requirement weakened to a default, and caught by its own row:
-  # every row names its variable, so any other failure is the wrong assertion.
   planted_requirements = 0
   REQUIRED_RUN_ENV.each do |name|
     from = %(: "${#{name}:?#{name} is required}")

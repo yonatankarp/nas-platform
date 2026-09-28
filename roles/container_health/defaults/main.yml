@@ -1,38 +1,17 @@
 ---
-# The Compose service directory this project deploys, as services/manifest.yml
-# names it. Read only by the messages this role prints, so an operator reading a
-# refusal knows which role produced it.
+# Manifest service directory; used only in messages.
 container_health_service_name: ""
-# The Compose project label the containers carry, which is what selects them.
-# Passed rather than derived: a project name computed here would be a second
-# place that has to agree with the role's own
-# `<service>_compose_project_name`, and roles/container_cpu takes it the same
-# way for the same reason.
+# Compose project label that selects the containers; passed, not derived.
 container_health_project_name: ""
-# The message the caller's deployment failed with, when it failed. Empty means
-# the deployment succeeded, which is the case this role exists for: a converge
-# that reports success while a container it manages is crash-looping. When it is
-# set, this role either explains the failure in terms of the container state it
-# can see, or re-raises the caller's own message unchanged -- a deployment that
-# failed for some other reason must fail with the message that says so.
+# The caller's deployment failure, if any. Re-raised unchanged unless a stuck
+# container explains it.
 container_health_deploy_failure_message: ""
-# Whether this pass ends in a refusal. A caller that intends to attempt one
-# bounded force-recreate calls this role twice: once with `false`, which detects,
-# captures the evidence and publishes container_health_stuck_services without
-# failing, and once after its recreate with the default, which is the verdict.
-# The re-raise of a deployment failure no stuck container explains happens on
-# both passes -- that failure is not the thing a recreate is allowed to absorb.
+# false = detect-only pass before a force-recreate; true = the verdict pass.
 container_health_refuse: true
-# Message only. Set on the second pass when a force-recreate was actually spent,
-# so a refusal says the run has already retried instead of reading as a service
-# that needs one more converge.
+# Message only: the refusal says a force-recreate was already spent.
 container_health_retried: false
-# The three below are read only by tasks/recover.yml, the shared orchestration
-# around this mechanism. They are the caller's OWN deployment arguments, passed
-# rather than derived from container_health_service_name: the role that deploys a
-# stack out of the installed release is the role that declared those five paths
-# to roles/deployment_bundle, and deriving them here would put a second
-# expression for them somewhere that declaration cannot see.
+# Read only by tasks/recover.yml: the caller's own deployment arguments, passed
+# so the recreate addresses exactly the release the caller declared.
 container_health_compose_dir: ""
 container_health_compose_files: []
 container_health_env_files: []

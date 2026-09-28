@@ -1,13 +1,6 @@
 #!/usr/bin/env ruby
-# The static half of the downloaders service contract, and the whole of it:
-# Phase 1 Usenet ownership is decided from the repository alone, with nothing
-# deployed.
-#
-# usage: downloaders-static.rb REPOSITORY
-#
-# PLATFORM_CONTRACT_REPO_DIR names the same repository and is read below for
-# tests/policy_support.rb, so this program carries no copy of flatten_tasks.
-#
+# Static half of the downloaders contract, and the whole of it: decided from
+# the repository alone. usage: downloaders-static.rb REPOSITORY
 require "yaml"
 
 root = ARGV.fetch(0)
@@ -24,15 +17,11 @@ required.each do |relative|
   failures << "missing #{relative}" unless File.file?(File.join(root, relative))
 end
 
-# Task files are flattened so a task on a block's rescue or always path is still
-# a task the role executes.
+# Flattened so rescue/always tasks count too.
 require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
 include PolicySupport
 
-# Assertions about what the role does read the parsed structure rather than the
-# file's bytes: a Jinja test that survives only inside a comment is not a test
-# the role runs, and a literal found anywhere in a file does not belong to the
-# task the assertion names.
+# Parsed structure, not file bytes: a commented-out test is not one the role runs.
 def role_strings(node)
   case node
   when Hash then node.flat_map { |key, value| [key.to_s] + role_strings(value) }
@@ -51,10 +40,7 @@ def included_file(task)
   include_tasks.is_a?(Hash) ? include_tasks["file"] : include_tasks
 end
 
-# Line-oriented grammars — the environment file and the SABnzbd INI — are read as
-# the assignments they declare. A commented-out sample of the right assignment
-# satisfies a substring check while the live line writes something else, and a
-# key found anywhere in the file says nothing about which section owns it.
+# Line grammars (env file, SABnzbd INI) are read as the assignments they declare.
 def environment_assignments(path)
   File.readlines(path, chomp: true).filter_map do |line|
     name, _separator, value = line.strip.partition("=")
@@ -102,27 +88,19 @@ if failures.empty?
       defaults["downloaders_sabnzbd_owned_misc"]["cache_limit"] == "256M"
   failures << "SABnzbd concurrent unpack work must be explicitly bounded" unless
     defaults.dig("downloaders_sabnzbd_owned_misc", "direct_unpack_threads") == 1
-  # 3 is Repair/Unpack/Delete. Anything lower leaves par2 repair to nothing --
-  # Unpackerr does not do par2 and holds no archive password -- so a damaged or
-  # encrypted release parks in the acquisition tree with no component able to
-  # finish it. This asserts the level rather than merely that the key exists,
-  # because 0 is what shipped and 0 is what the failure looked like.
+  # 3 is Repair/Unpack/Delete; Unpackerr does no par2, so anything lower strands
+  # damaged releases. 0 is what shipped.
   failures << "SABnzbd must repair and unpack its own downloads" unless
     defaults["downloaders_sabnzbd_category_post_processing"] == 3
-  # 3 is ConfigServer's Strict: the only ssl_verify value that checks the
-  # provider's certificate chain and hostname. The other three leave a TLS
-  # connection that authenticates nothing, and nothing else would notice.
+  # 3 (Strict) is the only ssl_verify value that checks chain and hostname.
   failures << "SABnzbd must verify the provider's TLS certificate" unless
     defaults.dig("downloaders_sabnzbd_owned_server", "ssl_verify") == 3 &&
       defaults.dig("downloaders_sabnzbd_owned_server", "enable") == 1
 
-  # Order is task position, not byte offset. A task named in a comment sorts
-  # ahead of the task it names, and a byte offset cannot tell the two apart.
+  # Order is task position, not byte offset.
   main = role_tasks(root, "roles/downloaders/tasks/main.yml")
   guard_index = main.index { |task| included_file(task) == "state_guard.yml" }
-  # Two `up`s since #537, told apart by `recreate`: the deployment, and the
-  # bounded recovery roles/container_health brackets. The deployment is the one
-  # without it, and selecting on position alone would pick whichever came first.
+  # The deployment is the `up` without `recreate` (#537).
   activation_index = main.index do |task|
     compose = task["community.docker.docker_compose_v2"]
     compose.is_a?(Hash) && compose["state"] == "present" && !compose.key?("recreate")
@@ -138,11 +116,7 @@ if failures.empty?
     guard_index && activation_index && guard_index < activation_index
   failures << "downloaders role must verify its effective project CPU policy" unless
     main.count { |task| task.dig("vars", "container_cpu_service_name") == "downloaders" } == 1
-  # The gate is read from whatever element carries the deployment. #537 wrapped
-  # it in a block whose rescue records the message roles/container_health is
-  # handed, and Ansible applies a block's `when` to every task inside it, so
-  # reading the task's own `when` alone would report an ungated deployment that
-  # is in fact gated.
+  # The gate may sit on the enclosing block (#537), whose `when` applies inside it.
   activation_gate = main.find do |task|
     task["block"].is_a?(Array) &&
       flatten_tasks(task["block"]).any? { |inner| inner.equal?(activation) }
@@ -171,13 +145,8 @@ if failures.empty?
       ["SONARR_API_KEY", "{{ vault_arr_sonarr_api_key }}"]
     ].all? { |assignment| env_assignments.include?(assignment) }
 
-  # A changed bind source does not recreate a container; a changed label does.
-  # So the ClamAV gate's own sha256, read from the release on the target,
-  # reaches a label -- and it has to be read *before* the environment that
-  # carries it is rendered, or the template resolves an undefined fact
-  # (services/kapowarr holds its carried patch the same way). policy_test.rb
-  # owns the Compose half: that the label exists at all, on every container
-  # mounting a file out of the release.
+  # A changed label recreates the container where a changed bind source does not,
+  # so the gate's sha256 must be read before the env that carries it is rendered.
   failures << "downloaders env must export the release gate's sha256 exactly once" unless
     env_assignments.select { |name, _value| name == "SABNZBD_CLAMAV_GATE_SHA256" } ==
       [["SABNZBD_CLAMAV_GATE_SHA256", "{{ downloaders_clamav_gate_sha256 }}"]]
@@ -193,11 +162,8 @@ if failures.empty?
     gate_stat_index && env_render_index && gate_stat_index < env_render_index
 
   reconcile = role_tasks(root, "roles/downloaders/tasks/reconcile_sabnzbd.yml")
-  # A credential-bearing task is selected from the whole request, not from its
-  # URL. This selector used to read only `uri.url`, and moving the provider push
-  # to a form-urlencoded body dropped that one task out of the selection while
-  # the check stayed green, because the other credential-bearing tasks still
-  # matched and kept the set non-empty.
+  # Selected from the whole request, not the URL: a body-borne credential once
+  # dropped out of the selection unnoticed.
   secret_tasks = reconcile.select do |task|
     request = task["ansible.builtin.uri"]
     request.is_a?(Hash) && role_strings(request).any? do |value|
@@ -205,20 +171,11 @@ if failures.empty?
         value.include?("vault_downloaders_sabnzbd_server_password")
     end
   end
-  # The floor is the point, and it is why this is not `!secret_tasks.empty?`.
-  # A dynamically assembled subject list fails by going quiet: when a subject
-  # moves out of reach of the selector, the rule keeps passing over whatever is
-  # left. Non-empty is exactly the assertion a *partially* blinded selector still
-  # satisfies, so the count has to be an assertion too. Four tasks carry a
-  # credential today; the floor sits below that deliberately, so that deleting a
-  # task is a decision rather than an accident, while blinding the selector to
-  # most of them is still caught. Raise it when tasks are added.
+  # A floor, not non-emptiness: a partially blinded selector still finds some.
+  # Raise it when tasks are added.
   failures << "every SABnzbd credential-bearing API task must use no_log" unless
     secret_tasks.length >= 2 && secret_tasks.all? { |task| task["no_log"] == true }
-  # A floor cannot say *which* task must stay in reach, and the provider push is
-  # the one that matters: it is the only task here sending a third-party secret,
-  # and the only one whose credential does not appear in a URL. Name it directly
-  # rather than inferring it from a count.
+  # The provider push is named directly: the only third-party secret, sent in a body.
   provider_pushes = secret_tasks.select do |task|
     role_strings(task["ansible.builtin.uri"]).any? do |value|
       value.include?("vault_downloaders_sabnzbd_server_password")
@@ -226,24 +183,14 @@ if failures.empty?
   end
   failures << "the Usenet provider push must stay inside the credential guard" unless
     provider_pushes.length == 1
-  # SABnzbd keeps no access log in this deployment, but a URL is the part of a
-  # request every future proxy, log and history records, and the provider
-  # password is the one credential here whose exposure reaches outside the
-  # platform. It travels in a body or not at all.
+  # The provider password travels in a body or not at all.
   failures << "the Usenet provider password must never travel in a URL" if
     reconcile.any? do |task|
       task.dig("ansible.builtin.uri", "url").to_s
           .include?("vault_downloaders_sabnzbd_server_password")
     end
-  # An undeclared Usenet provider is a valid state, and the owned-server
-  # verification is therefore a *pair* of assertions rather than one gated
-  # assertion. That distinction is the whole guard. A single assertion carrying
-  # `when: downloaders_usenet_provider_declared` would skip on the undeclared
-  # target and assert nothing at all, which is the silence issue #269 closed:
-  # SABnzbd ran with zero servers for as long as the stack existed and nothing
-  # failed. So both branches must exist, and their conditions must be each
-  # other's negation -- two conditions that could both be false is the same
-  # silence wearing a second task.
+  # The owned-server verification is a pair of mutually negated assertions: one
+  # gated assertion would skip silently when no provider is declared (#269).
   verify = role_tasks(root, "roles/downloaders/tasks/verify.yml")
   owned_server_gate = "downloaders_usenet_provider_declared | bool"
   owned_server_branches = verify.select do |task|
@@ -256,10 +203,7 @@ if failures.empty?
   branch_conditions = owned_server_branches.map { |task| Array(task["when"]).map(&:to_s) }
   failures << "the owned Usenet server must be verified in both provider states" unless
     branch_conditions.sort == [[owned_server_gate], ["not #{owned_server_gate}"]].sort
-  # A branch is only worth having if it claims something about the server list,
-  # and the two claims are inverses: exactly one owned server when a provider is
-  # declared, none when one is not. Read the counts rather than trusting the
-  # conditions, so a branch reduced to a shape check alone fails here.
+  # Exactly one owned server when declared, none when not.
   branch_claims = owned_server_branches.to_h do |task|
     [Array(task["when"]).map(&:to_s).first,
      role_strings(task.dig("ansible.builtin.assert", "that")).grep(
@@ -270,9 +214,7 @@ if failures.empty?
     branch_claims[owned_server_gate].to_a.any? { |claim| claim.include?("length == 1") } &&
       branch_claims["not #{owned_server_gate}"].to_a.any? { |claim| claim.include?("length == 0") }
 
-  # The credential guard and the `section=servers` reconciliation are gated on
-  # the same derived fact, and on nothing else. A second spelling of "is a
-  # provider declared" is how the four gates drift out of agreement.
+  # All provider gates read the same derived fact.
   main_provider_gates = main.select do |task|
     role_strings(task).any? { |value| value.include?("vault_downloaders_sabnzbd_server_password") }
   end
@@ -307,19 +249,13 @@ if failures.empty?
   failures << "bootstrap must bind SABnzbd on all container interfaces" unless
     settings.dig("misc", "host") == "0.0.0.0" && settings.dig("misc", "port") == "8080"
   failures << "bootstrap must not invent a Usenet provider" if settings.key?("servers")
-  # The loop header is Jinja control flow, so it stays a literal — but a whole
-  # line of it, which a commented-out copy is not. What the loop writes is read
-  # as the section and keys it declares.
+  # The loop header must be a whole template line, not a commented-out copy.
   template_lines = File.readlines(template_path, chomp: true).map(&:strip)
   failures << "bootstrap must render every declared category and destination" unless
     template_lines.include?(
       "{% for category, directory in downloaders_sabnzbd_categories.items() %}"
     ) && settings.dig("categories/{{ category }}", "dir") == "{{ directory }}"
-  # The bootstrap template and the reconciliation must write the same
-  # post-processing level, and both must read it from the declaration. A literal
-  # in either place is how the level became unreconcilable in the first place:
-  # the API request carried a hardcoded pp and its `when` compared only the
-  # destination, so an existing host kept whatever it was created with.
+  # Both must read the declared level; a literal made it unreconcilable before.
   failures << "bootstrap must render the declared post-processing level" unless
     settings.dig("categories/{{ category }}", "pp") ==
       "{{ downloaders_sabnzbd_category_post_processing }}"
@@ -338,20 +274,12 @@ if failures.empty?
   failures << "Unpackerr file and directory modes drifted" unless
     unpackerr.dig("environment", "UN_FILE_MODE") == "0644" &&
       unpackerr.dig("environment", "UN_DIR_MODE") == "0755"
-  # Unset is not the same as unlimited here: unset means 20GB for Sonarr and
-  # 75GB for Radarr, and the refusal that produces is silent from the library's
-  # side. Both are asserted as the explicit "0" so removing either restores a
-  # cap rather than removing one.
+  # Unset means 20GB/75GB caps, so both are asserted as explicit "0".
   failures << "Unpackerr must not cap an extraction by archive size" unless
     unpackerr.dig("environment", "UN_SONARR_0_MAX_BYTES") == "0" &&
       unpackerr.dig("environment", "UN_RADARR_0_MAX_BYTES") == "0"
-  # The platform rule says a probe must reach a service; this says it must reach
-  # *this* one. Unpackerr has no liveness signal until its web server is turned
-  # on, so the switch and the address the probe fetches are one decision and
-  # drift apart silently: a probe aimed at a port nothing is listening on fails
-  # forever, and a listener nothing probes is surface for no reason. Reading the
-  # address out of the environment rather than repeating it keeps the two equal
-  # by construction.
+  # The probe address is read from UN_WEBSERVER_LISTEN_ADDR, so the listener and
+  # the probe cannot drift apart.
   listen_addr = unpackerr.dig("environment", "UN_WEBSERVER_LISTEN_ADDR").to_s
   probe = Array(unpackerr.dig("healthcheck", "test")).join(" ")
   failures << "Unpackerr's health probe must fetch the web server it enables, on loopback" unless
@@ -363,10 +291,8 @@ end
 if failures.empty?
   puts "downloaders contract: Phase 1 Usenet ownership holds"
 else
-  # Every violation, one per line, each line naming the contract that authored it.
-  # The prefix is not decoration: tests/<service>_contract_test.rb requires a row
-  # that says "this must be refused" to see it, so a Ruby backtrace or a shell
-  # diagnostic can no longer stand in for a refusal (#352).
+  # One line per violation with the contract's prefix, which contract tests
+  # match on (#352).
   warn failures.map { |failure| "Downloaders contract failed: #{failure}" }.join("\n")
   exit 1
 end

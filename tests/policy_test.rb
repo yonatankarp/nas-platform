@@ -1,9 +1,6 @@
 #!/usr/bin/env ruby
-# Property-based policy checks.
-#
-# Most checks deliberately assert properties rather than per-service values.
-# The source-platform inventory is the exception: pinning that finite set keeps
-# an omitted service from silently disappearing from the platform scope.
+# Property-based policy checks. The source-platform inventory is the exception:
+# pinning that finite set keeps an omitted service from vanishing silently.
 
 require "find"
 require "open3"
@@ -108,14 +105,8 @@ beginner_guides.each do |relative_path|
         "README must link to #{relative_path}")
 end
 
-# The controller pin is authored once, in controller-requirements.in, and compiled
-# into the hash-locked controller-requirements.txt every CI job that needs the
-# toolchain installs (#827); tests/ci/workflow_test.rb
-# holds the two restatements that cannot be a pip requirement -- the sandbox's
-# image tag and the Beszel telemetry test -- against it. A guide that restates
-# the version is a further mirror that nothing bumps, so a
-# reader following it builds a controller CI never validated against and then
-# fails ansible-lint for reasons the guide cannot explain.
+# The controller pin lives only in controller-requirements.in (#827); a guide
+# restating the version is a mirror nothing bumps.
 beginner_guides.each do |relative_path|
   guide_path = File.join(ROOT, relative_path)
   guide_source = File.file?(guide_path) ? File.read(guide_path) : ""
@@ -159,10 +150,7 @@ active_prefixes = %w[
   tests/
   scripts/
 ].freeze
-# CLAUDE.md is here because it was the one place the retired declaration
-# survived: it named the retired service as an integration lane and as a Compose
-# allowlist exception long after both were gone, and the guard below did not read
-# it (issue #276).
+# CLAUDE.md is here because a retired declaration once survived only there (#276).
 active_root_files = %w[
   CLAUDE.md
   README.md
@@ -245,14 +233,8 @@ check(failures, !File.exist?(retired_role) && !File.symlink?(retired_role),
 check(failures, !File.exist?(retired_service) && !File.symlink?(retired_service),
       "retired service directory must be absent")
 
-# tests/contracts/beszel-runtime.rb, not the wrapper: #147 moved the contract's
-# runtime body out of a `<<'RUBY'` heredoc into that file. The proof hands the
-# hub a plain-http generic:// webhook at a recorder the contract opens, and it
-# must require both halves: the hub's own `err: false`, and a recorded POST that
-# carries Beszel's test message. Either alone passes a hub that never sent
-# anything. It used to poll a disposable topic history after a captured message
-# ID; #558 removed that server, and a recorder opened per run holds nothing from
-# before it existed, so there is no baseline left to capture.
+# The Beszel proof must require both the hub's `err: false` and a recorded POST
+# carrying the test message; either alone passes a hub that sent nothing.
 beszel_contract_path = File.join(ROOT, "tests", "contracts", "beszel-runtime.rb")
 beszel_contract = File.file?(beszel_contract_path) ? File.read(beszel_contract_path) : ""
 check(failures,
@@ -295,28 +277,16 @@ dozzle_planned_tasks = [
 ]
 check(failures, dozzle_planned_tasks.all? { |name| dozzle_task_names.include?(name) },
       "Dozzle must expose every REST mutation category as a check-mode planned change")
-# The per-service port exports are derived from tests/mac/lib.sh's
-# MAC_SERVICE_PORT_ORDER rather than written out one line per service, so what
-# this file can assert is that the roster names the service and that the runner
-# runs the derivation. tests/policy_mac_test.rb executes that derivation and
-# checks the variable each service actually lands in.
+# Port exports are derived from MAC_SERVICE_PORT_ORDER; tests/policy_mac_test.rb
+# executes the derivation.
 mac_lib_roster_path = File.join(ROOT, "tests", "mac", "lib.sh")
 mac_lib_roster = if File.file?(mac_lib_roster_path)
                    File.read(mac_lib_roster_path)[/^MAC_SERVICE_PORT_ORDER='([^']*)'/m, 1].to_s.split
                  else
                    []
                  end
-#
-# The failure diagnostics are derived too, from a second roster, and this check
-# used to read their Compose projects as eight literal `"$project_name-<name>"`
-# strings. That is what let them fall eight services behind: arr, downloaders,
-# bindery, kapowarr, pinchflat, trailarr and seerr were all deployed by the lane
-# and none of them appeared in a failed run's evidence, and the literals here
-# said nothing about it because four of the eight were still present. So the
-# roster is now tests/sandbox_cleanup.sh's, which cleanup already holds current,
-# and what is asserted is the shape that cannot go stale: the namespace prefix is
-# applied to a roster rather than to a list, that roster is the shared one, and
-# the sample services are in both it and the port roster.
+# Failure diagnostics apply the namespace prefix to tests/sandbox_cleanup.sh's
+# shared roster rather than to literals, which once fell eight services behind.
 mac_cleanup_registry_path = File.join(ROOT, "tests", "sandbox_cleanup.sh")
 mac_cleanup_projects = if File.file?(mac_cleanup_registry_path)
                          File.read(mac_cleanup_registry_path).lines
@@ -344,11 +314,8 @@ PLATFORM_INVENTORIES = {
   "remote.yml" => ["nas_hosts", "nas", "ssh", "nas"],
   "mac.yml" => ["mac_hosts", "mac", "local", "mac"]
 }.freeze
-# Each transport coordinate reads one environment variable, and only that one.
-# The pairing is the point: an undef() hint is a message to an operator who has
-# a shell with the wrong variable exported, so a hint naming the other
-# coordinate's variable refuses at exactly the right moment and then sends that
-# operator to export something that will not fix it.
+# Each transport coordinate reads one environment variable, and an undef() hint
+# must name that same variable, or it sends the operator to export the wrong one.
 TRANSPORT_COORDINATE_SOURCES = {
   "ansible_host" => "PLATFORM_NAS_ADDRESS",
   "ansible_user" => "PLATFORM_NAS_USER"
@@ -393,16 +360,8 @@ PLATFORM_INVENTORIES.each do |inventory_name, (host_group, host_name, connection
                     !host[coordinate].empty?,
           "inventory/#{inventory_name} must define #{coordinate}")
   end
-  # The transport coordinate and the client-facing coordinate are different
-  # audiences. platform_public_host is the address clients are handed -- Beszel's
-  # APP_URL, Vaultwarden's DOMAIN, Nextcloud's trusted domain -- so a value
-  # inherited from the SSH address hands every client an address it may not
-  # reach, with nothing to observe: deployment succeeds, the servers are healthy,
-  # and the links they send point somewhere else.
-  # The endpoint guard above can only see emptiness, and an inherited value is
-  # not empty, which is how a coordinate can be non-empty without being chosen.
-  # So the audience split is enforced on the expression itself: this coordinate
-  # is stated, never derived, and no fallback may reintroduce a second audience.
+  # platform_public_host is the address clients are handed; inherited from the
+  # SSH address it silently hands out an unreachable one. Stated, never derived.
   public_host_source = host.is_a?(Hash) ? host["platform_public_host"].to_s : ""
   borrowed = ["PLATFORM_NAS_ADDRESS", "ansible_host", "default("].find do |fragment|
     public_host_source.include?(fragment)
@@ -410,28 +369,17 @@ PLATFORM_INVENTORIES.each do |inventory_name, (host_group, host_name, connection
   check(failures, borrowed.nil?,
         "inventory/#{inventory_name} platform_public_host must be stated " \
         "explicitly, not derived from another coordinate (found #{borrowed.inspect})")
-  # The other half of the same argument, for the other audience. An ssh
-  # inventory states where it connects and who it connects as, and Ansible has a
-  # plausible default for each: an empty ansible_host becomes the inventory
-  # hostname -- the literal `nas` -- and an empty ansible_user becomes the local
-  # login name. lookup('env') yields the empty string rather than an undefined
-  # value, so a bare lookup reaches both defaults silently. undef() is what makes
-  # the unset case fail while the connection keyword is templated, before the
-  # first packet. Presence is required rather than tolerated, because deleting
-  # the keyword outright reinstates the same fallback that the guard exists to
-  # refuse; a local connection has no transport to state and must carry neither.
+  # An empty ansible_host/ansible_user silently falls back to `nas` and the local
+  # login; undef() makes the unset case fail. Required present on ssh, absent on
+  # local connections.
   TRANSPORT_COORDINATE_SOURCES.each do |coordinate, variable|
     coordinate_source = host.is_a?(Hash) ? host[coordinate] : nil
     if connection == "ssh"
       check(failures, coordinate_source.is_a?(String) && coordinate_source.include?("undef("),
             "inventory/#{inventory_name} must define #{coordinate} and fail on an " \
             "unset environment value with undef(), not fall back to Ansible's default")
-      # Shape is not meaning: the check above is satisfied by any undef() at all,
-      # including one whose hint names the other coordinate's variable, or one
-      # with no hint to name anything. The refusal is only useful if it tells the
-      # operator which variable to export, so the expression must read this
-      # coordinate's variable, name that same variable in its hint, and mention
-      # no other -- a hint naming both is a hint that names neither.
+      # The expression must read this coordinate's variable, name it in the hint,
+      # and mention no other.
       hint = coordinate_source.to_s[/undef\(\s*hint\s*=\s*'([^']*)'/, 1]
       named_variables = coordinate_source.to_s.scan(/PLATFORM_[A-Z0-9_]+/).uniq
       check(failures,
@@ -496,10 +444,8 @@ check(failures, ansible_config_source.match?(/^filter_plugins\s*=\s*filter_plugi
 check(failures, filter_status.success?,
       "Mac physical-path filter must reject ambiguous or relative paths: #{filter_stderr.strip}")
 
-# Filter plugins cannot import module_utils/ by name. Reaching it by putting the
-# repository root on sys.path would shadow site-packages with library/,
-# module_utils/, roles/, services/ and tests/ for the whole Ansible process, so
-# shared code has to be loaded by path instead.
+# Filter plugins load module_utils by path: putting the repo root on sys.path
+# would shadow site-packages for the whole Ansible process.
 sys_path_probe = <<~PYTHON
   import importlib.util
   import sys
@@ -557,12 +503,8 @@ paperless_options = YAML.safe_load_file(
         "Paperless argument specs must declare optional integer #{variable}")
 end
 
-# These four are handed whole to a Python filter or posted verbatim to a service
-# API from a task running under no_log: true, so an undeclared shape surfaces as
-# a redacted AnsibleFilterError rather than as a named option. The nested
-# options are what makes the declaration a shape and not just a container type;
-# tests/filter_input_argument_spec_test.py proves they still refuse a malformed
-# element.
+# Handed whole to a filter or posted verbatim under no_log, so an undeclared
+# shape would surface only as a redacted error; nested options make it a shape.
 {
   "arr" => {
     "arr_servarr_instances" => %w[
@@ -623,9 +565,7 @@ immich_preference_keys = %w[
   immich_managed_user_preference_profiles
 ]
 immich_defaults = YAML.safe_load_file(File.join(ROOT, "roles", "immich", "defaults", "main.yml"))
-# Immich's preference policy moved to its own group_vars file with the rest of
-# the service's settings. It is still the layer that outranks role defaults, which
-# is what the comparison below is about.
+# group_vars outranks role defaults, which is what the comparison is about.
 shared_vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "service_immich.yml"))
 [shared_vars, immich_defaults].each_with_index do |variables, index|
   source = index.zero? ? "normal inventory" : "Immich role defaults"
@@ -662,8 +602,6 @@ paperless_env_assignments = environment_assignments(
   check(failures, paperless_env_assignments.include?([name, value]),
         "Paperless environment template must contain exact line: #{name}=#{value}")
 end
-
-
 
 registry_path = File.join(ROOT, "tests", "contracts", "registry.yml")
 registry = begin
@@ -770,27 +708,9 @@ EXPECTED_CONTAINER_CPUS =
   SERVICE_EXPECTATIONS.transform_values { |expectation| expectation.fetch("container_cpus") }.freeze
 EXPECTED_VAULT_KEYS = pinned_vault_keys(SERVICE_EXPECTATIONS)
 
-# The ceilings and the budget are one policy, not two. Every managed container
-# runs on the *same* cpuset -- platform_container_cpu_budget logical CPUs of the
-# host, rendered as PLATFORM_CONTAINER_CPUSET -- and `cpus` is a per-container
-# ceiling on that shared set, not a reservation carved out of it. The ceilings
-# are therefore oversubscribed on purpose, sized for a workload that is idle
-# almost all the time, and their total is not a quantity the platform has to fit
-# anything into. inventory/group_vars/nas_hosts/main.yml records that model
-# beside the budget; reading the total as a budget is the mistake this check
-# exists to forestall.
-#
-# What does mean something is a single ceiling wider than the set it runs on.
-# Docker clamps such a container to the cpuset anyway, so the number constrains
-# nothing while reading as a deliberate limit -- it is a ceiling that lies. The
-# NAS budget is the one compared against because these ceilings are written for
-# the production set; a Mac host declares 0, meaning "whatever Docker reports",
-# and pins nothing.
-#
-# The relation is `<=`, and the four containers sitting at exactly the budget are
-# the point rather than an exemption: whichever one is busy may have the whole
-# shared set. `<` would reject them, so it is not the stricter form of this rule
-# but a different rule about how much of an idle machine a container may claim.
+# `cpus` is a per-container ceiling on one shared cpuset, oversubscribed on
+# purpose; the total is not a budget. A ceiling wider than the NAS set is the
+# error (Docker clamps it). `<=`: a ceiling equal to the budget is deliberate.
 nas_host_vars = begin
   YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "nas_hosts", "main.yml"))
 rescue Errno::ENOENT, Psych::Exception
@@ -815,23 +735,8 @@ if container_cpu_budget.is_a?(Integer) && container_cpu_budget.positive?
   end
 end
 
-# config/media-acquisition.yml restates every acquisition ceiling, and it is not
-# a fixture that could simply be deleted: roles/deployment_bundle ships it into
-# the release, so the catalog an operator reads on the NAS is this file. It has
-# to stay authored there, which leaves the two copies to be related rather than
-# merged -- and until now nothing related them. The checks above pin Compose to
-# tests/expected/<service>.yml and tests/expected to the CPU budget; the catalog
-# was pinned only to a literal in tests/media_acquisition_foundation_test.rb, so
-# a ceiling changed in Compose and in tests/expected left the catalog stale and
-# silent.
-#
-# tests/expected/<service>.yml is the one home. This states the relation the
-# catalog owes it, by name, so a drift says which container and which two files
-# disagree instead of surfacing as a whole-structure mismatch.
-#
-# The container sets are compared in both directions first. A per-key loop over
-# either side alone goes quiet exactly where a key was dropped, which is the
-# drift most likely to be a mistake rather than an edit.
+# config/media-acquisition.yml ships in the release, so it must stay authored and
+# is related here to tests/expected/<service>.yml, by name and in both directions.
 if acquisition_projects.any?
   acquisition_projects.each do |project, definition|
     pinned = EXPECTED_CONTAINER_CPUS[project]
@@ -882,14 +787,8 @@ check(failures, manifest_names.sort == EXPECTED_SERVICES.sort,
 check(failures, (manifest_names - EXPECTED_SERVICES).empty?,
       "service manifest contains unknown services: #{(manifest_names - EXPECTED_SERVICES).uniq.join(', ')}")
 
-# The service roster is restated in two independent artifacts: services/manifest.yml
-# declares what gets deployed, and config/managed-user-capabilities.yml declares the
-# managed-user contract each service honours. Both are pinned, but until now each was
-# pinned only against its own test's hardcoded list, so a service could be added to the
-# manifest and this roster while never gaining a capability contract: this file would
-# pass because the manifest matched, and managed_user_capabilities_test.rb would pass
-# because the matrix still matched its own untouched list. Drift between the two is only
-# visible from a check that reads both, so the matrix is pinned to the roster here.
+# The manifest roster and config/managed-user-capabilities.yml must agree; only a
+# check reading both can see drift between them.
 capabilities_path = File.join(ROOT, "config", "managed-user-capabilities.yml")
 capabilities = begin
   YAML.safe_load_file(capabilities_path)
@@ -930,12 +829,7 @@ undeclared_dirs = service_dir_names - manifest_names
 check(failures, undeclared_dirs.empty?,
       "service directories must be declared in the manifest: #{undeclared_dirs.join(', ')}")
 
-# README states the size of the catalog in English, and both numbers are a
-# property of services/manifest.yml rather than of the prose. Derive them here so
-# that promoting a service fails with the two words the sentence has to carry,
-# instead of leaving the catalog paragraph a release behind and contradicting
-# itself further down the same file -- which is exactly what Pinchflat's
-# promotion did.
+# README states the catalog size in English; derive the words from the manifest.
 COUNT_WORDS = %w[
   zero one two three four five six seven eight nine ten eleven twelve thirteen
   fourteen fifteen sixteen seventeen eighteen nineteen twenty
@@ -947,11 +841,7 @@ readme_prose = readme_source.gsub("`", "").gsub(/\s+/, " ")
   "planned media-acquisition project" =>
     service_statuses.count { |_name, status| status == "planned" }
 }.each do |phrase, count|
-  # The catalog can hold exactly one of something, and "one projects" is a
-  # sentence no reviewer would let through, so the noun agrees with the count.
-  # It can also hold none, which English writes as "no", not "zero": Phase 4
-  # promoted the last planned acquisition project and the sentence has to keep
-  # reading like a sentence after it.
+  # Singular noun for one; "no", not "zero", for none.
   word = count.zero? ? "no" : COUNT_WORDS[count]
   noun = count == 1 ? phrase : "#{phrase}s"
   check(failures, !word.nil? && readme_prose.include?("#{word} #{noun}"),
@@ -964,38 +854,21 @@ service_statuses.each do |name, status|
         "README must name the planned project #{name}")
 end
 
-# Digest pinning with a human-readable version tag, so an update bot can propose
-# a bump and a reader can tell what is deployed. The approved version is whatever
-# compose.yml declares; pinning a copy of it here would mean every image update
-# had to edit this file too, which is what a property check exists to avoid.
+# Digest pinning with a readable tag; the approved version is whatever compose.yml
+# declares, so nothing here restates it.
 IMAGE = %r{\A\S+:[^@\s]+@sha256:[0-9a-f]{64}\z}
 
-# Platform Compose fragments. The log rotation block and the health-check timing
-# default are platform policy rather than a per-stack choice, and Compose
-# resolves a YAML anchor only inside the file that declares it, so each stack
-# carries its own copy of both.
-#
-# Sharing one file across stacks is possible -- `extends:` predates the Compose
-# 2.18 floor nas_compose_minimum states, and Compose 5 resolves it -- and was
-# deliberately not taken. Every per-container property checked below is read
-# straight out of one parsed file today, for free, because Psych resolves the
-# anchors; seeing through `extends:` would mean reimplementing Compose's merge
-# here first, and the whole guard would then be only as good as that
-# reimplementation. On the target the trade is worse still: a platform override
-# that has not been deployed yet degrades to the canonical file, while a shared
-# file that has not been deployed yet is a parse error for every stack at once.
-#
-# So the copies stay, and they are pinned equal here instead. A fragment edited
-# in one stack fails by name rather than drifting away from the other eleven.
+# Platform Compose fragments: anchors resolve only within one file, so each stack
+# carries its own copy, pinned equal here. `extends:` was not taken: checking
+# through it would mean reimplementing Compose's merge, and an undeployed shared
+# file would break every stack at once.
 PLATFORM_LOGGING = {
   "driver" => "json-file",
   "options" => { "max-size" => "10m", "max-file" => "3" }
 }.freeze
 
-# The tuple eight of the platform's twenty-four timed health checks already
-# carried, which is what makes it the default rather than a new opinion. A
-# container needing different timing overrides only the fields it changes, so a
-# deviation reads as a deviation instead of as another hand-written tuple.
+# The tuple most timed health checks already carried; deviations override only
+# the fields they change.
 PLATFORM_HEALTHCHECK_DEFAULTS = {
   "interval" => "30s",
   "timeout" => "10s",
@@ -1003,82 +876,40 @@ PLATFORM_HEALTHCHECK_DEFAULTS = {
   "start_period" => "60s"
 }.freeze
 
-# The stacks allowed to declare no platform fragment, and nothing else. immich
-# is the one entry: three of its four containers run the health check their
-# image ships and the fourth supplies only a test, so the platform's interval,
-# timeout, retries and start_period would replace an image's own timing rather
-# than share a default. Its compose.yml records the same reason at the top, and
-# that comment is the thing this list points at -- an exemption whose reason
-# lives only here is a list, not a decision. x-logging carries no entry: every
-# stack logs the same way, and a stack that stops is a stack whose logs are
-# unbounded on a NAS with one disk pool.
+# Stacks allowed to declare no fragment. immich: its containers use their images'
+# own health timing; its compose.yml records the reason.
 FRAGMENT_EXEMPTIONS = {
   "x-healthcheck-defaults" => %w[immich].freeze
 }.freeze
 
-# What a health-check command has to do to be one. Timing says how often the
-# probe runs and presence says there is a probe; neither says the probe can
-# report the service broken, and unpackerr's could not: `kill -0 1` asks whether
-# PID 1 exists, PID 1 is the container's own entrypoint, and a container whose
-# PID 1 has exited is one Docker has stopped probing. It was a health check by
-# every structural measure above and by no useful one. So require the command to
-# reach the service -- an HTTP or HTTPS URL, a TCP connection, a readiness
-# client, or the image's own health subcommand -- rather than to observe the
-# process table it is running inside. Stated as what
-# a probe must contain and not as a list of no-ops, because the next no-op is
-# never the one a denylist names.
+# A health check must reach the service (URL, TCP, readiness client or health
+# subcommand), not observe the process table: unpackerr's `kill -0 1` could
+# never fail. Stated positively because the next no-op is never on a denylist.
 HEALTHCHECK_PROBE = %r{https?://|/dev/tcp/|\bping\b|isready|\bhealth(check)?\b}
 
-# Images whose runtime picks its own memory ceiling out of whatever it can see,
-# rather than out of anything an operator wrote. A JVM has done this since JDK
-# 10: it reads its cgroup limit and takes MaxRAMPercentage of it, defaulting to
-# 25%, and where there is no limit it falls back to *host* physical memory. So
-# paperless_tika reported MaxHeapSize=4135583744 {ergonomic} on the NAS,
-# measured 2026-09-08 -- a quarter of 16 GB, chosen by nobody -- and the 4 GB to
-# 16 GB upgrade quadrupled it silently, because no file here names either
-# figure. A limit is therefore not only a containment ceiling for these images;
-# it is the only thing that makes their heap a decision.
-#
-# The list is stated rather than derived because a Compose file does not say
-# what runtime is inside an image and nothing here can find out. That is this
-# check's honest limit: a third self-sizing image can land unlisted and the
-# check stays green. EXPECTED_SELF_SIZING_CONTAINERS keeps the entries that are
-# here from going quiet; nothing can guard the omission itself, for the same
-# reason BASE_FIXTURE_PATHS cannot derive its own contents.
-#
-# Matched against the repository half of the image reference, so the version
-# stays written only in the tag and digest.
+# Images whose runtime sizes its own memory (a JVM takes a share of host RAM
+# without a limit, #447), so a limit is what makes the heap a decision. Stated,
+# not derivable from Compose; matched on the repository half of the reference.
 MEMORY_SELF_SIZING_IMAGES = ["docker.io/apache/tika"].freeze
 
-# Which containers that list is expected to reach, exactly and in both
-# directions. A one-directional sweep passes when the tree loses Tika: the
-# subject list empties, every remaining assertion holds, and the check reports
-# success having examined nothing.
+# Pinned both ways, so losing Tika cannot pass having examined nothing.
 EXPECTED_SELF_SIZING_CONTAINERS = { "paperless-ngx" => ["tika"] }.freeze
 
-# Which containers bind-mount a file out of the rotating release pointer, and so
-# owe the content label below. Derived from the volumes, floored here in both
-# directions for the same reason as the line above: a sweep that found nothing
-# would report success having examined nothing, and this subject set is the one
-# an ordinary refactor -- moving a helper out of services/ -- silently empties.
+# Containers bind-mounting a file from the release pointer, derived and pinned
+# both ways: a refactor could silently empty this set.
 EXPECTED_RELEASE_MOUNT_CONTAINERS = {
   "downloaders" => ["sabnzbd"],
   "dozzle" => ["alert-relay"],
   "kapowarr" => ["kapowarr"]
 }.freeze
 
-# Environment keys a JVM heap gets written in. ES_JAVA_OPTS is Elasticsearch's
-# own name for it; JAVA_TOOL_OPTIONS is the one any JVM honours however the
-# image launches it.
+# ES_JAVA_OPTS is Elasticsearch's; JAVA_TOOL_OPTIONS is honoured by any JVM.
 HEAP_DECLARATION_KEYS = %w[JAVA_TOOL_OPTIONS JAVA_OPTS ES_JAVA_OPTS].freeze
 
 BYTE_SUFFIXES = { "b" => 1, "k" => 1024, "kb" => 1024, "m" => 1024**2, "mb" => 1024**2,
                   "g" => 1024**3, "gb" => 1024**3 }.freeze
 
-# Compose accepts 2g, 2G, 2gb, 2048m and a bare byte count; -Xmx accepts the
-# same shapes without the two-letter forms. An unreadable form raises rather
-# than returning nil, because nil would read as "no limit declared" and turn a
-# gap in this parser into a check that quietly stopped applying.
+# An unreadable form raises: nil would read as "no limit declared".
 def parse_bytes(value, what)
   text = value.to_s.strip.downcase
   return Integer(text, 10) if text.match?(/\A\d+\z/)
@@ -1089,9 +920,7 @@ def parse_bytes(value, what)
   (match[1].to_f * BYTE_SUFFIXES.fetch(match[2])).round
 end
 
-# The heap a container's environment asks for, in bytes, given the limit it runs
-# under. -Xmx states it outright; MaxRAMPercentage states it as a share of the
-# limit and so means nothing until a limit exists. nil when no heap is declared.
+# The heap requested, in bytes: -Xmx outright, or MaxRAMPercentage of the limit.
 def declared_heap_bytes(environment, limit_bytes, what)
   text = HEAP_DECLARATION_KEYS.filter_map { |key| environment[key] }.join(" ")
   if (explicit = text.match(/-Xmx(\d+(?:\.\d+)?[bkmg]?)\b/i))
@@ -1104,11 +933,8 @@ def declared_heap_bytes(environment, limit_bytes, what)
   nil
 end
 
-# The keys every long-running container on the platform shares. A stack may add
-# to its own fragment -- networks, or a shutdown window every consumer genuinely
-# wants -- but never disagree about these four. stop_grace_period is deliberately
-# not among them: absent means Docker's 10s, and the platform runs 10s, 30s, 1m
-# and 2m on purpose, so a shared default would flatten that silently.
+# Keys every long-running container shares. stop_grace_period is deliberately
+# absent: the platform uses several windows on purpose.
 PLATFORM_SERVICE_DEFAULTS = {
   "cpuset" => "${PLATFORM_CONTAINER_CPUSET:?}",
   "security_opt" => ["no-new-privileges:true"],
@@ -1116,45 +942,22 @@ PLATFORM_SERVICE_DEFAULTS = {
   "logging" => PLATFORM_LOGGING
 }.freeze
 
-# The storage inventory is composed from every nas_storage_* contributor in
-# group_vars/all rather than written in one place, so two properties that used to
-# be free have to be bought.
-#
-# Membership, because a derived composition cannot notice what it lost. Deleting
-# every contributor leaves nas_storage as [] and the play reports ok, measured
-# 2026-09-12, so contributors are held against the manifest in both directions.
+# Storage contributors are held against the manifest both ways: deleting every
+# contributor leaves nas_storage as [] and the play reports ok.
 implemented_roles = Array(manifest["services"]).filter_map do |entry|
   entry["role"] if entry.is_a?(Hash) && IMPLEMENTED_STATUSES.include?(entry["status"])
 end.uniq
 NasStorage.problems(ROOT, implemented_roles).each { |problem| check(failures, false, problem) }
 
-# And the prefix, because q('varnames') reads whatever is in scope at the moment
-# it evaluates. A role default named nas_storage_* would join the composition
-# partway through a run, which would make nas_storage evaluate to different
-# things depending on where it is read -- and host_prep reads it early. Nothing
-# outside group_vars/all may claim the prefix; the namespace is clean today and
-# this is what keeps it so.
-#
-# Read as YAML rather than by matching column zero. A root mapping may be
-# indented -- `  nas_storage_x:` with nothing above it parses to the top-level
-# key `nas_storage_x`, verified -- and a line-anchored pattern sees nothing
-# there, so the one definition this refuses is the one spelled to slip past it.
-# An unreadable subject is reported rather than skipped, the way #599 requires
-# at its three sites: a scan that cannot read a file has not cleared it.
+# Nothing outside group_vars/all may define nas_storage_*: q('varnames') would
+# pick up a role default partway through a run. Read as YAML (a root key may be
+# indented); an unreadable file is reported, not skipped (#599).
 storage_prefix_offenders = []
 storage_prefix_unreadable = []
 Find.find(ROOT) do |path|
   Find.prune if File.basename(path) == ".git"
-  # A nested checkout is a different tree, and none of its files is in scope for
-  # a run of this one. .gitignore anticipates agent worktrees under
-  # .claude/worktrees/ and git honours it; Find does not, so a single
-  # `git worktree add` put a second copy of all 19 contributors into this sweep
-  # and failed the check naming every one -- 133 paths at seven worktrees, none
-  # of them a definition Ansible would ever read (#665). Pruning on the nested
-  # .git rather than on that path name is what makes it a statement about what
-  # the sweep's subject is: a worktree carries a .git file and a clone a .git
-  # directory, both answer File.exist?, and a mutation sandbox is no git tree at
-  # all, so nothing there is pruned and a planted file is still seen.
+  # Prune nested checkouts (worktrees, clones): they are another tree (#665). A
+  # mutation sandbox has no .git, so planted files are still seen.
   Find.prune if path != ROOT && File.directory?(path) && File.exist?(File.join(path, ".git"))
   next unless File.file?(path) && path.end_with?(".yml")
 
@@ -1187,11 +990,7 @@ check(failures, storage_prefix_offenders.empty?,
 
 declared_paths = NasStorage.entries(ROOT).map { |entry| entry.fetch("path") }
 
-# A mounted path is accounted for when nas_storage declares it, or declares an
-# entry it sits under: host_prep creates that entry with the right ownership and
-# recovery class, and anything beneath it comes into existence with it. This is
-# the relation the Compose volume check has always applied, stated once here now
-# that a second caller needs it.
+# A mounted path is accounted for when nas_storage declares it or an ancestor.
 storage_declared = lambda do |path|
   declared_paths.include?(path) ||
     declared_paths.any? { |declared| path.start_with?("#{declared}/") }
@@ -1201,10 +1000,7 @@ end
 # derives its own subject list, so the count is asserted after the sweep.
 import_pairs = 0
 
-# Which containers the self-sizing image list actually reached. Collected during
-# the sweep and compared against EXPECTED_SELF_SIZING_CONTAINERS afterwards, in
-# both directions, because the failure this guards against is the subject list
-# emptying rather than a subject misbehaving.
+# Compared afterwards both ways: the guarded failure is the subject list emptying.
 self_sizing_containers = Hash.new { |hash, key| hash[key] = [] }
 
 # Which containers were found bind-mounting a file out of ${PLATFORM_CURRENT_DIR:?}.
@@ -1237,11 +1033,7 @@ service_dirs.each do |dir|
     "x-logging" => PLATFORM_LOGGING,
     "x-healthcheck-defaults" => PLATFORM_HEALTHCHECK_DEFAULTS
   }.each do |fragment, expected|
-    # Presence first, then equality. Skipping a stack that declares no fragment
-    # pinned only the copies that already existed: bindery wrote the platform
-    # tuple inline into its one health check and its copy was held to nothing,
-    # which is a fragment the pin cannot see rather than a stack that chose not
-    # to have one. Absence is now a decision the exemption list has to record.
+    # Presence first, then equality: absence must be recorded as an exemption.
     exempt = FRAGMENT_EXEMPTIONS.fetch(fragment, []).include?(name)
     check(failures, compose.key?(fragment) || exempt,
           "#{name}: #{fragment} must be declared, or exempted with the reason recorded " \
@@ -1287,29 +1079,9 @@ service_dirs.each do |dir|
     check(failures, !spec.key?("build"),
           "#{label}: must use a published image, not build")
 
-    # ${PLATFORM_CURRENT_DIR:?} is the `current` symlink, which every release
-    # moves. Docker resolves a bind-mount source once, when the container
-    # starts, so a container Compose does not recreate keeps the inode from
-    # whichever release was current then -- it goes on running an old copy of
-    # the file while `current` points somewhere else, and nothing compares the
-    # two (#810: SABnzbd executed a four-day-old post-processing gate). Only a
-    # changed container *definition* recreates, so the mounted file's own
-    # sha256 has to reach a label. Keyed on content and not on the release id
-    # deliberately: the stale inode matters exactly when the bytes differ, and
-    # recreating on every release would interrupt an active download for a
-    # merge that changed nothing here.
-    #
-    # What this cannot see is which variable the label names: it requires a
-    # sha256 reference, not the right one. A label pointed at another service's
-    # key renders here and fails at `docker compose up` and in every harness
-    # that renders this stack, so the property is held -- just not by this
-    # check. Its honest limit, stated rather than papered over.
-    #
-    # Matching on strings cannot silently skip a long-form volume entry, which
-    # would otherwise read here as "mounts nothing out of the release": the
-    # parameterized-source check further down parses every entry of every
-    # container's `volumes` and refuses a mapping outright, so a long-form
-    # declaration never reaches a green run to be skipped by.
+    # Docker resolves a bind source once at start, so a file mounted from the
+    # moving `current` symlink needs its sha256 in a label to force a recreate
+    # (#810). This checks a sha256 label exists, not that it names the right key.
     release_mounts = Array(spec["volumes"]).grep(%r{\A\$\{PLATFORM_CURRENT_DIR:\?\}/})
     unless release_mounts.empty?
       release_mount_containers[name] << container
@@ -1323,12 +1095,8 @@ service_dirs.each do |dir|
             "its own sha256, or Compose leaves this container on an older release's copy")
     end
 
-    # Two obligations, and only the first has a subject in the tree today.
-    #
-    # A self-sizing image must carry a limit, because without one its runtime
-    # reads host memory instead. Recorded per container in
-    # self_sizing_containers below and compared against the stated expectation
-    # after the sweep, so losing the subject fails instead of passing quietly.
+    # A self-sizing image must carry a limit; recorded per container and compared
+    # after the sweep.
     image_repository = spec["image"].to_s.split("@").first.to_s.rpartition(":").first
     if MEMORY_SELF_SIZING_IMAGES.include?(image_repository)
       self_sizing_containers[name] << container
@@ -1337,20 +1105,9 @@ service_dirs.each do |dir|
             "declare mem_limit, or its runtime reads the host's RAM instead")
     end
 
-    # And a declared heap must leave room beside it. Half is the boundary
-    # because off-heap -- metaspace, code cache, thread stacks, direct buffers --
-    # runs to roughly the heap again, so a heap above half the limit is a
-    # container arranged to be killed. Stated as an inequality and not a ratio
-    # so a deliberately generous limit stays legal.
-    #
-    # Nothing declares a heap here yet: Tika satisfies the rule above with a
-    # limit alone and lets the JVM derive the heap from it, and Elasticsearch is
-    # the first that must state one, because it fails a bootstrap check unless
-    # -Xms equals -Xmx. Zero subjects is correct rather than a gap, so no floor
-    # is asserted on this one. What proves it works is the pair of mutations in
-    # tests/policy_manifest_test.rb that plant a heap on Tika, one without a
-    # limit and one above half of it; without both, a version of this check
-    # that skips whenever mem_limit is absent would pass unnoticed.
+    # A declared heap must be at most half the limit (off-heap runs to about the
+    # heap again). No subject yet; the tests/policy_manifest_test.rb mutations
+    # are this half's only proof.
     limit_bytes = spec.key?("mem_limit") ? parse_bytes(spec.fetch("mem_limit"), label) : nil
     heap_bytes = declared_heap_bytes(spec["environment"] || {}, limit_bytes, label)
     unless heap_bytes.nil?
@@ -1363,16 +1120,9 @@ service_dirs.each do |dir|
     end
     check(failures, spec["privileged"] != true,
           "#{label}: privileged mode is not allowed")
-    # The other half of the same boundary. Refusing `privileged` says the
-    # container starts without extra power; no_new_privs says it cannot acquire
-    # any afterwards by executing a setuid binary. Every image on the platform
-    # can honour it: the linuxserver.io, gosu and Postgres entrypoints reach
-    # their service accounts with setuid(2) as root, which no_new_privs does not
-    # restrict, and Gotenberg launches Chromium with --no-sandbox rather than
-    # through the setuid sandbox helper. An image that genuinely needed the
-    # escalation would belong in a stated allowlist here, with its reason, and
-    # there is none — so the property holds for every container without
-    # exception.
+    # no_new_privs: no escalation after start via a setuid binary. Every image
+    # honours it (entrypoints drop privileges via setuid(2), which it allows); a
+    # genuine exception would need a stated allowlist entry with its reason.
     check(failures, Array(spec["security_opt"]).include?("no-new-privileges:true"),
           "#{label}: must refuse privilege escalation with security_opt no-new-privileges:true")
     unless acquisition_job
@@ -1386,11 +1136,8 @@ service_dirs.each do |dir|
             "#{label}: long-running services must declare a Dozzle event identity")
     end
 
-    # And the probe has to be able to say no. Read the command whatever shape
-    # Compose allows -- a bare shell string, or a list whose first element is
-    # the CMD/CMD-SHELL marker -- and hold it to HEALTHCHECK_PROBE. A container
-    # deferring to its image's own HEALTHCHECK carries `disable: false` and no
-    # `test:` at all, which is a different decision and not one this reads.
+    # The probe must be able to say no: read the command in any Compose shape and
+    # hold it to HEALTHCHECK_PROBE. `disable: false` with no test defers to the image.
     probe = spec.dig("healthcheck", "test")
     unless probe.nil?
       words = Array(probe).map(&:to_s)
@@ -1407,10 +1154,7 @@ service_dirs.each do |dir|
     options = logging["options"] || {}
     check(failures, options["max-size"] && options["max-file"],
           "#{label}: logging must be bounded by max-size and max-file")
-    # And bounded by the same two numbers everywhere. The keys above say a
-    # container cannot log without limit; this says twelve stacks cannot each
-    # pick their own limit, which is the drift the shared fragment exists to
-    # prevent and the one a presence check never sees.
+    # Same two numbers everywhere: the drift a presence check never sees.
     check(failures, logging == PLATFORM_LOGGING,
           "#{label}: logging must be the platform fragment, not a variant of it")
 
@@ -1443,21 +1187,9 @@ service_dirs.each do |dir|
             "#{label}: #{source} is not declared in nas_storage (expected #{expected})")
     end
 
-    # A library and the staging directory that feeds it must land inside one bind
-    # mount. rename(2) refuses to cross a mount boundary even when both sides are
-    # the same filesystem, so mounting each directory separately turns every
-    # import into a full byte copy plus unlink and puts hardlinking out of reach.
-    # Nothing in the container's own view says so -- the paths look like
-    # neighbours and the import still reports success -- which is how two stacks
-    # carried the defect while their roles claimed the opposite in a comment.
-    #
-    # The pairs are derived, not listed. A container path in the environment
-    # naming a `.acquisition` staging root identifies the share it stages for;
-    # every other environment path beneath that share is a library it can import
-    # to, and both sides must resolve to the same longest-prefix mount. So a
-    # third mount reintroduced at a library path is caught the same way the
-    # original four were, and a downloader that mounts only staging pairs with
-    # nothing and is not asked to.
+    # A library and its `.acquisition` staging directory must share one bind
+    # mount: rename(2) refuses to cross a mount boundary, turning every import into
+    # a copy with no visible error. Pairs are derived from environment paths.
     mount_targets = Array(spec["volumes"]).filter_map do |mount|
       mount.match(%r{\A.*?:(?<target>/[^:]*)(?::(?:ro|rw))?\z})&.[](:target)
     end
@@ -1491,20 +1223,13 @@ service_dirs.each do |dir|
   end
 end
 
-# The pairing above discovers its own subjects, so an empty sweep would report a
-# clean repository having compared nothing: an environment variable renamed to a
-# value the path pattern no longer matches, or a staging root moved out from
-# under `.acquisition`, is enough to empty it silently. Bindery declares both of
-# the pairs the platform has today, so the floor is two rather than one.
+# Floored: the pairing discovers its own subjects. Bindery declares both of today's
+# pairs.
 check(failures, import_pairs >= 2,
       "the same-mount import check paired #{import_pairs} libraries with their staging roots; " \
       "at least the two Bindery declares must stay discoverable")
 
-# Exactly, in both directions. An unlisted container reaching a self-sizing
-# image fails here, and so does the list ceasing to reach a container it is
-# expected to -- an image bumped to another repository, a container renamed, a
-# stack retired. A floor would pass the second case as long as something else
-# still matched.
+# Exactly, in both directions; a floor would pass a lost subject.
 check(failures,
       self_sizing_containers.transform_values(&:sort).sort.to_h ==
         EXPECTED_SELF_SIZING_CONTAINERS.transform_values(&:sort).sort.to_h,
@@ -1521,49 +1246,16 @@ check(failures,
       "#{release_mount_containers.transform_values(&:sort).sort.to_h.inspect}, and the pinned " \
       "expectation is #{EXPECTED_RELEASE_MOUNT_CONTAINERS.inspect}; update both together")
 
-# Service templates write their storage paths as literals, and Compose takes
-# those rendered values straight through as bind sources. That makes the
-# template path a second declaration of what nas_storage already declares, with
-# nothing comparing the two: renaming one side leaves host_prep creating one
-# directory while the service mounts another. Compose volume sources cannot
-# reach these, because they arrive as an opaque ${SERVICE_..._PATH:?} the
-# template supplies, so the templates are read directly here.
-#
-# Only a literal with a path suffix is a declaration. Several templates export
-# the volume root itself (NAS_MEDIA_ROOT, NAS_DOCKER_ROOT, PLATFORM_MEDIA_ROOT)
-# for a service to join onto, and requiring the suffix keeps those out.
-#
-# A media library root may also sit above the declared entries rather than at or
-# below one, which is how Jellyfin mounts the whole media tree while nas_storage
-# declares only the libraries below it: Ansible's file
-# module creates the parent, and the leaves are where a mode and a recovery
-# class belong. Demanding an exact entry would reject that legitimate parent
-# mount. Accepting it is confined to the media root on purpose, because letting
-# a Compose volume source name an ancestor would let a container see a whole
-# service state tree where the declared entry gave it one subdirectory — which
-# is exactly what the Docker root holds, so paths under it get no such
-# allowance and must be declared at or below an entry.
-#
-# Deliberately source text. This sweeps every role template regardless of
-# grammar — env files, XML, INI, YAML fragments — for a storage path written
-# into a rendered artifact. There is no one structure to parse across them, and
-# a path in a template comment still reaches the render unless the comment
-# belongs to the target grammar.
+# Template storage literals are a second declaration of nas_storage, compared
+# here as source text (templates span many grammars). Only the media root may be
+# mounted as an ancestor of declared entries (Jellyfin mounts the whole tree);
+# under the Docker root a path must be declared at or below an entry.
 STORAGE_ROOT_ANCESTOR_ALLOWED = {
   "nas_media_root" => true,
   "nas_docker_root" => false
 }.freeze
-#
-# Floored, because the declaration property below is asserted once per template
-# and so goes quiet with the glob rather than failing with it: a renamed
-# templates/ directory or a suffix the pattern stops recognising leaves zero
-# subjects, which iterates zero times and reports success. 30 templates in the
-# working tree and 21 in the mutation sandbox, whose smaller figure is what the
-# floor is sized against -- fixture_paths copies each implemented service's
-# env.j2 plus the templates BASE_FIXTURE_PATHS names, not every template a role
-# holds. Fifteen sits six under the sandbox and clear of both bands a collapse
-# leaves: zero for a glob that stopped matching, a handful for a roles/ layout
-# change, while attrition is a retired service or two.
+# Floored: a glob that stops matching iterates zero times and passes. Sized
+# against the smaller mutation sandbox.
 storage_root_templates = Dir[File.join(ROOT, "roles", "*", "templates", "*.j2")].sort
 check_floor(failures, storage_root_templates.length, 15,
             "role templates swept for undeclared storage roots")
@@ -1583,11 +1275,8 @@ storage_root_templates.each do |template_path|
   end
 end
 
-# Platform Compose files may add capabilities (devices, mounts, profiles, and
-# similar host-specific wiring). An override may restate an image only so that
-# platform keys sit beside it, never to deploy something different. The
-# relationship is the invariant, so the canonical file stays the only place a
-# version is written and a nil canonical value fails the same way a mismatch does.
+# An override may restate an image only so platform keys sit beside it, never to
+# deploy something different; a nil canonical value fails like a mismatch.
 Dir[File.join(ROOT, "services", "*", "compose.{mac,integration}.yml")].sort.each do |override_path|
   relative_override = override_path.delete_prefix("#{ROOT}/")
   canonical_path = File.join(File.dirname(override_path), "compose.yml")
@@ -1596,12 +1285,8 @@ Dir[File.join(ROOT, "services", "*", "compose.{mac,integration}.yml")].sort.each
   override.fetch("services", {}).each do |container, spec|
     next unless spec.is_a?(Hash)
 
-    # The release-mount label rule below reads compose.yml and nothing else, so
-    # a ${PLATFORM_CURRENT_DIR:?} mount introduced here would escape both the
-    # rule and the floor under it -- an override is exactly where a
-    # host-specific helper would be reached for. Refused rather than taught to
-    # the rule: the mount belongs in the canonical file, where one label covers
-    # every platform, and no override wants one today.
+    # A ${PLATFORM_CURRENT_DIR:?} mount belongs in compose.yml, where the label
+    # rule reads it; overrides would escape the rule.
     check(failures, Array(spec["volumes"]).none? { |volume| volume.to_s.include?("PLATFORM_CURRENT_DIR") },
           "#{relative_override}/#{container}: a file mounted out of the release pointer belongs " \
           "in the canonical compose.yml, where the content-label rule reaches it")
@@ -1612,27 +1297,17 @@ Dir[File.join(ROOT, "services", "*", "compose.{mac,integration}.yml")].sort.each
   end
 end
 
-# Who can reach a Docker socket proxy (#829). Both proxies allow CONTAINERS,
-# which serves /containers/{id}/json and with it every container's environment --
-# every rendered .env value on the platform -- so the proxy is only as private as
-# the set of containers that can open a connection to it. That set is stated
-# here, per proxy, and compared exactly with the one Compose produces: a service
-# with no networks key is on default, network_mode takes it off every Compose
-# network, and any service sharing a network with the proxy can reach it. Closed
-# both ways, so a hub moved onto the proxy's network and a consumer dropped off
-# it both fail. The subjects are derived from the literal socket mount, the same
-# rule tests/renovate_policy_test.rb holds the images with, and floored by the
-# keys of this map. A network the proxy joins must be internal unless it is the
-# proxy's alone, and never external, where another project could join it.
+# Who can reach a Docker socket proxy (#829): CONTAINERS exposes every
+# container's environment, so the reachable set is stated per proxy and compared
+# exactly, both ways. Proxy networks must be internal unless the proxy's alone,
+# and never external.
 SOCKET_PROXY_CONSUMERS = {
   "beszel/socket-proxy" => ["agent-portable"],
   "dozzle/socket-proxy" => ["dozzle"]
 }.freeze
 
-# The one publication allowed, and why it is not closed: Beszel's agent-intel runs
-# with host networking (#607), cannot join a Compose network, and the proxy image
-# listens on TCP only. Any local process can read container environments through
-# it, a ceiling services/beszel/compose.yml states beside the port.
+# The one publication allowed: Beszel's host-networked agent (#607) cannot join a
+# Compose network. Its ceiling is stated beside the port in services/beszel/compose.yml.
 SOCKET_PROXY_PORTS = {
   "beszel/socket-proxy" => ["127.0.0.1:2375:2375"],
   "dozzle/socket-proxy" => []
@@ -1674,11 +1349,7 @@ service_dirs.sort.each do |dir|
           "#{subject}: publishes #{Array(spec["ports"]).inspect}, and the stated exception is " \
           "#{SOCKET_PROXY_PORTS.fetch(subject, []).inspect}")
   end
-  # An override is read by nothing above, so it may narrow a proxy's ports and
-  # nothing more: a top-level networks key (which could redefine a proxy network
-  # as non-internal or external) is refused outright, networks and network_mode
-  # on every service of a stack carrying a proxy, and ports on the proxy unless
-  # empty.
+  # Overrides may narrow a proxy's ports and nothing more.
   next unless services.any? { |container, _spec| socket_proxy_subjects.include?("#{stack}/#{container}") }
 
   Dir[File.join(dir, "compose.{mac,integration}.yml")].sort.each do |override_path|
@@ -1703,33 +1374,10 @@ check(failures, socket_proxy_subjects.sort == SOCKET_PROXY_CONSUMERS.keys.sort &
       "services mounting the Docker socket are #{socket_proxy_subjects.sort.inspect}, and the stated " \
       "consumer map covers #{SOCKET_PROXY_CONSUMERS.keys.sort.inspect}; update both together")
 
-# The Compose floor the disposable lanes actually need, which is not the one
-# inventory declares.
-#
-# Compose's `!override` and `!reset` tags -- which replace a list rather than
-# merge into it, and which is the whole reason a sandbox override can drop the
-# NAS's /dev/dri device or its production port -- were introduced in Compose
-# 2.24.4. nas_compose_minimum is 2.18.0, the floor
-# community.docker.docker_compose_v2 documents, and roles/preflight asserts it on
-# every host. That floor is right for the NAS, whose canonical compose.yml files
-# carry no tag at all, and wrong for both disposable lanes: a host at 2.18.0
-# passes preflight and then dies on the first override it cannot parse, which is
-# beszel rather than whatever anybody was changing.
-#
-# The tags are found as text, and that is the point rather than an economy.
-# Psych resolves an unrecognised tag away without complaint, so the loop above --
-# which reads these very files through YAML.safe_load_file -- cannot see the one
-# thing that sets the floor, and neither can any other parse-based check in this
-# repository. That blindness is why the defect survived two lanes and sixteen
-# services. The pattern matches a tag in value position, so a `!override` written
-# inside a comment (services/nextcloud/compose.mac.yml has one) is not mistaken for
-# a use of it.
-#
-# What this proves, exactly: the floors the two harnesses request are consistent
-# with the tags present in the tree, in both directions -- a kind that gains the
-# tags, and a harness that stops requesting the floor, both fail here. It does
-# not prove any real Mac or CI runner has that Compose installed, and 2.24.4 is
-# taken from Compose's own release notes rather than measured here.
+# `!override`/`!reset` need Compose 2.24.4 while nas_compose_minimum is 2.18.0,
+# right for the NAS (no tags) and wrong for both disposable lanes. Found as text
+# because Psych silently drops unknown tags; checked both ways against what the
+# harnesses request.
 compose_override_tag_minimum = Gem::Version.new("2.24.4")
 compose_override_tag = /^[ \t]*(?:-[ \t]+)?[\w.\-]+:[ \t]+!(?:override|reset)(?:[ \t]|$)/
 compose_tagged_kinds = Dir[File.join(ROOT, "services", "*", "compose.*.yml")].sort.filter_map do |path|
@@ -1741,11 +1389,8 @@ end.uniq.sort
 check(failures, compose_tagged_kinds == %w[integration mac],
       "Compose !override/!reset tags belong to the disposable lanes alone, " \
       "found in: #{compose_tagged_kinds.join(', ')}")
-# Neither harness can put this in inventory. tests/policy_platform_test.rb holds
-# a host group to machine facts and PLATFORM_* port lookups, so mac_hosts cannot
-# carry it; the integration sandbox binds to inventory/local.yml and is a
-# nas_hosts run like the NAS, so there is no group in which "2.18.0 there,
-# 2.24.4 here" is expressible at all. Both request it on the command line.
+# Neither harness can put this in inventory (host groups hold machine facts;
+# the sandbox is a nas_hosts run), so both pass it on the command line.
 {
   "tests/mac/lib.sh" => "the Mac lifecycle harness",
   "tests/integration_controller_lib.sh" => "the integration controller"
@@ -1759,20 +1404,8 @@ check(failures, compose_tagged_kinds == %w[integration mac],
         "#{compose_override_tag_minimum}, because the overrides it deploys use !override")
 end
 
-# Every role declares its interface, so a missing variable fails before the first
-# task naming the variable rather than midway with a trace.
-#
-# Floored for the reason #556 was filed on. This is the other half of the rule
-# BASE_FIXTURE_PATHS states: a check reading a *named* file that the sandbox
-# lacks crashes, loudly, but a check whose subjects come from a glob does not --
-# it iterates zero times and reports success, and a vacuous pass is
-# indistinguishable from compliance. 27 role directories in the working tree
-# against 22 in the mutation sandbox, and the floor is sized against the
-# sandbox. Fifteen sits seven under it, clear of what a collapse leaves (zero
-# for a glob that stopped matching, a handful for a roles/ layout change) and
-# clear of attrition at a retired service or two. The working-tree figure was 26
-# until #647 added roles/managed_users; nothing checks this sentence, so it has
-# to be corrected by hand whenever it moves.
+# Every role declares its interface. Floored (#556): a glob that stops matching
+# passes vacuously; sized against the smaller mutation sandbox.
 interface_roles = Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }
 check_floor(failures, interface_roles.length, 15, "roles declaring an interface")
 interface_roles.each do |role|
@@ -1782,25 +1415,14 @@ interface_roles.each do |role|
   next unless File.file?(spec_path)
 
   spec = YAML.safe_load_file(spec_path)
-  # Non-empty, not merely a Hash. `options: {}` is a Hash, so the shape test
-  # alone accepted a role that declares an interface of nothing -- measured on
-  # roles/bindery, whose 34 options were erased in a sandbox and passed all
-  # eight policy scripts. That is a vacuous pass of the same class as the glob
-  # this loop is floored against: the role reads as having declared its
-  # interface while every argument it takes is unchecked, so a missing variable
-  # is back to failing midway through the run with a trace.
+  # Non-empty, not merely a Hash: `options: {}` declares an interface of nothing.
   declared_options = spec.dig("argument_specs", "main", "options")
   check(failures, declared_options.is_a?(Hash) && !declared_options.empty?,
         "role #{name}: argument_specs declares no options")
 end
 
-# Deployment goes through the module. A shell-out always claims a change and
-# cannot run under --check, which the converge-every-run model depends on.
-#
-# Read from the parsed tasks. The 120-character window this used to scan was
-# neither a task nor a whole one: a shell-out that named the module further down
-# its own arguments slipped past, and a comment naming Compose next to any
-# command task was reported as a violation that did not exist.
+# Deployment goes through the module: a shell-out always claims a change and
+# cannot run under --check. Read from parsed tasks, not a text window.
 shell_modules = %w[
   ansible.builtin.command ansible.builtin.shell command shell raw
 ].freeze
@@ -1823,20 +1445,9 @@ role_task_files.each do |path|
         "#{path}: shells out to Compose; use community.docker.docker_compose_v2")
 end
 
-# Timing is platform policy, not a number typed into a task. These values were
-# literals across nine roles: one readiness delay written eleven times and four
-# unrelated stack timeouts, with nothing relating any copy to any other, so they
-# drifted independently. inventory/group_vars/all declares the ordinary wait and
-# the ordinary readiness poll, and a service that needs longer declares its own
-# role default with the reason beside it. A bare number bypasses both at once —
-# it is neither the shared policy nor a documented deviation from it — so a bare
-# number is refused and the task has to name which of the two it is.
-#
-# retries and delay are read as task keywords rather than searched for, because
-# modules carry arguments of the same name that are not this policy at all:
-# ansible.builtin.wait_for takes its own delay, and a Compose health check takes
-# its own retries. wait_timeout only ever appears as a module argument, so it is
-# looked for wherever a task carries it.
+# Timing is platform policy: a bare number is neither the shared value nor a
+# documented deviation. retries/delay are read as task keywords (modules have
+# arguments of the same names); wait_timeout wherever a task carries it.
 literal_wait_timeout = lambda do |node|
   case node
   when Hash
@@ -1847,17 +1458,9 @@ literal_wait_timeout = lambda do |node|
   else false
   end
 end
-#
-# "Not a bare number" is checked as "reads a declared timing variable", not as
-# "is not a YAML integer": `retries: "20"` and `"{{ 20 }}"` are strings and
-# passed the integer test while being exactly the literal it refuses (#844). A
-# retries or delay value has to name, inside its expression, at least one
-# variable ending in _retries or _delay, and every such name it reads has to be
-# declared in inventory/group_vars/all/main.yml or in that role's own defaults,
-# which is where the shared value and a documented deviation live. An
-# expression around that name stays allowed: Beszel's registration wait reads
-# `beszel_agent_enabled | ternary(platform_readiness_retries, 1)`, where the 1
-# is "ask once" rather than a patience of its own.
+# Checked as "reads a declared *_retries/*_delay variable", not "is not an
+# integer": `"20"` and `"{{ 20 }}"` are strings (#844). An expression around the
+# name stays allowed.
 shared_timing_variables = YAML.safe_load_file(File.join(ROOT, "inventory/group_vars/all/main.yml"),
                                               aliases: true).keys
 TIMING_KEYWORD_POLICY = {
@@ -1890,69 +1493,22 @@ role_task_files.each do |path|
 end
 
 # --- whitespace backslash escapes inside Jinja expressions -------------------
-#
-# A backslash escape inside a `{{ }}` expression is never an escape under
-# Ansible. AnsibleLexer pre-escapes every backslash in an expression's string
-# constants before Jinja's own lexer can run its unicode_escape pass over them,
-# so YAML is the only layer that processes a backslash and
-# regex_replace('^(.*)_x$', '\1') means a backreference here rather than the
-# byte \x01 it would mean under Jinja alone. The price is that '\n' inside an
-# expression stays two characters, and a split on it finds no separator.
-#
-# THE CLASS HAS BITTEN TWICE, in two unrelated roles, which is why it is here
-# rather than in one service contract (#530):
-#   * roles/nextcloud/tasks/reconcile_trusted_domains.yml split occ's output on
-#     '\n', so the live trusted_domains array read as one blob, every managed
-#     domain read as missing, and the repair loop re-set all three on every
-#     converge. The nextcloud lane's second converge reported changed=1; no
-#     check in this repository would have (#513).
-#   * roles/trailarr/tasks/reconcile_env.yml joined on '\n' and every following
-#     run found the environment it had just written back differing again. Fixed
-#     by hoisting the separator into a double-quoted `vars` entry, where YAML
-#     resolves it to a real newline before Jinja is handed the expression.
-# Two comments in two roles cannot enforce each other, so this file does it for
-# all of them. It lands green on the tree as it stands: the sweep that motivated
-# it found zero hits across every role task file and every root playbook.
-#
-# Scoped to `{{ }}` regions rather than to every string, because the
-# pre-escaping is scoped that way too: AnsibleLexer exempts `{% %}` statements,
-# and a folded `{% set p = raw.split('\n') %}` really does split on a newline
-# while the `{{ }}` beside it does not. Measured on ansible-core 2.21.4, along
-# with the fact that the YAML quoting does not decide it -- folded,
-# single-quoted and double-quoted scalars all read one element, which the
-# message repeats so the next reader does not reach for a different quote.
-#
-# Restricted to the whitespace escapes \n, \t and \r rather than to every
-# backslash -- which is why the message says whitespace and not backslash, since
-# Ansible processes none of them and this refuses only the three. Banning every
-# backslash would ban the backreference the pre-escaping exists to make work.
-#
-# WHAT THAT LEAVES UNCOVERED, stated rather than discovered later: an escape
-# handed to a regex filter is processed by Python's own re module, so
-# regex_replace('\t', ' ') is correct and this would refuse it. Nothing in the
-# repository does that today; the exemption belongs here when one arrives.
-#
-# The subject is every role task and handler file plus every root playbook. The
-# playbook half is the part the nextcloud-scoped original could not reach, and
-# it is floored separately: a combined floor passes while the playbook list
-# silently empties, because the role list is twenty times its size.
+# Inside `{{ }}` Ansible pre-escapes backslashes, so '\n' stays two characters and
+# a split on it finds nothing (#513, #530); `{% %}` is exempt, and YAML quoting
+# does not change it. Only \n, \t and \r are refused, so backreferences still
+# work; a regex-filter argument would be a false positive (none today).
 root_playbook_files = Dir[File.join(ROOT, "*.yml")].sort.select do |path|
   document = YAML.safe_load_file(path, aliases: true)
   document.is_a?(Array) && document.all? { |play| play.is_a?(Hash) && play.key?("hosts") }
 end
-# 60 and 5 are sized against the mutation sandbox, not the tree: the harness
-# copies each role's main.yml and what it statically imports, so the role list
-# is 66 there against 117 here, while every root playbook is a stated fixture
-# path and all five are present in both.
+# Floors sized against the mutation sandbox, not the tree.
 check_floor(failures, role_task_files.length, 60,
             "the Jinja escape scanner found too few role task files")
 check_floor(failures, root_playbook_files.length, 5,
             "the Jinja escape scanner found too few root playbooks")
 (role_task_files + root_playbook_files).each do |path|
   relative_path = path.delete_prefix("#{ROOT}/")
-  # task_strings over the whole parsed document rather than over flattened
-  # tasks, because a playbook's strings live in pre_tasks, vars and play
-  # keywords as well, and the escape is wrong wherever Jinja meets it.
+  # The whole document: a playbook's strings live in pre_tasks, vars and play keywords too.
   task_strings(YAML.safe_load_file(path, aliases: true)).each do |value|
     jinja_expression_regions(value).each do |region|
       next unless region.match?(/\\[ntr]/)
@@ -1970,32 +1526,9 @@ check_floor(failures, root_playbook_files.length, 5,
   end
 end
 
-# A fetch from the public internet is the one task in a converge whose failure
-# is somebody else's outage, and #330 is what that costs: the Hebrew OCR model
-# was fetched with no retry and no timeout, raw.githubusercontent.com timed out
-# at get_url's ten-second default, and a run that had converged 1388 tasks
-# failed. On the NAS it compounds -- scripts/production_auto_deploy.py records
-# the revision as attempted and failed and refuses it thereafter -- so a blip
-# stalls automatic deployment until an operator intervenes.
-#
-# The class is get_url and nothing else today, and that was established by
-# looking rather than assumed: every ansible.builtin.uri task in the repository
-# addresses 127.0.0.1 or a Compose service name, because roles run on the target
-# by design, and the external URLs in roles/jellyfin are plugin-repository
-# values written into Jellyfin's own configuration for Jellyfin to fetch, not
-# Ansible fetches. So requiring the four keywords on get_url covers every task
-# that reaches a third party, and a future module that does needs its own entry
-# here.
-#
-# The timeout is required, and required not to be a literal, in this check
-# specifically: `timeout` is an ordinary module argument that local tasks pass
-# legitimately, so literal_wait_timeout above cannot claim it the way it claims
-# wait_timeout. retries and delay are only checked for presence here, because
-# that same policy already refuses a literal for them in any role task.
-#
-# `until` must name the registered result. A retry loop whose condition does not
-# read what the attempt produced is a loop that runs once and reports success,
-# which looks exactly like this policy being satisfied.
+# A public-internet fetch fails on somebody else's outage, and the poller then
+# refuses the revision (#330). get_url is today's only such module; it must carry
+# retries, delay, a non-literal timeout, and an `until` naming its register.
 EXTERNAL_FETCH_MODULES = %w[ansible.builtin.get_url get_url].freeze
 DOWNLOAD_KEYWORD_POLICY = {
   "retries" => "platform_download_retries",
@@ -2029,11 +1562,7 @@ role_task_files.each do |path|
   end
 end
 
-# The sweep above discovers its own subjects, so an empty one would report a
-# clean repository having inspected nothing -- renaming the module key, or
-# collapsing these tasks into a loop the flattener does not walk, is enough to
-# empty it in silence. Paperless and Pinchflat are the two external fetches the
-# platform has, so the floor is two rather than one.
+# Floored: Paperless and Pinchflat are the two external fetches.
 check(failures, external_fetch_tasks >= 2,
       "the external fetch policy inspected #{external_fetch_tasks} get_url tasks; " \
       "at least the Paperless OCR model and the Pinchflat yt-dlp build must stay discoverable")
@@ -2041,29 +1570,9 @@ check(failures, external_fetch_tasks >= 2,
 check(failures, deploys_through_module,
       "no role deploys anything through docker_compose_v2")
 
-# community.docker.docker_compose_v2_exec does not fail on a nonzero exit code.
-# Read out of the module rather than inferred (plugins/modules/
-# docker_compose_v2_exec.py, identical in 5.2.2 and the 5.3.0 requirements.yml
-# pins): `run` sets check_rc only inside `if self.detach:`, call_cli defaults it
-# to False, and every other invocation returns {"changed": True, "rc": rc, ...}
-# whatever rc was. So an exec task with no failed_when cannot fail, and one that
-# also states `changed_when: true` asserts a change it never verified -- the
-# clean PLAY RECAP with the wrong answer behind it (#521). Twelve tasks were in
-# that state when this check was written, one of them the occ password reset
-# whose failure left the vault credential unable to authenticate while the
-# deployment report announced a repair.
-#
-# The rule is the broad one deliberately: every non-detached exec, not only the
-# changed_when: true subset the issue named. A read that reports success on a
-# failed command is the same defect one stage earlier -- the Paperless identity
-# inspection fed a from_json that named neither container nor command -- and
-# `failed_when: false` satisfies the rule, so a task that genuinely tolerates
-# failure states that it does instead of leaving it to be inferred from silence.
-#
-# `detach` is exempt because the module checks rc itself in exactly that branch.
-# The exemption is deliberately narrow: only a literal true is honoured, so a
-# templated or unrecognised value stays a subject and the check fails toward
-# refusing rather than toward excusing.
+# docker_compose_v2_exec checks rc only when `detach` is true (#521), so every
+# other exec task must state failed_when; `failed_when: false` satisfies it. Only
+# a literal `detach: true` is exempt.
 compose_exec_tasks = 0
 role_task_files.each do |path|
   relative_path = path.delete_prefix("#{ROOT}/")
@@ -2081,13 +1590,8 @@ role_task_files.each do |path|
           "condition it requires, or state failed_when: false and say why the failure " \
           "is tolerated")
 
-    # Presence is not the property. `failed_when` REPLACES the module's own
-    # failure verdict, so a condition naming a register the task does not set
-    # resolves to an undefined lookup, evaluates false, and disarms the module
-    # more thoroughly than omitting the line would -- the omission at least left
-    # the detach branch honest. A condition that tolerates failure says
-    # `failed_when: false` and is exempt; anything else has to be reading this
-    # task's own result, so it must name the register this task writes.
+    # failed_when replaces the module's verdict, so a condition on a register the
+    # task does not set disarms it; it must name this task's own register.
     guard = task["failed_when"]
     next if guard == false || !task.key?("failed_when")
 
@@ -2105,49 +1609,24 @@ role_task_files.each do |path|
           "rather than guarding it")
   end
 end
-# A floor, not `!empty?`: this sweep discovers its own subjects from the tree, so
-# renaming the module key or moving these tasks somewhere the flattener does not
-# walk would report a clean repository having inspected nothing. Twenty exec
-# tasks are in roles/ today. The floor is twelve rather than twenty because the
-# mutation sandbox copies only a role's statically imported stage files plus the
-# paths BASE_FIXTURE_PATHS names, and jellyfin/tasks/qsv_probe.yml and
-# paperless_ngx/tasks/managed_users.yml are reached by include_tasks -- so this
-# check sees fourteen there, and raising the floor to today's count would redden
-# every sandbox rather than catch anything.
+# Floored at twelve, not today's count: the sandbox omits include_tasks targets.
 check_floor(failures, compose_exec_tasks, 12,
             "docker_compose_v2_exec tasks the exit-code policy inspected")
 
-# Every deployed service reports its own deployment, so adding a tenth service
-# cannot silently ship without one. The report is gated on the Compose result,
-# which is why each deploying task must register: an ungated report would send
-# one message per service on every converge, including the ones that changed
-# nothing.
+# Every deployed service reports its own deployment, gated on a registered
+# Compose result so unchanged converges send nothing.
 deployment_reports_declared = false
 shared_recovery_callers = 0
 pre_upgrade_backup_callers = 0
-# Roles holding a `state: present` Compose task and NO plain deployment, which is
-# what the narrowing below exempts from owing a deployment report. Stated in both
-# directions rather than left as a predicate, because the exemption is otherwise
-# invisible: such a role owes no report here AND is not a subject of
-# tests/container_health_wiring_test.rb either, whose sweep discovers roles by
-# the same plain-deployment predicate. A second role arriving in that shape would
-# deploy Compose with nothing asking anything of it, which is the silence this
-# repository keeps closing.
-#
-# roles/pre_upgrade_backup is the second (#836): its only `up` is the rescue that
-# starts a stopped container again on its old image, so it owes no report of its
-# own, and every caller must name its register instead -- the clause below.
+# Roles with `state: present` Compose but no plain deployment owe no report and
+# are not container_health subjects either, so they are stated both ways.
+# pre_upgrade_backup (#836): its callers name its register instead.
 REPORT_FREE_COMPOSE_ROLES = %w[container_health pre_upgrade_backup].freeze
-# Stated, because the list below is NARROWED against the inspected tree before it
-# is compared, and a narrowed subject list that empties passes vacuously -- which
-# is the same class #646 hoisted a 114-line duplication to prevent one level up.
-# Emptying the constant to make a failure go away is what this refuses.
+# Stated, because the list below is narrowed against the inspected tree and a
+# narrowed list that empties passes vacuously (#646).
 REPORT_FREE_COMPOSE_ROLE_COUNT = 2
-# The only reason the narrowing is allowed to drop a role: the mutation fixture
-# copies a curated subset of the repository and omits these four deliberately,
-# each for a reason tests/policy_mutation_support.rb records beside them. A
-# narrowing for any other reason is a role that left the tree, not a fixture that
-# never had it.
+# The only legitimate narrowing: roles the mutation fixture omits on purpose
+# (reasons in tests/policy_mutation_support.rb).
 MUTATION_FIXTURE_ABSENT_ROLES = %w[container_cpu container_health image_downgrade_guard
                                    image_prune].freeze
 report_free_deployers = []
@@ -2162,20 +1641,13 @@ Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |ro
   end
   next if deployments.empty?
 
-  # Every `up` still has to register, roles/container_health's shared recovery
-  # included: the report's gate is what tells a converge that changed something
-  # from one that did not, and an unregistered `up` cannot reach it.
+  # Every `up` must register, the shared recovery included: the report is gated on it.
   registers = deployments.map { |task| task["register"] }
   check(failures, registers.all? { |register| register.is_a?(String) },
         "role #{name}: every Compose deployment must register its result for the deployment report")
 
-  # The report is owed by the role that DEPLOYS A SERVICE, which is the role
-  # holding a plain `up`. Since #646 that is no longer the same set as "holds a
-  # `state: present` task": roles/container_health/tasks/recover.yml holds the
-  # shared force-recreate for six callers and is not a service, so it owes no
-  # report of its own -- it would have nothing to name, and the report label
-  # belongs to the caller. The clause below is what keeps its `up` reported
-  # rather than exempt.
+  # The report is owed by a role holding a plain `up` (#646); the shared
+  # force-recreate in roles/container_health is reported by its caller (below).
   plain_deployments = deployments.reject { |task| task["community.docker.docker_compose_v2"].key?("recreate") }
   if plain_deployments.empty?
     report_free_deployers << name
@@ -2208,12 +1680,8 @@ Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |ro
           "pre_upgrade_backup_restart, the register that role's rescue start writes")
   end
 
-  # The other half of the exemption above, derived from the include rather than
-  # listed. A force-recreate that repaired a wedged container changed the
-  # deployment as surely as the `up` did, and it is now registered in a file this
-  # role does not own -- so a caller that spends the shared recovery and does not
-  # name its register reports nothing on the one converge an operator most wants
-  # to hear about.
+  # A caller spending the shared recovery must name its register, or a repairing
+  # recreate goes unreported.
   next unless tasks.any? do |task|
     task.dig("ansible.builtin.include_role", "name") == "container_health" &&
       task.dig("ansible.builtin.include_role", "tasks_from") == "recover"
@@ -2225,27 +1693,14 @@ Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |ro
         "ignores container_health_wedged_recreate, the register that recovery writes; a converge " \
         "that repaired a wedged container would report nothing")
 end
-# A floor rather than `!zero?`, for the reason every derived subject list in this
-# repository carries one: six roles take the shared recovery today, and a
-# selector that stopped matching would pass the clause above vacuously while
-# reporting a clean sweep. Four rather than six so the first legitimate
-# conversion away from it is not a failure.
+# Floored at four of today's six callers, so one legitimate conversion passes.
 check_floor(failures, shared_recovery_callers, 4,
             "roles whose deployment report must name the shared recovery's register")
-# Kapowarr, Vaultwarden, Karakeep, Nextcloud and Paperless-ngx today. Held at five so the pre-upgrade
-# rule below cannot keep its one shared subject while every caller quietly stops
-# using it.
+# Five callers today; the floor stops every caller quietly dropping it.
 check_floor(failures, pre_upgrade_backup_callers, 5,
             "roles whose deployment report must name the shared pre-upgrade copy's register")
-# Held against the roles the INSPECTED TREE actually has rather than against the
-# constant outright, which is what lets one assertion cover both trees this script
-# runs in. roles/container_health is deliberately not copied into a mutation
-# sandbox -- tests/policy_mutation_support.rb names it as one of four absent roles
-# and says why -- so an unconditional equality reddens all 150-plus sandbox rows
-# for a role the fixture never had. Both directions still hold wherever the
-# subject exists, which is the working tree in CI's `static` job and here: a new
-# report-free role fails, and a listed one that stops being report-free fails too.
-# It goes vacuous only where the subject was deliberately left out.
+# Held against the roles the inspected tree has, so the mutation sandbox (which
+# omits roles/container_health) passes while both directions hold elsewhere.
 expected_report_free = REPORT_FREE_COMPOSE_ROLES.select { |role| Dir.exist?(File.join(ROOT, "roles", role)) }
 check(failures, REPORT_FREE_COMPOSE_ROLES.length == REPORT_FREE_COMPOSE_ROLE_COUNT,
       "REPORT_FREE_COMPOSE_ROLES holds #{REPORT_FREE_COMPOSE_ROLES.length} role(s), not " \
@@ -2258,12 +1713,8 @@ check(failures, (narrowed - MUTATION_FIXTURE_ABSENT_ROLES).empty?,
       "with no plain deployment but its role directory is not in the inspected tree, and the " \
       "mutation fixture does not omit it; a role that left the tree is a stale pin rather than a " \
       "narrowing")
-# What the two above still cannot see, stated rather than implied: deleting
-# roles/container_health from the REAL tree narrows this legally, because the
-# fixture omits that role too. Two things catch that instead, both loudly. The
-# shared-recovery floor above requires four callers of tasks_from: recover, and
-# tests/container_health_wiring_test.rb resolves that include for six roles and
-# fails every property of the sequence when the file behind it is gone.
+# Deleting roles/container_health from the real tree narrows this legally; the
+# shared-recovery floor and tests/container_health_wiring_test.rb catch that.
 check(failures, report_free_deployers.sort == expected_report_free.sort,
       "roles that run a Compose `up` without a plain deployment are " \
       "#{report_free_deployers.sort.inspect}, not #{expected_report_free.sort.inspect}. Such " \
@@ -2271,21 +1722,10 @@ check(failures, report_free_deployers.sort == expected_report_free.sort,
       "new one deploys Compose with nothing asking anything of it; argue it here or give it a " \
       "plain deployment")
 
-# A pre-upgrade copy that stops a container before copying its store must start
-# that container again when the copy fails, on its old image, and only over a store
-# that is still there, and must still fail the run. A stop with nothing after it
-# left the service exited on every later converge, and a start over a store lost
-# after the stop created an empty one the next converge upgraded over -- both
-# measured against roles/kapowarr and roles/vaultwarden. Since #836 both copies
-# are one, roles/pre_upgrade_backup, and a service-local pre_upgrade_backup.yml
-# that stops a container is still read here. The Kapowarr contract holds the
-# same properties through its call site; this is what holds every other caller.
-#
-# The shared role's pg_dump entry (#826) is read too, and is exempt BY NAME from
-# the one clause about the store: it never stops the container holding the
-# store -- the database dumps itself while the application is stopped -- so there
-# is no empty store the old image could be started over. Exempting it by what it
-# lacks instead would let a stat deleted from main.yml pass.
+# A pre-upgrade copy that stops a container must, when the copy fails, start it
+# again on its old image, only over a store still present, and still fail the
+# run. The pg_dump entry (#826) is exempt by name from the store clause: it never
+# stops the store's container.
 pre_upgrade_stops = 0
 pre_upgrade_paths = %w[main.yml pg_dump.yml].map { |f| File.join(ROOT, "roles", "pre_upgrade_backup", "tasks", f) }
                                            .select { |p| File.file?(p) } +
@@ -2310,11 +1750,8 @@ pre_upgrade_paths.each do |path|
               task.dig("community.docker.docker_compose_v2", "recreate") == "never"
           end,
         "role #{name}: a failed pre-upgrade copy must start the stopped container again, on its old image")
-  # Exactly this shape: the rescue re-reads the path the pre-stop read took,
-  # tolerates that read failing (stat fails on a permission error rather than
-  # reporting absence), and starts only on a regular file from that read -- a
-  # condition naming the pre-stop read, `exists` (true for a directory or a
-  # dangling symlink), or anything looser was measured to let the bug back in.
+  # Exactly this shape: re-read the pre-stop path, tolerate that read failing,
+  # and start only on a regular file (`exists` or looser let the bug back in).
   pre_stop_read = Array(document).find { |task| task.is_a?(Hash) && task.key?("ansible.builtin.stat") }
   store_read = rescue_tasks.find { |task| task.key?("ansible.builtin.stat") }
   check(failures,
@@ -2328,11 +1765,8 @@ pre_upgrade_paths.each do |path|
         "role #{name}: a failed pre-upgrade copy must still fail the run")
   next unless dumps
 
-  # The dump's own shape: taken after every writer has stopped, failing on any
-  # exit code (the module sets check_rc only when detached, and an rc that was
-  # never set is a failure, not a success), and a failed one starting again
-  # exactly what was stopped -- a rescue that started only the application would
-  # leave Nextcloud's cron down.
+  # The dump runs after every writer stops, fails on any rc (unset included),
+  # and a failure restarts exactly what was stopped.
   block_tasks = flatten_tasks(unit&.fetch("block", nil))
   stop = block_tasks.find(&stops)
   dump = block_tasks.find { |task| task.key?("community.docker.docker_compose_v2_exec") }
@@ -2343,10 +1777,8 @@ pre_upgrade_paths.each do |path|
                    stop.dig("community.docker.docker_compose_v2", "services"),
         "role #{name}: tasks/pg_dump.yml must dump the database after stopping the application, fail on " \
         "any exit code, and start again every service it stopped when the dump fails")
-  # The code archive (#884) is the other half of Nextcloud's rollback, so it is
-  # held to the dump's terms: inside the block the rescue covers, after the dump
-  # -- in the same stopped window -- and run from the image the application ran,
-  # never the pin.
+  # The code archive (#884): inside the rescued block, after the dump, from the
+  # application's running image, never the pin.
   archive = block_tasks.find { |task| Array(task.dig("ansible.builtin.command", "argv"))[0, 2] == %w[docker run] }
   check(failures,
         archive && dump && block_tasks.index(dump) < block_tasks.index(archive) &&
@@ -2359,13 +1791,8 @@ end
 # are floored at five by the deployment-report clause above.
 check_floor(failures, pre_upgrade_stops, 2, "pre-upgrade copies that stop a container")
 
-# Vaultwarden's call site, argument by argument. The shared role copies whatever
-# its caller names, so this is where the platform's one credential-bearing copy
-# is decided: dropping rsa_key* restores a store every client is logged out of,
-# another project's name stops another stack, and an unmanaged owner leaves the
-# copy of a signing key to whoever wrote it. Kapowarr's call site is held the
-# same way by tests/contracts/kapowarr-static.rb; Vaultwarden has no static
-# contract, so it is held here.
+# Vaultwarden's call site, argument by argument: this decides the platform's one
+# credential-bearing copy (rsa_key*). Kapowarr's is held by its static contract.
 VAULTWARDEN_PRE_UPGRADE_ARGUMENTS = {
   "pre_upgrade_backup_service_name" => "vaultwarden",
   "pre_upgrade_backup_compose_service" => "vaultwarden",
@@ -2396,13 +1823,8 @@ if File.file?(vaultwarden_deploy_path)
         "is signed with, not #{copy_vars['pre_upgrade_backup_extra_patterns'].inspect}")
 end
 
-# Karakeep's call site, the same way (#826). db.db holds every account's bcrypt
-# hash, so the copy is secret-bearing like Vaultwarden's. Two things are its own.
-# queue.db migrates on start too (liteque), so a rollback needs it beside db.db.
-# And the application's guard must come first, under the same when and tags: a
-# copy that ran without it, or ahead of it, would stop Karakeep for a downgraded
-# pin the guard then refuses, and leave it stopped. Since #858 the copy reads its
-# own pin, so which guard ran last no longer matters to it.
+# Karakeep's call site (#826): queue.db travels with db.db, and the application's
+# guard must come first under the same when and tags.
 KARAKEEP_PRE_UPGRADE_ARGUMENTS = {
   "pre_upgrade_backup_service_name" => "karakeep",
   "pre_upgrade_backup_compose_service" => "karakeep",
@@ -2445,13 +1867,9 @@ if File.file?(karakeep_deploy_path)
         "karakeep_deploy, or the migration it exists to undo has already run")
 end
 
-# No caller hands roles/pre_upgrade_backup a pin (#858). The role reads its
-# Compose service's own image from the release, and an include parameter
-# outranks the fact it sets (measured: an include_role `vars:` value survived the
-# role's own set_fact of the same name), so a pin passed in would silently take over again --
-# which is how callers used to hand it roles/image_downgrade_guard's host-scoped
-# fact, the pin of whichever guard ran last. Floored at the five callers, so a
-# sweep that stopped finding the includes cannot pass by finding none.
+# No caller hands roles/pre_upgrade_backup a pin (#858): an include parameter
+# outranks the role's own set_fact, so a passed pin would silently win. Floored
+# at the five callers.
 pre_upgrade_includes = Dir[File.join(ROOT, "roles", "*", "tasks", "*.yml")].sort.flat_map do |path|
   flatten_tasks(YAML.safe_load_file(path, aliases: true)).select do |task|
     task.is_a?(Hash) && task.dig("ansible.builtin.include_role", "name") == "pre_upgrade_backup"
@@ -2464,14 +1882,9 @@ pre_upgrade_includes.each do |relative, task|
 end
 check_floor(failures, pre_upgrade_includes.length, 5, "includes of roles/pre_upgrade_backup")
 
-# Nextcloud's and Paperless-ngx's call sites, which take the pg_dump entry
-# (#826). Argument by argument, because the role dumps whatever database it is
-# pointed at and stops whatever it is told: Nextcloud's cron shares the pin and
-# writes to the database, so a list without it lets a write land after the dump.
-# The application's guard must come first under the same when and tags, as
-# Karakeep's does, so a downgrade is refused before anything stops. And
-# the dump needs the database running and the migration not yet run, so it
-# sits after the data-service deployment and before the application's.
+# Nextcloud's and Paperless-ngx's pg_dump call sites (#826): every writer (cron
+# included) is stopped, the guard comes first, and the dump sits after the data
+# service deploys and before the application migrates.
 POSTGRES_PRE_UPGRADE_CALLERS = {
   "nextcloud" => {
     "service" => "nextcloud", "stop" => %w[nextcloud cron], "project" => "{{ nextcloud_compose_project_name }}",
@@ -2530,16 +1943,9 @@ POSTGRES_PRE_UPGRADE_CALLERS.each do |role, expected|
         "#{expected['deploy']}, or the migration it exists to undo has already run")
 end
 
-# The report itself must stay a report. The per-service report delivers through
-# roles/deployment_bundle/tasks/pushover_publish.yml (#558), so it must reach it
-# only outside --check, and the delivery itself must be a redacted, changeless
-# form POST of the caller's application token and the user key to the
-# redirectable endpoint every test lane overrides.
-#
-# The run summary was the second caller until #558 stage 4a removed the plain
-# summary. It is held to the opposite property now: it hands the poller a JSON
-# file and must include the delivery nowhere, because a summary that published
-# again would announce every poller-deployed release twice.
+# The per-service report publishes via pushover_publish.yml (#558) only outside
+# --check, as a redacted, changeless POST. The run summary must never publish,
+# or poller-deployed releases would be announced twice.
 report_path = File.join(ROOT, "roles/deployment_bundle/tasks/report.yml")
 summary_path = File.join(ROOT, "roles/deployment_bundle/tasks/summary.yml")
 publish_path = File.join(ROOT, "roles/deployment_bundle/tasks/pushover_publish.yml")
@@ -2596,13 +2002,8 @@ if publish_task
         "deployment report must leave the verdict to its assert, or an unreachable Pushover fails the converge")
 end
 
-# /System/Info/Public answers 503 while Jellyfin initializes, and the preceding
-# wait polls a different endpoint that can succeed earlier.
-#
-# Read through static_role_tasks, not main.yml: the role is one stage per file
-# now, and the property below is guarded by `jellyfin_startup.nil? ||`, so a
-# reader that stops at the index would report the property holding on a role it
-# never looked at.
+# /System/Info/Public answers 503 while Jellyfin initializes. Read through
+# static_role_tasks, or the nil guard below would pass on an unread role.
 jellyfin_tasks_path = File.join(ROOT, "roles/jellyfin/tasks/main.yml")
 jellyfin_tasks = File.exist?(jellyfin_tasks_path) ? static_role_tasks(jellyfin_tasks_path) : []
 jellyfin_startup = jellyfin_tasks.find do |task|
@@ -2625,14 +2026,9 @@ check(failures,
         (jellyfin_startup.key?("until") && resolved_startup_retries > 0),
       "reading Jellyfin startup state must retry until the server finishes loading")
 
-# Every subject below is a property of the Paperless contract's runtime half,
-# which is tests/contracts/paperless-runtime.rb since issue #147 gave it a file.
-# Reading the wrapper instead would leave all eight checks matching nothing and
-# refusing the repository forever.
+# The Paperless contract's runtime half lives in paperless-runtime.rb (#147).
 paperless_contract = File.read(File.join(ROOT, "tests", "contracts", "paperless-runtime.rb"))
-# The coordinated snapshot is snapshot-paperless.rb since #315; the .sh beside it
-# is the wrapper that validates the mode and exports the environment, and holds
-# none of the Ruby this reads.
+# The snapshot's Ruby is snapshot-paperless.rb (#315); the .sh is only a wrapper.
 paperless_snapshot = File.read(File.join(ROOT, "tests", "mac", "snapshot-paperless.rb"))
 root_version_checksum = %r{
   document\.fetch\("versions"\)\.find\s*\{\s*\|version\|\s*
@@ -2718,10 +2114,7 @@ manifest_entries.each do |service|
     task["community.docker.docker_compose_v2"].is_a?(Hash)
   end
   deploys_compose = compose_tasks.any?
-  # One include, carrying this service's own name. Counted from the source text
-  # this was two independent substring checks that never had to describe the same
-  # task: the count matched any line spelling "name: container_cpu", including a
-  # commented-out one, and the service name could be supplied by anything else.
+  # One include carrying this service's own name, read from parsed tasks.
   container_cpu_includes = service_tasks.select do |task|
     %w[ansible.builtin.include_role ansible.builtin.import_role].any? do |module_name|
       task[module_name].is_a?(Hash) && task[module_name]["name"] == "container_cpu"
@@ -2732,10 +2125,7 @@ manifest_entries.each do |service|
           (container_cpu_includes.length == 1 &&
            container_cpu_includes.fetch(0).dig("vars", "container_cpu_service_name") == name),
         "#{name}: role must verify its effective container CPU policy exactly once")
-  # The role gates itself: `roles/container_cpu/tasks/main.yml` includes the
-  # Docker inspection only when not in check mode. A caller that repeats that
-  # guard is copying a condition it does not own, and the next caller is the one
-  # that forgets it.
+  # The role gates itself; a caller repeating the guard copies a condition it does not own.
   container_cpu_conditions = container_cpu_includes.flat_map { |task| Array(task["when"]) }
   check(failures,
         container_cpu_conditions.none? { |condition| condition.to_s.include?("ansible_check_mode") },
@@ -2763,15 +2153,9 @@ manifest_entries.each do |service|
         "#{name}: implemented service has no automated verification or service contract")
 end
 
-
-# Included reconciliation files are gated on a phase string the caller passes
-# through vars:. include_tasks never applies meta/argument_specs.yml, so a phase
-# matching no gate turns the whole file into a silent no-op that still reports
-# success -- and verify.yml reaches every verification it owns through exactly
-# this mechanism, so a renamed call site would remove a verification without
-# failing anything. Each gated file therefore opens with an unconditional assert
-# naming the phases it implements, every literal it gates on must appear in that
-# list, and the phases its callers actually pass must be exactly that list.
+# include_tasks never applies argument_specs, so a phase matching no gate is a
+# silent no-op. Each gated file opens with an assert naming its phases, every
+# gated literal is in it, and callers pass exactly that set.
 PHASE_GATE_PATTERN = /\b([a-z][a-z0-9_]*_phase)\b\s*(?:==|in)(?![a-z0-9_])/
 PHASE_DECLARATION_PATTERN = /\A\s*([a-z][a-z0-9_]*_phase)\s+in\s+\[([^\]]*)\]\s*\z/
 def phase_literals(strings, variable)
@@ -2786,15 +2170,8 @@ end
 phase_task_files = Dir[File.join(ROOT, "roles", "*")].sort.flat_map do |role_root|
   recursive_role_yaml_paths(File.join(role_root, "tasks"), failures)
 end
-# Both loops below skip a file that gates on no phase, so an empty list is a
-# clean run. It is floored indirectly today -- no task files means no
-# role_task_files, which trips deploys_through_module -- but that floor reads
-# tasks and handlers together, so a tree whose handlers alone carried
-# docker_compose_v2 would satisfy it while every phase gate went unchecked.
-#
-# 25 is sized against the mutation fixture's 72, not the tree's 126: the harness
-# copies each role's main.yml and what it statically imports, so this list is
-# roughly half its real size inside every sandbox this script runs in.
+# Floored separately (handlers could satisfy the other floor); sized against the
+# mutation sandbox.
 check_floor(failures, phase_task_files.length, 25,
             "the phase-gate check found too few role task files")
 declared_phases = {}
@@ -2843,9 +2220,8 @@ phase_task_files.each do |path|
     next unless file_name.is_a?(String) && variables.is_a?(Hash)
 
     target_path = File.expand_path(File.join(File.dirname(path), file_name))
-    # A file that is not on disk is a different failure, reported elsewhere, and
-    # the reduced fixture the mutation harness builds carries the callers without
-    # the files they include.
+    # A missing file is reported elsewhere; the reduced fixture carries callers
+    # without the files they include.
     next unless File.file?(target_path)
 
     target = target_path.delete_prefix("#{ROOT}/")
@@ -2860,18 +2236,9 @@ phase_task_files.each do |path|
     end
   end
 end
-# A role's own tasks/main.yml has a second route to the same property, and it is
-# the stronger one. The caller scan above reads include_tasks, which is where the
-# rule came from: include_tasks never applies meta/argument_specs.yml, so nothing
-# but this check stands between a renamed call site and a file that silently
-# skips everything it owns. A file reached by include_role is not in that
-# position -- Ansible applies the role's argument spec before its first task, so
-# an option declared `required: true` with `choices` equal to the phases the file
-# implements is enforced by Ansible on every caller, including ones this
-# repository does not contain. So that counts as reached, and the check that
-# every declared phase is exercised holds either way; it does not count for any
-# other file in the role, because the argument spec applies to the entrypoint
-# alone.
+# A role's own tasks/main.yml reached by include_role counts as called: its
+# argument spec's required `choices` enforce the phases on every caller. This
+# applies to the entrypoint only.
 declared_phases.each do |relative_path, declarations|
   role_name = relative_path.split("/")[1].to_s
   entrypoint = relative_path == "roles/#{role_name}/tasks/main.yml"
@@ -2894,14 +2261,8 @@ declared_phases.each do |relative_path, declarations|
   end
 end
 
-# The integration controller is a program in the same checkout it inspects.
-# /repo inside its container is the copy of this tree the run is testing, and
-# the file itself sits at /repo/tests, so a path taken from $0, dirname "$0" or
-# BASH_SOURCE resolves into the tree the program is judging rather than the
-# tree it is meant to act on. The launcher hands it both roots as environment;
-# nothing in it may work one out for itself. The precedent for reading a
-# sibling as /repo/tests/... is already in the file, which is exactly why a
-# reviewer would read a new dirname as consistent rather than as a defect.
+# The controller runs inside the tree it inspects, so it must take both roots
+# from the launcher's environment, never from $0, dirname or BASH_SOURCE.
 controller_program = File.join(ROOT, "tests", "integration_controller.sh")
 controller_source = File.file?(controller_program) ? File.read(controller_program) : nil
 check(failures, !controller_source.nil?,
@@ -2918,25 +2279,9 @@ unless controller_source.nil?
         "sits rather than from CONTROLLER_REPO_DIR or CONTROLLER_SANDBOX at " \
         "#{self_relative.join('; ')}")
 
-  # Extracting the program out of the sh -c argument made shellcheck able to
-  # read it and it immediately found defects the escaping had hidden: 53 SC2086
-  # and 4 SC2068 unquoted expansions, and one SC2070 -- `[ -n $VAR ]`, which
-  # tests true on an empty value. That SC2070 was not cosmetic: it was the whole
-  # of the bug that ran the nightly's idempotence and check-mode phases over 88
-  # of 1495 tasks. The other two codes were left excluded as pre-existing, and
-  # by #640 that exclusion was covering 66 SC2086 and 5 SC2068 sites -- one of
-  # them the same class of defect as the SC2070: `[ $before != $after ]` over
-  # checksums read through a pipeline, which on an unreadable file collapses to
-  # a degenerate `[` and routes a drift guard to the WRONG BRANCH. Measured: with
-  # the .env removed between the two reads -- the exact mutation that guard
-  # exists to catch -- the old form printed BESZEL_DRIFTED_CHECK_PRESERVED_STATE
-  # and exited 0.
-  #
-  # So the list is now empty and the licence is per-line: the one deliberate
-  # word-splitting site carries its own `# shellcheck disable=SC2086`. Still
-  # pinned, because an exclusion list that may quietly grow is a check that
-  # quietly stops running -- and a code returning to it must cost an edit here
-  # rather than pass unremarked.
+  # The shellcheck exclusion list is empty and pinned: unquoted expansions once
+  # hid real bugs (SC2070 ran the nightly over 88 of 1495 tasks; #640). A
+  # deliberate site carries its own per-line disable.
   manifest = File.read(File.join(ROOT, "tests", "validate-policy.sh"))
   controller_check = manifest.lines.map(&:chomp).find do |line|
     line.end_with?(" tests/integration_controller.sh")
@@ -2955,11 +2300,8 @@ check(failures, !launcher_source.include?(%(sh -eu -c ")),
       "tests/integration.sh: the controller is a program again pasted into an " \
       "sh -c argument, where no syntax check or linter can read it")
 
-
-# Every top-level def in a Python file as raw source text, keyed by name and
-# collected as a list so a redefinition further down is visible rather than
-# hidden behind the first. Comments above a def belong to no definition, which
-# is what lets a script keep prose the other one cannot honestly repeat.
+# Every top-level def as raw source text, as a list so a redefinition is visible.
+# Comments above a def belong to no definition.
 def python_top_level_definitions(path)
   lines = File.readlines(path, chomp: true)
   definitions = Hash.new { |hash, key| hash[key] = [] }
@@ -2977,21 +2319,13 @@ def python_top_level_definitions(path)
     end
     definitions[name] << body.join("\n").rstrip
   end
-  # Without this the default block would answer an absent name with [], whose
-  # .first is nil -- and [nil, nil].uniq.length == 1, so a name no script
-  # defines would read as two scripts agreeing. Dropped, an absent name answers
-  # nil and the next call on it raises, which is a failure rather than a pass.
+  # No default: an absent name must raise, not compare [nil, nil] as agreement.
   definitions.default_proc = nil
   definitions
 end
 
-# One line of Python with its string literals removed, so a bracket count over
-# what is left counts code brackets. Without this,
-# MARKDOWN_PATTERN = re.compile(r"([\\`*_{}\[\]()#+\-.!|>])") is a line whose
-# brackets happen to balance inside the quoted character class and whose `#`
-# would read as a comment. Triple-quoted strings are not handled and no
-# module-level constant here uses one; one that did would be caught by the
-# per-constant line count below rather than silently mis-extracted.
+# A Python line with string literals removed, so brackets and `#` inside strings
+# are not counted. Triple-quoted strings are unsupported (none at module level).
 PYTHON_STRING_LITERAL = /
   (?:[rRbBfFuU]{0,2})
   (?: "(?:\\.|[^"\\])*" | '(?:\\.|[^'\\])*' )
@@ -3001,16 +2335,8 @@ def python_bracket_delta(line)
   code.count("([{") - code.count(")]}")
 end
 
-# Every top-level constant assignment in a Python file as raw source text, keyed
-# by name and collected as a list so a reassignment further down is visible
-# rather than hidden behind the first -- the same shape, and the same reasons, as
-# python_top_level_definitions above. A comment above an assignment belongs to no
-# constant, which is what lets one copy carry prose the other cannot honestly
-# repeat.
-#
-# The extent of an assignment is bracket depth rather than indentation, because a
-# dict or tuple constant closes on a column-0 `}` or `)` that an indentation rule
-# would read as the next top-level statement.
+# Every top-level constant assignment as raw source text, as a list so a
+# reassignment is visible. Extent is bracket depth, not indentation.
 def python_top_level_constants(path)
   lines = File.readlines(path, chomp: true)
   constants = Hash.new { |hash, key| hash[key] = [] }
@@ -3038,51 +2364,18 @@ def python_top_level_constants(path)
   constants
 end
 
-
-# scripts/production_auto_deploy.py and scripts/image_prune.py are two
-# self-sufficient single-file programs, and that is structural rather than an
-# oversight: each is installed on the NAS by an ansible.builtin.copy of exactly
-# one file, so a shared module would be a second file that must land too, and a
-# script that arrived without it would die at import -- before any handler could
-# report it, on every five-minute tick, with no merge able to heal the host.
-# services/dozzle/alert_relay.py mirrors the same helpers from inside a
-# container, where a module in the deploy account's home is not reachable at
-# all. So the duplication stays.
-#
-# Divergence is the part that does not have to. The two copies of _write_private
-# drifted in opposite directions until one fsynced and never repaired the mode
-# while the other repaired the mode and never fsynced, each carrying the bug the
-# other had fixed (#354). Compared as text here, so re-divergence fails in the
-# fast loop rather than on the NAS.
-#
-# Compared as text and not as code, because every filter that would let the two
-# copies differ cosmetically is a filter that can get one edge case wrong,
-# compare empty to empty and pass. Prose true of only one script therefore lives
-# in a comment above its def, which is outside the extracted body. That is why
-# these definitions are byte-identical down to the docstring (#423).
-#
-# services/dozzle/alert_relay.py mirrors html_escape from inside a container and
-# is deliberately outside this glob: its copy carries no annotations and a
-# docstring of its own, so it is a relative rather than a duplicate. Do not
-# converge it.
+# scripts/production_auto_deploy.py and scripts/image_prune.py stay single files
+# (each is installed by one copy task); their shared helpers are compared byte for
+# byte so they cannot drift again (#354, #423). alert_relay.py's html_escape is a
+# relative, deliberately outside this glob.
 duplicated_scripts = Dir.glob(File.join(ROOT, "scripts/*.py")).sort
 check_floor(failures, duplicated_scripts.length, 2, "scripts/*.py programs")
 script_definitions = duplicated_scripts.to_h do |path|
   [File.basename(path), python_top_level_definitions(path)]
 end
 
-# The fewest lines each definition can honestly be, per name rather than one
-# number: _timestamp is two statements and _write_private is forty lines, so a
-# floor low enough for both would be barely more than non-emptiness while a
-# floor sized for the largest would fail the smallest. An extractor that stopped
-# at the first blank line yields two lines for every one of these, so each floor
-# is set well above that and below the current length, leaving room for prose.
-#
-# Six since #558 stage 3 moved both scripts from Markdown to Pushover's
-# HTML: markdown_escape went, and html_escape, fit_message and pushover_verdict
-# came -- the escape, the whole-line bound on a message, and the reading of
-# Pushover's answer that decides whether a state record may move. The floor
-# rose with the table rather than being left at the four it was.
+# The fewest lines each definition can honestly be, per name: an extractor that
+# stopped at the first blank line would yield two.
 duplicated_helper_floors = {
   "_write_private" => 20,
   "_record_lock_holder" => 12,
@@ -3093,16 +2386,7 @@ duplicated_helper_floors = {
   # Seven since #558 gave every message one shape: a lead line, labelled details
   # and a closing line, which the details give way inside.
   "compose_message" => 8,
-  # Ten since #658, and these three arrived differently from the seven above:
-  # they were already duplicated and already drifting, one literal apart each,
-  # and the derived stanza below could not see them because a near-copy is not
-  # a copy. rotate_logs differed only in the pattern it matched, run_log (then
-  # attempt_log and prune_log) only in the filename suffix, and format_duration
-  # only in whether its caller had already turned the span into seconds. Each
-  # difference is hoisted out -- to LOG_PATTERN, to a parameter, and to
-  # duration_between in the poller -- so what is left is byte-identical and
-  # named here. That is the #354 shape displaced one notch: a fix to any of
-  # them had to be made twice and nothing would have noticed if it were not.
+  # Converged in #658 from near-copies one literal apart.
   "rotate_logs" => 16,
   "run_log" => 14,
   "format_duration" => 10,
@@ -3110,12 +2394,8 @@ duplicated_helper_floors = {
 check_floor(failures, duplicated_helper_floors.length, 10,
             "helpers held identical across scripts/*.py")
 
-# Retired by #558 stage 3, and refused by name because nothing derived can see a
-# leftover: the reduce(:&) stanza below needs both scripts to define a name, and
-# the pairwise one further down needs a byte-identical pair, so markdown_escape
-# kept in one script and deleted from the other would sit there green -- an
-# escape for a renderer neither script publishes to any more, one import away
-# from being used on HTML it does not escape.
+# Retired by #558 and refused by name: the derived stanzas need both scripts to
+# define a name, so a leftover in one would pass.
 RETIRED_SCRIPT_NAMES = %w[markdown_escape MARKDOWN_PATTERN].freeze
 duplicated_scripts.each do |path|
   retired = (python_top_level_definitions(path).keys + python_top_level_constants(path).keys) &
@@ -3136,9 +2416,7 @@ duplicated_helper_floors.each do |helper, floor|
           "scripts/#{script}: defines #{helper} #{definitions[helper].length} times, " \
           "and only the first is compared")
     body = definitions[helper].first
-    # Both halves of the extraction, because an extractor that stopped at the
-    # first blank line and one that ran on into the next definition would each
-    # compare equal to itself across the two files and prove nothing.
+    # Too-short and run-on extractions would each compare equal to themselves.
     check(failures, body.lines.length >= floor,
           "scripts/#{script}: #{helper} extracted as #{body.lines.length} lines, " \
           "fewer than the #{floor} it must be -- the extractor stopped early")
@@ -3163,18 +2441,8 @@ script_definitions.each do |script, definitions|
         "truncate it in place; a crash in that window loses the record (#401)")
 end
 
-# The list above is stated, and a stated list of what must match fails open: the
-# guard covered only _write_private for as long as it existed, while
-# markdown_escape (since retired), _timestamp and _record_lock_holder sat duplicated and
-# unwatched beside it (#423). This closes that, derived rather than stated: a
-# copy is byte-identical at the moment it is made, so a name both scripts define
-# whose bodies already agree is a fresh duplicate and must be named above. The
-# names that differ on purpose -- the entry points main, load_config, _run and
-# their kin -- never reach it. format_duration and rotate_logs stood in that
-# list until #658 and were the counter-example rather than the illustration:
-# they differed by one literal each, which is near-identical rather than
-# deliberately different, and near-identical is exactly what neither this
-# stanza nor the table above could see. They are converged and listed now.
+# The reverse direction, derived: a name both scripts define whose bodies already
+# agree is a fresh duplicate and must be listed above (#423).
 shared_definition_names = script_definitions.values.map { |definitions| definitions.keys.to_set }.reduce(:&)
 check_floor(failures, shared_definition_names.length, 4,
             "top-level names both scripts/*.py programs define")
@@ -3189,34 +2457,9 @@ check(failures, unlisted_identical.empty?,
       "nothing would notice them drifting apart. A verbatim copy is identical " \
       "only until someone edits one side; name it there, with a floor")
 
-
 # --- the same rule one level down, and one file wider (#515) -----------------
-#
-# Two holes in everything above, both of them the #354 shape displaced.
-#
-# THE PINNED FUNCTION'S OWN INPUT WAS UNPINNED. markdown_escape is compared
-# byte-for-byte; MARKDOWN_PATTERN, the character class it escapes with, is
-# byte-identical in all three copies and was referenced by no test at all. Cut
-# to r"([\\`*])" in one script, both markdown_escape bodies left untouched,
-# policy_test.rb reported all properties holding and the pruner's
-# notification would have shipped unescaped _ * [ ] # | > while the deploy
-# poller's did not -- with the identity check on the consumer reporting the two
-# copies identical. NOTIFICATION_TIMEOUT_SECONDS = 10 is the same class in two
-# files and was compared by nothing either. (#558 stage 3 retired both Markdown
-# names; the escape is html_escape and its input is MAX_ESCAPED_FIELD_CHARACTERS,
-# pinned the same way below.)
-#
-# THE SUBJECT COULD NOT SEE THE RELAY. Everything above globs scripts/*.py and
-# derives its reverse direction with reduce(:&), so it needs BOTH scripts to
-# define a name. services/dozzle/alert_relay.py is outside that glob by design
-# and CLAUDE.md names it as a third copy site, so a verbatim copy shared by the
-# relay and exactly one script was pinned by nothing: planted as _shared_bound in
-# image_prune.py and alert_relay.py, it left this file green.
-#
-# NOT CLOSED BY CONVERGING BODIES, and the comment above is right about why: the
-# relay's markdown_escape takes a different bound and no annotations and declines
-# to escape intra-word underscores, so it is a relative rather than a duplicate.
-# What it shares with the scripts is the DATA, and data has no such excuse.
+# Shared constants are data and get pinned too, and services/dozzle/alert_relay.py
+# is a third copy site the scripts/*.py glob cannot see.
 DUPLICATION_SITES = (duplicated_scripts + [File.join(ROOT, "services/dozzle/alert_relay.py")])
                     .map { |path| path.delete_prefix("#{ROOT}/") }.uniq.sort
 check_floor(failures, DUPLICATION_SITES.length, 3, "single-file programs sharing copied helpers")
@@ -3232,24 +2475,10 @@ site_constants = DUPLICATION_SITES.to_h do |relative|
   [relative, constants]
 end
 
-# Which copies of a constant must agree, and how long the extraction of each must
-# be. The site list is exact in both directions rather than a floor: a copy that
-# disappears is as much a change to this contract as one that diverges, and a
-# floor of two would let the relay drop MARKDOWN_PATTERN silently.
-#
-# `lines` is the honesty half, and it is an exact count rather than the floor the
-# function table uses, because one line is a legitimate length for a constant and
-# a floor of one is not a check. It catches both an extraction that stopped early
-# on a multi-line constant and one that ran into the next statement. A legitimate
-# reformat costs one edit here, which is the stated-number posture this file
-# takes everywhere else.
+# Which sites hold each constant, exact in both directions, and its exact line count.
 duplicated_constant_sites = {
-  # MARKDOWN_PATTERN left this table in #558 stage 3, when the last two sites of
-  # it -- the scripts -- moved to Pushover's HTML as the relay had before them;
-  # RETIRED_SCRIPT_NAMES above refuses it coming back. What replaced it is
-  # Pushover's own caps, and all three copy sites now publish to Pushover, so
-  # the three that bound every message are pinned at all three. The two link
-  # caps have only the sites that send a link: the scripts' prune sends none.
+  # The Pushover caps are pinned at all three sites; the link caps only where a
+  # link is sent.
   "MAX_ESCAPED_FIELD_CHARACTERS" => {
     "sites" => %w[scripts/image_prune.py scripts/production_auto_deploy.py services/dozzle/alert_relay.py],
     "lines" => 1
@@ -3270,11 +2499,8 @@ duplicated_constant_sites = {
     "sites" => %w[scripts/production_auto_deploy.py services/dozzle/alert_relay.py],
     "lines" => 1
   },
-  # Which configuration keys load_config reads as "cannot publish" rather than
-  # refusing (#327). Drift here is a script that refuses the configuration the
-  # other one tolerates. The union of every application either script sends to --
-  # the poller Alerts and Deployments, the prune Alerts and Containers -- so the
-  # set stays one copy, and a name a script's Config lacks is never read.
+  # Configuration keys load_config reads as "cannot publish" rather than refusing
+  # (#327): the union of every application either script sends to.
   "_PUSHOVER_FIELDS" => {
     "sites" => %w[scripts/image_prune.py scripts/production_auto_deploy.py],
     "lines" => 3
@@ -3283,9 +2509,7 @@ duplicated_constant_sites = {
     "sites" => %w[scripts/image_prune.py scripts/production_auto_deploy.py],
     "lines" => 1
   },
-  # The message palette (#558). All four at all three sites rather than only
-  # the colours each program uses today: it is one palette, and a copy that
-  # holds only part of it is where a fifth spelling of "failed" would start.
+  # The whole palette at all three sites, since it is one palette (#558).
   "COLOR_GREEN" => {
     "sites" => %w[scripts/image_prune.py scripts/production_auto_deploy.py services/dozzle/alert_relay.py],
     "lines" => 1
@@ -3338,22 +2562,8 @@ duplicated_constant_sites.each do |constant, expectation|
         "reads as the copies agreeing (#515)")
 end
 
-# The reverse direction, derived rather than stated, exactly as the reduce(:&)
-# stanza above derives it for functions across scripts/*.py -- and for the same
-# reason, since a stated list of what must match fails open.
-#
-# TWO DIFFERENCES FROM THAT STANZA, both of them the holes this closes. The
-# subject is the three copy sites rather than the glob, so the relay is in it.
-# And the rule is "SOME PAIR is byte-identical" rather than "every site that
-# defines it agrees": the weaker phrasing fails open on precisely the shape being
-# closed, because a name in all three where two agree and the third differs on
-# purpose would go unflagged while those two sat unpinned. html_escape is clean
-# here because it is excluded by name, not because the relay's body disagrees.
-#
-# The stanza above is this rule over a narrower subject and is left alone: its
-# glob picks up a fourth scripts/*.py program that this stated site list would
-# not, so the two cover different futures. A divergence in their overlap is
-# reported twice, which is noise rather than a defect.
+# The reverse direction over the three sites: any byte-identical PAIR must be
+# pinned, so two agreeing copies are not excused by a third differing on purpose.
 site_names = DUPLICATION_SITES.to_h do |relative|
   [relative, site_definitions.fetch(relative).keys.to_set + site_constants.fetch(relative).keys.to_set]
 end
@@ -3361,27 +2571,8 @@ shared_across_sites = site_names.values.combination(2).map { |left, right| left 
                                 .reduce(Set.new, :|).sort
 check_floor(failures, shared_across_sites.length, 15,
             "top-level names shared by at least two of the copy sites")
-# And a second floor, on the relay's own participation, for the same reason the
-# Jinja escape scanner above floors its two subject lists separately.
-# Twenty-nine of the thirty-two names that count above come from the two
-# scripts/*.py files alone, so a subject that stopped reaching
-# services/dozzle/alert_relay.py -- a moved path, an extractor returning nothing
-# for it -- would leave the count comfortably above fifteen while the half of
-# this check that #515 exists for stopped running. DUPLICATION_SITES.length does
-# not cover it: that proves the path is in the list, not that anything was read
-# out of it.
-#
-# The count went six, then four when #558 moved the relay to Pushover and it
-# stopped sharing the two Markdown names, and is ten since #558 stage 3 moved the
-# scripts to Pushover too, measured on that tree: MAX_ESCAPED_FIELD_CHARACTERS,
-# MAX_MESSAGE_CHARACTERS, MAX_TITLE_CHARACTERS, MAX_URL_CHARACTERS,
-# MAX_URL_TITLE_CHARACTERS, TIMESTAMP_PATTERN, html_escape, main, publish and
-# render_notification. Sixteen since #558 styled the messages: COLOR_GREEN,
-# COLOR_RED, COLOR_AMBER and COLOR_GREY, pinned by name in
-# duplicated_constant_sites with the five caps, and fit_message and
-# compose_message, pinned by RELAY_VERBATIM_HELPERS above; html_escape is a relative and the other four differ on purpose, which is still
-# the mix that makes the relay worth reading. The floor rose with the count
-# rather than being left at four.
+# A separate floor on the relay's own participation, since most names come from
+# the two scripts alone.
 relay_site = "services/dozzle/alert_relay.py"
 check(failures, DUPLICATION_SITES.include?(relay_site),
       "#{relay_site} must be one of the copy sites: CLAUDE.md names it as the third place these " \
@@ -3391,13 +2582,8 @@ relay_shared = (site_names[relay_site] || Set.new).select do |name|
 end
 check_floor(failures, relay_shared.length, 16,
             "top-level names #{relay_site} shares with a scripts/*.py program")
-# The relay's verbatim copies of the message helpers (#558). Every message now
-# has one shape, and the relay's grew past what its field bounds can hold by
-# construction -- a linked container name beside the name in the lead -- so it
-# fits its messages the way the scripts do, with the same two functions. They
-# are listed in duplicated_helper_floors, which compares scripts/*.py only, and
-# a listed name is exactly what the pairwise stanza below skips, so without
-# this the relay's copies would be pinned by nothing.
+# The relay's verbatim copies of the message helpers (#558), which the pairwise
+# stanza skips as listed names.
 RELAY_VERBATIM_HELPERS = %w[fit_message compose_message].freeze
 RELAY_VERBATIM_HELPERS.each do |helper|
   relay_bodies = site_definitions.fetch(relay_site, {}).fetch(helper, [])
@@ -3417,9 +2603,7 @@ unlisted_pairwise = shared_across_sites.reject { |name| listed_by_name.include?(
     [site_definitions.fetch(relative), site_constants.fetch(relative)]
       .filter_map { |table| table[name].first if table.key?(name) }
   end
-  # Two sites spelling it the same way is what makes it a copy. Comparing
-  # lengths rather than asking whether every site agrees is the whole point:
-  # a third site differing on purpose must not excuse the pair that does not.
+  # Comparing lengths: a third differing site must not excuse an identical pair.
   bodies.length != bodies.uniq.length
 end
 check(failures, unlisted_pairwise.empty?,
@@ -3429,6 +2613,5 @@ check(failures, unlisted_pairwise.empty?,
       "cannot share a module -- each is installed as exactly one file, and the relay's copy " \
       "lives inside a container -- so a verbatim copy is identical only until someone edits " \
       "one side. Name it in the table that fits, with its floor or its line count")
-
 
 report(failures, "policy: all properties hold", "policy violation(s)")

@@ -400,9 +400,7 @@ class ImmichRestoreClassifierTest(unittest.TestCase):
         version.symlink_to(outside)
         self.assert_refused("unreadable-postgres-version")
 
-    # A deploy account that can list the cluster but not read its version is
-    # no worse off than before the major was checked at all, so it proceeds and
-    # says so rather than stalling every deployment on an unmeasured permission.
+    # Unreadable version: proceed and say so rather than stall every deployment.
     @unittest.skipIf(os.geteuid() == 0, "root reads a mode-0 file")
     def test_permission_denied_postgres_version_proceeds_unverified(self):
         version = self.fixture.postgres / "PG_VERSION"
@@ -687,9 +685,7 @@ class ImmichRestoreClassifierTest(unittest.TestCase):
                 self.assertEqual(result.stdout, "")
                 self.assertEqual(result.stderr.strip(), "unsafe-restored-assets")
 
-    # A missing source is counted rather than refused on the first, so the role
-    # can say how many of the sample failed; it still refuses on any (#900).
-    # The count is all that is reported: no path leaves the helper.
+    # Missing sources are counted, not refused on the first, and no path is reported (#900).
     def test_restored_asset_sample_counts_symlink_or_missing_sources(self):
         self.fixture.add_original("present.jpg")
         outside = self.fixture.root / "outside.jpg"

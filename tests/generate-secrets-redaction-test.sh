@@ -8,8 +8,7 @@ trap 'rm -rf -- "$test_root"' EXIT HUP INT TERM
 
 fake_bin="$test_root/bin"
 mkdir -p "$fake_bin"
-# The image generate-secrets.yml resolves its bcrypt hasher from, read the way
-# the play reads it, so the stub can refuse a hasher run against any other image.
+# The hasher image, read as the play reads it, so the stub refuses any other.
 FAKE_DOCKER_HASHER_IMAGE=$(ruby -ryaml -e '
   puts YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true).dig("services", "nextcloud", "image")
 ' "$repo_dir/services/nextcloud/compose.yml")
@@ -76,12 +75,8 @@ assert_no_sentinel() {
 
 success_dir="$test_root/success"
 mkdir -p "$success_dir" "$success_dir/state"
-# All three of the play's vault paths are redirected into the sandbox, not only
-# the two it writes and refuses on: vault_retired_path defaults into the real
-# checkout, so leaving it would make this fixture's verdict depend on whether the
-# operator happens to have a stray inventory/group_vars/all/vault.yml there. What
-# that guard does is tests/secrets_docs_test.rb's subject; this fixture's is
-# redaction.
+# All three vault paths go to the sandbox: vault_retired_path defaults into the
+# real checkout, where a stray vault.yml would change the verdict.
 set +e
 PATH="$fake_bin:$PATH" FAKE_DOCKER_STATE="$success_dir/state" \
   ansible-playbook -i localhost, -c local "$repo_dir/generate-secrets.yml" --diff \
@@ -101,8 +96,7 @@ if [ "$success_status" -ne 0 ]; then
   cat "$success_dir/output" >&2
   exit "$success_status"
 fi
-# The passwords reached the hasher on stdin, one per administrator, so the
-# redaction above was proved over a run that really handled them.
+# Prove the redaction ran over a run that really hashed the passwords.
 if [ "$(cat "$success_dir/state/hashed-passwords" 2>/dev/null)" != "$(printf '%s\n%s' SENTINEL_GENERATED_PASSWORD_DOZZLE SENTINEL_GENERATED_PASSWORD_TRAILARR)" ]; then
   printf 'the bcrypt hasher did not receive both administrator passwords on stdin\n' >&2
   exit 1
@@ -131,8 +125,7 @@ if PATH="$fake_bin:$PATH" FAKE_DOCKER_STATE="$failure_dir/state" \
   exit 1
 fi
 assert_no_sentinel "$failure_dir/output"
-# The failure must be the hasher's own, or the fixture proved redaction over a
-# run that never reached it.
+# The failure must be the hasher's own.
 grep -F 'TASK [Hash the administrator passwords with the pinned bcrypt hasher]' \
   "$failure_dir/output" >/dev/null || {
   cat "$failure_dir/output" >&2

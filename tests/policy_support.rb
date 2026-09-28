@@ -6,32 +6,16 @@ require "yaml"
 module PolicySupport
   CONTRACT_BASENAME_EXCEPTIONS = { "paperless-ngx" => "paperless" }.freeze
 
-  # The service roster. Stated here rather than derived from whichever files exist
-  # under tests/expected/, because a derived roster would let a new service approve
-  # itself: dropping in an expectations file would be the only authorization it ever
-  # needed. It lives in this module rather than in one policy script because several
-  # of them check different properties of the same roster.
+  # The service roster, stated rather than derived from tests/expected/, so a new
+  # service cannot approve itself by dropping in an expectations file.
   EXPECTED_SERVICES = %w[
     audiobookshelf beszel dozzle immich jellyfin komga nextcloud
     paperless-ngx arr downloaders bindery kapowarr pinchflat trailarr seerr
     vaultwarden karakeep
   ].freeze
-  # Not every vault key belongs to a service; these are platform-wide.
-  # expectation_problems below requires every key in a tests/expected/<service>.yml
-  # to carry that service's own `vault_<name>_` prefix, so a credential no single
-  # service owns has nowhere else to be pinned. The seven managed-user lists are
-  # the first kind: each is authored in its own service's vault_<role>.yml, but
-  # its name inverts that service's prefix (vault_managed_komga_users, not
-  # vault_komga_), and paperless-ngx's carries the role name where its credentials
-  # carry `paperless`, so pinning them per service would take two exceptions to
-  # the prefix rule and buy nothing. The Pushover keys are the second kind -- one
-  # user key and five application tokens of an account at a third party, each
-  # token pushed into whichever publishers use that application (Beszel, the
-  # Dozzle relay, the deployment reports, the deployment poller, Seerr),
-  # so they are named here rather than under any one service. The healthchecks.io
-  # ping URLs are the same kind with no service at all: the deployment poller
-  # reports to them, and it is installed by its own play rather than listed in
-  # the manifest.
+  # Platform-wide vault keys no single service's `vault_<name>_` prefix fits:
+  # the managed-user lists (their names invert the prefix), the Pushover user key
+  # and application tokens, and the healthchecks.io ping URLs.
   GLOBAL_VAULT_KEYS = %w[
     vault_managed_audiobookshelf_users vault_managed_beszel_users
     vault_managed_dozzle_users vault_managed_immich_users
@@ -43,9 +27,8 @@ module PolicySupport
     vault_pushover_user_key
     vault_healthchecks_poller_ping_url vault_healthchecks_verify_ping_url
   ].freeze
-  # The services that hold no credential at all, which is a designed property
-  # here rather than an unfinished slice. See expectation_problems below for the
-  # argument and for the fact that this list is closed in both directions.
+  # Services that hold no credential at all, by design; closed in both
+  # directions (see expectation_problems).
   CREDENTIAL_FREE_SERVICES = %w[vaultwarden].freeze
   EXPECTATION_FIELDS = %w[container_cpus role vault_keys].freeze
 # The manifest's status vocabulary. Shared because more than one script decides
@@ -61,18 +44,9 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     CONTRACT_BASENAME_EXCEPTIONS.fetch(service_name, service_name)
   end
 
-  # The manifest's own statuses, read once. EXPECTED_SERVICES above stays the
-  # authorization gate — a service is admitted by being written there, and by the
-  # cross-check that the manifest names exactly those services. What follows *from*
-  # a status is derived through the three readers below instead of restated,
-  # because a second copy of the roster is a copy no test says must agree with the
-  # first: promoting one service used to mean hand-editing status literals in half
-  # a dozen test files, and nothing failed when one was missed.
-  #
-  # Malformed or missing input yields an empty mapping rather than raising. The
-  # manifest's shape is policed by policy_test.rb and policy_vault_test.rb, which
-  # name the defect; a stack trace out of a caller that only wanted the roster
-  # would bury that diagnosis under an unrelated suite.
+  # The manifest's statuses, read once; EXPECTED_SERVICES stays the authorization
+  # gate, and what follows from a status is derived here, not restated. Malformed
+  # input yields {} because other scripts name that defect.
   def service_statuses(root)
     document = begin
       YAML.safe_load_file(File.join(root, "services", "manifest.yml"))
@@ -91,8 +65,7 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     service_statuses(root).select { |_name, status| status == "planned" }.keys.freeze
   end
 
-  # "accepted" counts as deployed: the status vocabulary distinguishes a service
-  # that has passed its operator handoff from one that has not, and both run.
+  # "accepted" counts as deployed.
   def implemented_services(root)
     service_statuses(root).select { |_name, status| IMPLEMENTED_STATUSES.include?(status) }.keys.freeze
   end
@@ -146,15 +119,9 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
   rescue SystemCallError
     false
   end
-  # Loads the pinned per-service expectations named by the roster. Returns the
-  # documents keyed by service name and a list of problems, so each caller reports
-  # them through its own accumulator rather than this module deciding how a policy
-  # failure is phrased.
-  #
-  # These values were Ruby literals, where a typo was a NameError at load time. As
-  # YAML a mistyped CPU limit parses as a string instead, and a check comparing it
-  # against the Compose file would report a mismatch that reads like a Compose bug,
-  # so the data is type-checked where it enters rather than where it is consumed.
+  # Loads the pinned per-service expectations named by the roster, returning the
+  # documents and a problem list. Type-checked on entry, since a mistyped YAML
+  # value would otherwise read like a Compose bug.
   def pinned_service_expectations(root, service_statuses, service_names = EXPECTED_SERVICES)
     problems = []
     unless service_statuses.is_a?(Hash)
@@ -200,14 +167,8 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
       problems.concat(expectation_problems(name, expectation, service_statuses[name], root))
     end
 
-    # THE THIRD DIRECTION, and the one the list was open in. The two checks in
-    # expectation_problems below bite only for a name that IS a rostered
-    # service: a stale or invented entry here is visited by neither, so
-    # `%w[vaultwarden seafile notaservice]` reported "all properties hold".
-    # seafile is not hypothetical -- #501 removed it, and this list would have
-    # carried it forever. Same shape as `stray_roster` in
-    # tests/deployment_gate_coverage_test.rb, and for the same reason: a literal
-    # list needs something holding it to the roster in both directions.
+    # The third direction: a stale or invented name here is visited by neither
+    # check below (#501 removed seafile), so hold the list to the roster.
     stray_credential_free = CREDENTIAL_FREE_SERVICES - service_names
     unless stray_credential_free.empty?
       problems << "CREDENTIAL_FREE_SERVICES names #{stray_credential_free.join(', ')}, which " \
@@ -215,8 +176,7 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
                   "subject exempts nothing and hides the next service that takes the name"
     end
 
-    # A file for a service the roster does not name would pin expectations nothing
-    # reads, so an extra file is rejected rather than ignored.
+    # A file for an unrostered service would pin expectations nothing reads.
     present = Dir.glob(File.join(root, "tests", "expected", "*.yml"))
                  .map { |path| File.basename(path, ".yml") }.sort
     unless present == service_names.sort
@@ -246,48 +206,13 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     end
 
     vault_keys = expectation.fetch("vault_keys")
-    # An implemented service holds at least one credential, and that was true of
-    # every service on this platform until #547. Vaultwarden inverts it: a
-    # password manager's master passwords are user-owned by construction, the
-    # server never learns them, and that zero-knowledge property is the entire
-    # reason to run it. Ansible owns the door -- SIGNUPS_ALLOWED,
-    # INVITATIONS_ALLOWED, DOMAIN -- and nothing behind it, and it sets no
-    # ADMIN_TOKEN either, because the /admin panel writes a config.json that
-    # would outrank every value the role renders. So the empty list here is a
-    # designed property rather than an unfinished slice, and the canonical
-    # secrets guide carries the argument in full.
-    #
-    # THAT GUIDE IS NAMED IN PROSE RATHER THAN BY PATH, deliberately.
-    # tests/ci/classify_changes_test.rb derives which documents a gate check is
-    # coupled to by scanning the check's whole require closure for literal
-    # document paths, and every one of the eight policy scripts requires this
-    # module -- so a path written here couples all of them to that document and
-    # demands it be routed to `static`. tests/ci/classify_changes.rb records the
-    # opposite decision beside its own list: the guide routes to `docs` alone,
-    # because tests/secrets_docs_test.rb is its only real reader. A cross
-    # reference is not a read, and spelling one out here would have moved a
-    # Markdown-only edit from a one-minute job onto the whole policy gate --
-    # measured, not predicted: it turned this check red 64 times.
-    #
-    # STATED, AND CLOSED IN BOTH DIRECTIONS. A service named below whose
-    # expectations DO list keys fails just as loudly as one omitted from the
-    # list that lists none: an exemption that quietly stopped applying is the
-    # defect this repository keeps closing. Adding a name here is a deliberate
-    # claim that the service is credential-free, not a way past a red check.
+    # Vaultwarden (#547) is credential-free by design: master passwords are
+    # user-owned and Ansible owns only the door. The secrets guide is named in
+    # prose, not by path: a literal path here would route every policy script to
+    # that document. Closed both ways: a listed service with keys fails too.
     credential_free = CREDENTIAL_FREE_SERVICES.include?(service_name)
-    # The claim is about the ROLE, so it is checked against the role. A service's
-    # argument spec is where every vault credential it reads is declared
-    # `required: true`, so a role that reads one cannot be credential-free, and
-    # this is what stops the list being a one-line route past the rule for any
-    # service: adding `komga` to it and emptying tests/expected/komga.yml used to
-    # pass, and now fails here naming the two options roles/komga declares.
-    #
-    # WHAT REMAINS OPEN, said out loud rather than left to be discovered. A
-    # service whose role genuinely reads no vault variable can still be listed
-    # here, and that is not a hole but the declaration itself -- there is nothing
-    # left to distinguish it from Vaultwarden except intent. What cannot happen
-    # any more is listing a service that does read one, listing a name that is
-    # not a service, or listing one and leaving its keys in place.
+    # Checked against the role: a role whose argument spec declares a required
+    # vault credential cannot be listed as credential-free.
     if credential_free && role.is_a?(String) && !role.empty?
       spec_path = File.join(root, "roles", role, "meta", "argument_specs.yml")
       spec = begin
@@ -312,10 +237,8 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     end
     if vault_keys.is_a?(Array) &&
        (!vault_keys.empty? || service_status == "planned" || credential_free)
-      # contract_basename is reused for the vault prefix because paperless-ngx is the
-      # one service whose keys drop the suffix, and it is the same alias. The two
-      # namings are independent concepts that happen to agree, so a change to one must
-      # be checked against the other.
+      # contract_basename doubles as the vault prefix alias (paperless-ngx); the
+      # two namings are independent, so a change to one must be checked against both.
       prefix = "vault_#{contract_basename(service_name)}_"
       vault_keys.each do |key|
         unless key.is_a?(String) && key.start_with?(prefix)
@@ -333,35 +256,11 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     (global_keys + documents.values.flat_map { |expectation| expectation.fetch("vault_keys") }).sort.freeze
   end
 
-  # A role's task list as Ansible statically assembles it: the named task file
-  # with every `import_tasks` of a sibling file spliced in where the import
-  # stands. Ansible inlines a static import at parse time, so an imported task
-  # is the importing file's task -- same order, same position, same inherited
-  # tags. A test that reads one file and calls that the role stops seeing
-  # everything the role runs the moment a role is split into stage files, and it
-  # stops silently, because the properties it checks are all of the "some task
-  # does X" kind that a shorter list simply fails to contradict.
-  #
-  # Imports are followed and dynamic `ansible.builtin.include_tasks` is
-  # deliberately not, which is the whole design and not a shortcut. Ansible
-  # leaves an include alone too: it resolves at run time under its own `when:`
-  # and `vars:`, its file is frequently phase-gated, and the callers here read
-  # those files separately or not at all.
-  #
-  # The obvious alternative -- walk every *.yml under the role's tasks/ tree --
-  # is wrong, and quietly so. `role_has_verification?` below is checked by ten
-  # mutation rows in tests/policy_manifest_test.rb that replace
-  # roles/vaultwarden/tasks/main.yml wholesale with a file that verifies nothing
-  # and require the failure to be reported. vaultwarden's verification lives in
-  # tasks/verify.yml, which the replaced main.yml imported, so a directory walk
-  # would find that file and let it satisfy the check on behalf of the mutant,
-  # and all ten rows would pass while proving nothing. Following the
-  # imports says exactly what Ansible would run as one file, and nothing else.
-  #
-  # +aliases+ is passed through to every file the assembly reads, so a caller
-  # that refuses YAML anchors refuses them in the stage files too. It defaults
-  # to false because that is what YAML.safe_load_file defaults to, and every
-  # caller here replaced a bare YAML.safe_load_file.
+  # A role's task list as Ansible statically assembles it: `import_tasks` of a
+  # sibling spliced in place; dynamic `include_tasks` deliberately not followed.
+  # Not a directory walk: the vaultwarden mutation rows replace main.yml, and a
+  # walk would let tasks/verify.yml satisfy the check on the mutant's behalf.
+  # +aliases+ applies to every file read; false like YAML.safe_load_file.
   def static_role_tasks(path, aliases: false, importing: [])
     real_path = File.expand_path(path)
     return [] if importing.include?(real_path)
@@ -393,12 +292,8 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     flattened
   end
 
-  # Every string a parsed task actually carries, keys included, each one on its
-  # own. Policy checks that used to match a pattern against a whole task file
-  # read this instead: a module name or a variable that survives only inside a
-  # comment is not something the role runs, and a pattern matched against the
-  # joined text of a file can span two unrelated tasks and report a violation
-  # that neither of them contains.
+  # Every string a parsed task carries, keys included: a commented-out match or a
+  # match spanning two tasks is not something the role runs.
   def task_strings(node)
     case node
     when Hash then node.flat_map { |key, value| [key.to_s] + task_strings(value) }
@@ -408,16 +303,8 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     end
   end
 
-  # Every `{{ ... }}` region of a string, as Jinja's own lexer would find them:
-  # `{{` opens a variable block and the FIRST `}}` closes it. That last part is
-  # the whole of #492 and it is why this is a scanner rather than a regexp over
-  # the source -- a Go template nested inside a Jinja expression closes that
-  # expression early, so what looks like one construct is two.
-  #
-  # Shared rather than copied: it was file-local to tests/contracts/
-  # nextcloud-static.rb until #530 promoted the escape-sequence scanner that
-  # reads it to tests/policy_test.rb, and a second copy of a scanner is the
-  # thing that promotion exists to avoid.
+  # Every `{{ ... }}` region as Jinja's lexer finds it: the FIRST `}}` closes it,
+  # so a nested Go template closes the expression early (#492). Shared (#530).
   def jinja_expression_regions(value)
     regions = []
     index = 0
@@ -431,11 +318,7 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     regions
   end
 
-  # An env.j2 template is not YAML, but it is not free text either: it is a list
-  # of NAME=value assignments. Reading it as those pairs says which variable a
-  # name is bound to, which a substring search over the file cannot — and it
-  # ignores a commented-out sample of the right assignment sitting above a live
-  # line that exports something else.
+  # env.j2 as NAME=value pairs, ignoring commented-out samples.
   def environment_assignments(path)
     File.readlines(path, chomp: true).filter_map do |line|
       stripped = line.strip
@@ -446,9 +329,7 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     end
   end
 
-  # The paths tasks act on, wherever the module spells them. Used to check that
-  # a set of tasks all address the same location, which a substring search over
-  # the file cannot say.
+  # The paths tasks act on, wherever the module spells them.
   def task_path_arguments(node)
     case node
     when Hash
@@ -460,9 +341,7 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     else []
     end
   end
-  # These checks prove that verification is structurally wired to an observable,
-  # service-specific result. The integration run supplies runtime semantic proof;
-  # static policy intentionally does not interpret arbitrary Jinja expressions.
+  # Structural wiring only; static policy does not interpret arbitrary Jinja.
   def service_specific_uri?(task, prefixes, service_names)
     uri = task["ansible.builtin.uri"]
     return false unless uri.is_a?(Hash) && uri["url"].is_a?(String)
@@ -503,16 +382,8 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     end
   end
 
-  # Reads the role Ansible would run, not the one file named. This used to be a
-  # bare YAML.safe_load_file(tasks_path), which was the same thing only for as
-  # long as every service role kept all of its tasks in main.yml.
-  #
-  # Its one caller in tests/policy_test.rb spends this as
-  # `role_verification || contract_verification`, so a role whose verification
-  # moves out of main.yml does not fail: it goes on passing on the contract half
-  # alone, with the role-side half returning false and nobody told. Anything that
-  # narrows what this function can see half-kills that check silently, which is
-  # why it reads the assembled role and why the assembly follows imports only.
+  # Reads the assembled role, not the one file named: its caller ORs this with
+  # contract verification, so a narrower view would fail silently.
   def role_has_verification?(tasks_path, service_name, role_name)
     tasks = flatten_tasks(static_role_tasks(tasks_path))
     canonical_name = contract_basename(service_name)
@@ -549,20 +420,9 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     status.success?
   end
 
-  # tests/validate-policy.sh partitions its check list into one heredoc per CI
-  # shard: `policy_shard_<id>()` opens `cat <<'POLICY_CHECKS_<id>'` and closes on
-  # a bare terminator of the same name. This returns { id => [command, ...] } in
-  # the order the shards appear, and {} when neither boundary can be found --
-  # which is a state every caller has to refuse rather than read past, because a
-  # parse that quietly matches nothing satisfies every property asserted over it.
-  #
-  # Shared rather than copied because three programs now read this partition for
-  # three different reasons: the declaration guard compares it against literal
-  # lists, tests/policy_ci_test.rb requires each check it names to land in
-  # exactly one shard, and tests/ci/workflow_test.rb derives the CI matrix from
-  # it. The declaration guard keeps a second, independent reading of its own --
-  # see the awk program there -- so the one thing a shared parser could hide,
-  # a boundary located on the wrong line, still fails somewhere.
+  # tests/validate-policy.sh's shard heredocs as { id => [command, ...] }, or {}
+  # when no boundary is found -- which every caller must refuse. Shared by three
+  # readers; the declaration guard keeps its own independent awk reading.
   SHARD_OPEN = /\A  cat <<'POLICY_CHECKS_(\d+)'\z/
   def gate_shards(manifest_path)
     return {} unless File.file?(manifest_path)
@@ -584,18 +444,14 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
       current = match[1]
       shards[current] = []
     end
-    # A heredoc whose terminator never arrived was not read, it ran off the end
-    # of the file. Returning its accumulated lines would be a partition invented
-    # by the parser, so the whole reading is refused instead.
+    # An unterminated heredoc ran off the end of the file; refuse the whole reading.
     return {} if current
 
     shards
   end
 
-  # The shard identifiers tests/validate-policy.sh dispatches, read from the
-  # single-quoted POLICY_SHARD_IDS assignment. Separate from the heredocs on
-  # purpose: a shard whose list exists but which nothing cats is a shard that
-  # never runs, and comparing these two readings is what says so.
+  # The dispatched shard ids (POLICY_SHARD_IDS), compared with the heredocs so an
+  # uncatted shard is caught.
   def gate_shard_ids(manifest_path)
     return [] unless File.file?(manifest_path)
 
@@ -610,19 +466,10 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
   end
 end
 
-# The mechanical scaffolding every check script in this suite used to retype:
-# where the repository root is, how one failure joins the accumulator, how a
-# subprocess's output is quoted in a diagnostic, and how the run reports itself.
-#
-# It lives beside PolicySupport rather than in a file of its own because the
-# reduced fixture sandbox in tests/policy_mutation_support.rb copies a stated
-# list of paths. policy_support.rb is already on that list, so a script that
-# starts requiring this module keeps working inside the sandbox; a second
-# support file would fail there for a reason unrelated to the mutation the
-# sandbox exists to check.
+# Scaffolding every check script used to retype. Lives beside PolicySupport
+# because the mutation sandbox already copies this file.
 module TestScaffold
-  # Resolved from this file, so a check under tests/, tests/ci/ or tests/mac/
-  # all name the same root without each restating its own depth.
+  # Resolved from this file, so tests/, tests/ci/ and tests/mac/ share one root.
   ROOT = File.expand_path("..", __dir__)
 
   module_function
@@ -631,35 +478,20 @@ module TestScaffold
     failures << message unless condition
   end
 
-  # A cardinality floor under a subject list a check derives from the tree.
-  # Every property asserted over a derived list is vacuous once that list goes
-  # quiet -- a renamed directory, a glob whose pattern stopped matching, an
-  # extension the filter no longer recognises -- and a vacuous pass is
-  # indistinguishable from compliance. A floor, not `!empty?`: the list that
-  # should hold a hundred files and holds one is the failure that actually
-  # happens.
-  #
-  # +minimum+ is the caller's judgement and belongs beside a comment saying what
-  # it was sized against. It is a floor, so only a deletion can breach it;
-  # sizing it well under today's count is what keeps a legitimate removal from
-  # failing a guard that exists to catch a collapse.
+  # A cardinality floor under a derived subject list, so a collapsed list cannot
+  # pass vacuously. Size +minimum+ well under today's count and say why beside it.
   def check_floor(failures, count, minimum, subject)
     check(failures, count >= minimum,
           "#{subject}: #{count} found, expected at least #{minimum}; the subject list has " \
           "narrowed and every property asserted over it now passes vacuously")
   end
 
-  # The tail of a subprocess's output as one grep-able line, blank lines
-  # dropped. The copies of this picked 8, 10 or 12 lines for no recorded
-  # reason; a caller that needs a particular depth still says so.
+  # The tail of a subprocess's output as one grep-able line, blanks dropped.
   def failure_tail(output, lines = 10)
     output.lines.map(&:strip).reject(&:empty?).last(lines).join(" | ")
   end
 
-  # The epilogue. +subject+ is the line a passing run prints; +summary+ is the
-  # counted noun a failing run aborts with. Both are stated by the caller rather
-  # than derived, because what a check proves is the one part of this that is
-  # never mechanical.
+  # +subject+ is what a passing run prints; +summary+ the noun a failure aborts with.
   def report(failures, subject, summary)
     if failures.empty?
       puts subject
@@ -670,46 +502,16 @@ module TestScaffold
     abort "#{failures.length} #{summary}"
   end
 
-  # Judges one contract mutation case: the contract had to refuse, and it had to
-  # refuse for the reason the row named.
-  #
-  # +prefix+ is the diagnostic prefix the program under test puts in front of
-  # every refusal it authors -- "Komga contract failed: " -- and +expects+ has to
-  # appear on a line carrying it. Thirteen contract tests carried their own copy
-  # of this under seven distinct bodies, and nine of those matched +expects+
-  # anywhere in the combined output, which a Ruby backtrace, a shell diagnostic
-  # or the fragment merely echoed back in an argument all satisfy as well as a
-  # refusal does (#352). What the row now proves is provenance: the contract's
-  # own error path printed this, and nothing else can stand in for it.
-  #
-  # The fragment is looked for anywhere on that line rather than immediately
-  # after the prefix, because many of these messages name their subject first --
-  # "Seerr contract failed: viewer does not hold exactly REQUEST" -- and a row
-  # that pinned the subject too would go quiet the day the subject was
-  # parameterised differently.
-  #
-  # stdout and stderr are split before they are joined, so a stdout line with no
-  # trailing newline cannot glue itself to the front of the refusal and hide the
-  # prefix.
-  #
-  # +expects_crash+ is the one deliberate exception: a row whose refusal is an
-  # uncaught exception the program is not expected to dress up, so it claims no
-  # prefix and has to be asked for by name. It still requires the refusal to
-  # happen and to name every fragment, which is more than a prefix-less
-  # +expects+ ever asked.
-  #
-  # Returns a fresh list rather than appending to a caller's accumulator. The two
-  # signatures that shared this name -- judge(failures, label, ...) and
-  # judge(label, ...) -- differed in exactly that, and nothing but reading the
-  # body told them apart.
+  # Judges one contract mutation case: it must refuse, on a line carrying
+  # +prefix+ and naming +expects+ (provenance, #352). stdout and stderr are split
+  # before joining so an unterminated line cannot hide the prefix.
+  # +expects_crash+ is for a row whose refusal is an uncaught exception.
+  # Returns a fresh list rather than appending to an accumulator.
   def judge(label, expects, stdout, stderr, status, prefix:, expects_crash: nil)
     output = stdout + stderr
     failures = []
     if expects_crash
-      # A run that succeeded has already told the whole story, and the fragments
-      # it did not name are that story's consequence rather than a second
-      # finding. The three copies this replaces reported both; no mutation had
-      # reached the case until Beszel's clock row moved here.
+      # A successful run is the whole story; missing fragments are its consequence.
       if status.success?
         failures << "#{label}: accepted what it must refuse"
         return failures

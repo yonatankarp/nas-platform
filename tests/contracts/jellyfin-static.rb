@@ -1,18 +1,6 @@
-# The static half of the Jellyfin service contract: the properties of the
-# repository that can be judged without a running Jellyfin. It was 354 lines
-# inside a <<'RUBY' heredoc in tests/contracts/jellyfin.sh until issue #147
-# gave it a file, so that sh -n, a linter and tests/jellyfin_contract_test.rb
-# can all reach it.
-#
-# Invoked as `ruby -ryaml -rdigest jellyfin-static.rb <root> <platform>`. Both
-# preloads are load-bearing and moved verbatim from the heredoc: this program
-# calls YAML.safe_load_file and Digest::SHA256 without requiring either, so run
-# bare it raises NameError on the first repository it looks at.
-#
-# ARGV[0] is the tree to INSPECT, which is not the checkout this file lives in.
-# Every path below is resolved from it, the read of the runtime half's own
-# source included -- tests/contracts/jellyfin.sh passes PLATFORM_CONTRACT_REPO_DIR
-# through, and a caller may point that at a fixture repository.
+# Static half of the Jellyfin service contract, judged without a running Jellyfin (#147).
+# Invoked as `ruby -ryaml -rdigest jellyfin-static.rb <root> <platform>`; both preloads
+# are required. ARGV[0] is the tree to INSPECT, the runtime half's source included.
 root, platform = ARGV
 compose_path = File.join(root, "services", "jellyfin", "compose.yml")
 compose = YAML.safe_load_file(compose_path, aliases: true)
@@ -58,17 +46,14 @@ refuse("logging policy differs") unless service.fetch("logging") == {
   "driver" => "json-file", "options" => { "max-size" => "10m", "max-file" => "3" }
 }
 
-# The NAS-only capability contract. These three keys are the production
-# definition and must never be weakened to make another platform work.
+# The NAS-only capability contract; never weaken it to suit another platform.
 refuse("NAS render device mapping is absent") unless
   service.fetch("devices") == ["/dev/dri/renderD128:/dev/dri/renderD128"]
 refuse("NAS render device group access is absent") unless service.fetch("group_add") == ["0"]
 refuse("NAS stop grace period differs") unless service.fetch("stop_grace_period") == "1m"
 refuse("health check is absent") unless service.fetch("healthcheck").fetch("test").is_a?(Array)
 
-# Every platform that lacks /dev/dri must remove the device and the root group
-# explicitly. Compose appends sequences, so a bare empty list would silently
-# keep the NAS device: the !override tag is what actually replaces it.
+# Compose appends sequences, so only !override actually removes the NAS device.
 override_path = File.join(root, "services", "jellyfin", "compose.#{platform}.yml")
 if platform == "nas"
   refuse("the NAS runs the production definition unmodified") if File.exist?(override_path)
@@ -108,25 +93,16 @@ refuse("Collections must remain application-managed") if
 refuse("managed library must not write metadata into read-only media") unless
   defaults.fetch("jellyfin_library_options").fetch("SaveLocalMetadata") == false
 
-# The role is asserted as parsed task structure rather than as source text. A
-# task name that also occurs in a comment or a when: expression is not a task,
-# and a byte offset into concatenated files is not a task position, so both the
-# presence and the ordering checks below were previously approximations.
 def load_tasks(path)
   File.file?(path) ? Array(YAML.safe_load_file(path, aliases: true)) : []
 end
 
-# block/rescue/always nest their tasks one level deeper. primary_identity.yml is
-# entirely a block/rescue pair, so flattening is required rather than optional:
-# a plain load would silently hide every task the recovery path declares.
+# primary_identity.yml is a block/rescue pair, so flattening is required.
 require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
 include PolicySupport
 
-# The absence invariants further down must stay scoped to a whole file: a
-# forbidden primitive introduced in some task other than the one an assertion
-# names has to trip them too. Harvesting every string in the parsed tree keeps
-# that whole-file reach while dropping the source-text false positives, since a
-# comment that merely mentions the primitive is no longer a violation.
+# Absence invariants harvest every parsed string of a whole file, so comments no
+# longer count but any task introducing the primitive does.
 def deep_strings(node)
   case node
   when Hash then node.flat_map { |key, value| [key.to_s] + deep_strings(value) }
@@ -143,19 +119,8 @@ settings_top = load_tasks(File.join(tasks_dir, "settings.yml"))
 settings_path = File.join(tasks_dir, "settings.yml")
 settings = File.file?(settings_path) ? File.read(settings_path) : ""
 inventory_top = load_tasks(File.join(tasks_dir, "library_inventory.yml"))
-# The concatenation order mirrors the order main.yml declares its includes in.
-# It is deliberately not execution order: main.yml includes settings.yml from
-# the middle of its own body, so resolving includes would interleave the
-# settings phases with the identity and library phases that the preflight
-# before mutation ordering assertion exists to keep apart.
-#
-# main.yml is read through static_role_tasks, which splices a statically
-# imported stage file in where its import stands and leaves a dynamic include
-# alone -- exactly what Ansible does, and exactly the distinction the paragraph
-# above depends on. Reading the index alone would leave role_tasks holding its
-# fifteen entries plus the four sibling files, and none of the tasks the seven
-# stage files carry, so the required-task and ordering assertions below would be
-# checking the wrong list.
+# Concatenated in main.yml's declaration order, not execution order, via
+# static_role_tasks (imports spliced in, dynamic includes left alone).
 role_tasks = flatten_tasks(PolicySupport.static_role_tasks(
   File.join(tasks_dir, "main.yml"), aliases: true
 )) +
@@ -231,8 +196,7 @@ refuse("current user update API is absent") unless
   role_urls.any? { |url| url.include?("/Users?userId=") }
 refuse("current user image API is absent") unless
   role_urls.any? { |url| url.include?("/UserImage?userId=") }
-# Both halves must belong to the same request. Asserting the path and the verb
-# independently over the source accepted a DELETE declared by any other task.
+# Both halves must belong to the same request.
 extra_path_removal = role_task.call("Remove extra paths from Jellyfin managed libraries")
   .fetch("ansible.builtin.uri", {})
 refuse("current path removal API is absent") unless
@@ -271,12 +235,8 @@ expected_nas_encoding = {
   "HardwareDecodingCodecs" => %w[h264 hevc mpeg2video vc1 vp8 vp9],
   "EnableDecodingColorDepth10Hevc" => true,
   "EnableDecodingColorDepth10Vp9" => true,
-  # Hardware encode is off on this host and that is a hardware verdict, not a
-  # preference: the iGPU exposes encode only as VAEntrypointEncSliceLP, and with
-  # no HuC firmware the driver offers CQP as its only rate-control mode. Jellyfin
-  # emits bitrate-based rate control exclusively, so every hardware encoder fails
-  # to open. AllowHevcEncoding follows it off because it now selects libx265 over
-  # libx264 rather than selecting a hardware encoder. Measured 2026-09-10.
+  # Hardware encode is a hardware verdict: the driver offers only CQP and Jellyfin emits
+  # bitrate control, so every hardware encoder fails to open. HEVC encode would be libx265.
   "EnableHardwareEncoding" => false,
   "AllowHevcEncoding" => false,
   "AllowAv1Encoding" => false,
@@ -330,22 +290,9 @@ refuse("managed plugin package identities differ") unless defaults["jellyfin_plu
   refuse("missing #{name}") unless role_names.include?(name)
 end
 
-# Where the QSV proof runs, and that it can fail (#535).
-#
-# The probe decodes one frame through the iHD driver inside the container. It
-# proves the hardware path, which is a verification concern and not a converge
-# step: nothing the role reconciles depends on it, and jellyfin precedes seerr,
-# immich, paperless_ngx and nextcloud in site.yml, so a fatal probe in the
-# converge path would strand four stacks on a fault that harms none of them.
-#
-# Both halves of the gate are load-bearing, and neither is sufficient alone.
-# `never` keeps the include out of a bare converge; it does NOT keep it out of
-# `site.yml --tags jellyfin`, because a `never` task runs whenever any tag it
-# carries is requested explicitly and the role-level `jellyfin` tag is one of
-# them. The ansible_run_tags condition is what closes that, and it is also what
-# keeps a fatal probe out of the --check --diff review the platform requires
-# before applying. roles/paperless_ngx/tasks/mail_state.yml pins the same pair
-# for the same reason.
+# Where the QSV proof runs, and that it can fail (#535). It is a verification concern:
+# `never` keeps it out of a bare converge, and the ansible_run_tags condition out of
+# `--tags jellyfin` and --check, where a fatal probe would strand later stacks.
 qsv_include = lambda do |task|
   value = task["ansible.builtin.include_tasks"]
   value == "qsv_probe.yml" || (value.is_a?(Hash) && value["file"] == "qsv_probe.yml")
@@ -366,13 +313,8 @@ refuse("QSV proof is not withheld from the converge by run tag") unless
   Array(qsv_include_task["when"]).any? do |condition|
     condition.to_s.include?("'platform_verify_jellyfin' in ansible_run_tags")
   end
-# The probe's exit code is the whole proof. docker_compose_v2_exec sets check_rc
-# only when `detach` is true, so without this failed_when a render device the
-# container could not open, an iHD driver that stopped loading, or a QSV stack an
-# image bump broke all exit nonzero and report success (#521). `default(1)` and
-# not `default(0)`: failed_when replaces the module's own verdict, so a module
-# that refused before running anything registers no rc at all, and defaulting
-# that to zero would report the refusal as a passing probe.
+# docker_compose_v2_exec checks rc only when detached (#521); default(1) because a module
+# that refused before running registers no rc.
 qsv_probe_task = role_task.call("Probe the Jellyfin QSV hardware device")
 refuse("QSV proof tolerates a nonzero exit") unless
   Array(qsv_probe_task["failed_when"]).join(" ")
@@ -383,8 +325,7 @@ refuse("encoding update does not preserve unrelated fields") unless
   settings_task.call("Resolve Jellyfin encoding repair requirement")
     .dig("ansible.builtin.set_fact", "jellyfin_encoding_reconciled_document").to_s
     .include?("jellyfin_encoding_before.json | combine(jellyfin_encoding_policy)")
-# A folded URL expression keeps its line breaks, so both this absence check and
-# the enable-endpoint check below need the multiline flag to span one URL.
+# A folded URL keeps its line breaks, hence the multiline flag.
 refuse("plugin install must not supply a version") if
   settings_strings.any? { |value| value.match?(%r{Packages/Installed/.*[?&]version=}m) }
 plugin_install_url = settings_task
@@ -411,10 +352,7 @@ refuse("integration contract does not isolate synthetic Open Subtitles credentia
     contract.include?("if VALIDATE_EXTERNAL_OPENSUBTITLES\n    _response, validation = request(")
 refuse("runtime Open Subtitles identity verification does not normalize GUID representation") unless
   contract.include?('opensubtitles.fetch("Id").delete("-").casecmp?(OPENSUBTITLES_ID.delete("-"))')
-# Deliberately a source-text count. no_log is a per-task directive with no
-# runtime observable in a static contract, and counting parsed keys would not
-# distinguish the credential-carrying tasks from the rest, so the cheap
-# redaction floor stays as it is.
+# Deliberately a source-text count: no_log has no parsed observable worth more here.
 refuse("Open Subtitles secret operations are not suppressed") unless
   settings.scan(/no_log: true/).length >= 5
 refuse("seed does not verify that owned plugin and encoding policy survived") unless

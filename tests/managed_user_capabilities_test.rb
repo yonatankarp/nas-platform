@@ -141,11 +141,8 @@ EXPECTED_SERVICES = {
       "reconcile" => "api/v1/user/{id}/settings/permissions"
     }
   ),
-  # Declared in the environment and consumed narrowly, but with a real reconcile
-  # interface: occ can reset the password of an account that already exists.
-  # Conditional because
-  # roles/nextcloud probes first -- a reset re-hashes the password and drops the
-  # sessions derived from it, and the poller converges every five minutes.
+  # Environment-declared, but occ can reset an existing password; conditional
+  # because a reset drops sessions and the poller converges every five minutes.
   "nextcloud" => MULTI_USER_DEFAULTS.merge(
     "mode" => "declarative_environment",
     "interfaces" => {
@@ -155,8 +152,7 @@ EXPECTED_SERVICES = {
       "reconcile" => "occ user:resetpassword, on an authentication failure only"
     }
   ),
-  # One administrator created through the API on the first converge, and never
-  # reconciled: the reset path needs the session a failed sign-in means we lack.
+  # Created through the API on first converge and never reconciled.
   "karakeep" => MULTI_USER_DEFAULTS.merge(
     "mode" => "api",
     "interfaces" => {
@@ -166,12 +162,7 @@ EXPECTED_SERVICES = {
       "reconcile" => "none; a password that no longer signs in fails the converge"
     }
   ),
-  # The one row that does not take MULTI_USER_DEFAULTS' company on `mode`, and
-  # the deviation is the point: this platform declares no Vaultwarden identity,
-  # so `user_owned` is a new mode value rather than a reuse of
-  # declarative_environment, which would claim an identity is declared in the
-  # environment when only the door policy is.
-  # config/managed-user-capabilities.yml carries the argument.
+  # `user_owned`: no Vaultwarden identity is declared, only the door policy.
   "vaultwarden" => MULTI_USER_DEFAULTS.merge(
     "mode" => "user_owned",
     "interfaces" => {
@@ -183,9 +174,7 @@ EXPECTED_SERVICES = {
   )
 }.freeze
 
-# The success line counts the contracts it just proved rather than restating a
-# number a promotion has to remember to bump. Spelled out because the sentence is
-# read by a person; the arithmetic is not theirs to do.
+# Counts the contracts just proved rather than a number a promotion must bump.
 CONTRACT_COUNT_WORDS = %w[
   zero one two three four five six seven eight nine ten eleven twelve thirteen
   fourteen fifteen sixteen seventeen eighteen nineteen twenty

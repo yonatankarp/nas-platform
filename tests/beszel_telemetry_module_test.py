@@ -107,9 +107,7 @@ def test_fast_empty_poll_reaches_next_sample():
     assert_true(not evidence["missing_categories"], "fast empty responses stopped before next sample")
     assert_true(60 <= monotonic[0] <= 90, "poll did not use the real configured window")
     assert_true(all(0 < timeout <= 3 for _, timeout in calls), "request timeout was not capped")
-    # The passing return carries the key too. roles/beszel reads it on every
-    # converge, so a return that omitted it would fail that set_fact on the run
-    # where nothing was missing -- after every assertion before it had passed.
+    # roles/beszel reads the key on every converge, the passing one included.
     assert_true(evidence["transient_failures"] == 0, "a poll that never failed reported failures")
 
 
@@ -137,22 +135,15 @@ def test_slow_poll_stays_within_deadline():
     assert_true(evidence["missing_categories"], "unreachable collections unexpectedly verified")
     assert_true(monotonic[0] <= 0.05, "slow requests exceeded the global deadline")
     assert_true(all(timeout <= 0.02 for timeout in timeouts), "request exceeded configured cap")
-    # The distinction the count exists for. Every request failed, so the records
-    # stayed None and missing_categories reads exactly as it would for an agent
-    # that collected nothing -- which is a different fault with a different fix.
+    # Every request failed, so records are None: a different fault from an agent
+    # that collected nothing.
     assert_true(evidence["transient_failures"] == len(timeouts),
                 f"every request failed and {evidence['transient_failures']} were counted "
                 f"of {len(timeouts)}")
 
 
 def test_transients_before_a_reading_are_counted_on_the_passing_return():
-    """The return that succeeds after failing, which neither case above reaches.
-
-    The two above return through a deadline. This one returns through `not
-    missing_categories`, where the count is just as load-bearing: the hub was
-    briefly unreadable and the converge still passed, so the number is the only
-    record that anything went wrong at all.
-    """
+    """Failures before a successful reading are still counted on the passing return."""
     monotonic = [0.0]
     attempts = []
     system, containers = records(NOW)

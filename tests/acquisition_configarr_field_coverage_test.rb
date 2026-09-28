@@ -1,22 +1,9 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Every owned Configarr field must be visible in the owned projection.
-#
-# Drift is detected by comparing projections, so a field the projection drops is
-# a field whose drift is silently accepted. The reconciliation fixture proved
-# this per field with a full Ansible round trip, which costs about twenty-two
-# seconds each and proves the same pure property every time: break one owned
-# field and the projection must change. That property is checked here directly
-# against the real filter, for every field at once, in about a second. The
-# fixture keeps one round trip per behavioural class, which is the part only a
-# real play can show — that a difference reaches Configarr as exactly one write
-# and is recorded.
-#
-# The mutation table is the one the fixture uses. Two tables would let this file
-# report coverage of fields the contract does not actually own.
-#
-# Run with --self-test to prove the check detects its own regression.
+# Every owned Configarr field must change the owned projection; a dropped field
+# is drift silently accepted. Uses the reconciliation fixture's mutation table.
+# --self-test proves the check detects its own regression.
 
 require "digest/sha2"
 require "json"
@@ -44,8 +31,7 @@ def ansible_python
   path
 end
 
-# Projects every payload in one interpreter: starting Python once per field
-# would cost more than the round trips this file replaces.
+# One interpreter for every payload: one per field would be slower than the play.
 PROJECTION_PROGRAM = <<~PYTHON
   import hashlib, importlib.util, json, pathlib, sys
 
@@ -106,8 +92,6 @@ mutations = configarr_owned_field_mutations
 abort "the Configarr mutation table is empty" if mutations.empty?
 
 if ARGV.include?("--self-test")
-  # Plant the regression this check exists to catch: a field that the projection
-  # drops, so breaking it looks identical to leaving it alone.
   planted = mutations.merge(
     "planted.invisible field" => lambda do |state|
       state.dig("configarr", "radarr", "qualityprofile").first["unprojectedField"] = "drifted"

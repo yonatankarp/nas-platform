@@ -12,42 +12,22 @@ x-healthcheck-defaults: &healthcheck-defaults
   start_period: 60s
 
 services:
-  # Bindery is the acquisition manager for ebooks and audiobooks. Unlike
-  # Pinchflat and Kapowarr it is not self-contained: it stores a Prowlarr
-  # instance and a SABnzbd download client, and it resolves the host in both
-  # URLs at write time, so it must be able to reach them by name. That is why
-  # it joins media-control, and why site.yml converges it after arr and
-  # downloaders.
+  # Ebook/audiobook acquisition. It resolves Prowlarr and SABnzbd by name at write time,
+  # so it joins media-control and converges after arr and downloaders.
   bindery:
     container_name: bindery
     image: ghcr.io/vavallee/bindery:v1.38.0@sha256:6831d81f588d990639c8cf2c942397894072a6c53632453b8435f9a76a622179
     cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
-    # One library scan plus one import at a time; the metadata providers are
-    # network-bound rather than CPU-bound, and SABnzbd holds the download
-    # budget separately.
     cpus: 1.0
     labels:
       dev.dozzle.name: bindery
-    # The runtime stage is distroless: no shell, no entrypoint script, no root
-    # phase and no gosu, so the container cannot remap or chown anything. The
-    # platform identity can only arrive through `user:`. BINDERY_PUID and
-    # BINDERY_PGID are not a remap — the binary compares them against its own
-    # uid and gid at startup and exits 1 on a mismatch, which turns a dropped
-    # `user:` line into a loud boot failure instead of files silently written
-    # as the image's uid 65532.
+    # Distroless: no shell, root phase or gosu, so identity arrives only through `user:`.
+    # BINDERY_PUID/PGID are checked at startup (exit 1 on mismatch), not remapped.
     user: "${NAS_UID:?}:${NAS_GID:?}"
     ports:
       - "8787:8787"
-    # Each library arrives with its own staging directory inside one bind mount
-    # of their common host share, which is what makes an import a rename:
-    # rename(2) refuses to cross a mount boundary even when both sides are the
-    # same filesystem, so a separate mount per directory made every import a
-    # full byte copy plus unlink and put hardlinking out of reach. The container
-    # paths are unchanged by that and stay the absolute paths SABnzbd uses for
-    # the same host directories — SABnzbd reports a completed download by its
-    # own container path and Bindery reads that path straight off the
-    # filesystem, so an import needs no path remap. Radarr and Sonarr mount
-    # ${MEDIA_ROOT:?}/Media the same way and for the same reason.
+    # One bind mount of the common share so an import is a rename (rename(2) cannot cross
+    # mounts); container paths match SABnzbd's, so no path remap is needed.
     volumes:
       - ${BINDERY_CONFIG_PATH:?}:/config
       - ${BINDERY_BOOKS_PATH:?}:/data/books
@@ -56,43 +36,24 @@ services:
       TZ: ${TZ:?}
       BINDERY_PUID: ${NAS_UID:?}
       BINDERY_PGID: ${NAS_GID:?}
-      # Seeds the persisted API key on first boot only, which is what lets the
-      # platform close the anonymous first-run setup window in the same
-      # convergence that starts the container.
+      # Seeds the API key on first boot, closing the anonymous setup window.
       BINDERY_API_KEY: ${BINDERY_API_KEY:?}
-      # Omitting either audiobook variable makes it fall back to its ebook
-      # equivalent and silently collapses the two libraries into one.
+      # Omitting either audiobook variable silently merges the two libraries.
       BINDERY_LIBRARY_DIR: /data/books/Ebooks
       BINDERY_AUDIOBOOK_DIR: /data/media/Audiobooks
       BINDERY_DOWNLOAD_DIR: /data/books/.acquisition/usenet/ebooks
       BINDERY_AUDIOBOOK_DOWNLOAD_DIR: /data/media/.acquisition/usenet/audiobooks
-      # Telemetry is on by default and pings daily. The environment switch takes
-      # effect before the first ping in a way the settings row cannot; the role
-      # reconciles telemetry.enabled=false as well, for durability.
+      # Takes effect before the first daily ping; the role also reconciles the setting.
       BINDERY_TELEMETRY_DISABLED: "true"
-      # BINDERY_URL_BASE and BINDERY_TRUSTED_PROXY are deliberately left unset.
-      # An over-broad trusted-proxy entry disables the per-IP login rate limiter,
-      # and this platform publishes no reverse proxy in front of the service.
+      # URL_BASE and TRUSTED_PROXY unset: an over-broad proxy entry disables login rate limits.
     healthcheck:
-      # The image is distroless: /bin, /sbin, /usr/bin and /usr/sbin all exist
-      # and are all empty, and the only executable is /bindery. A CMD-SHELL
-      # probe cannot run at all, so the probe is the binary's own subcommand,
-      # which requests the unauthenticated /api/v1/health and exits 0 on 200.
+      # Distroless, so the probe is the binary's own subcommand (unauthenticated /api/v1/health).
       <<: *healthcheck-defaults
       test: [CMD, /bindery, healthcheck]
-    # There is no root phase to drop from and no gosu re-exec to preserve: the
-    # distroless runtime starts directly as the platform identity `user:` gives
-    # it, so nothing the container does can want a setuid binary.
     security_opt:
       - no-new-privileges:true
-    # /config holds the SQLite database of the whole book library and is
-    # recovery: critical. 10s is Docker's own default, now stated rather than
-    # inherited, and it is the window the upgrade lane already holds Bindery to:
-    # that lane ends by stopping the head container and refuses anything but
-    # exit 0 or 143 (#781), and it passed on the v1.37.0 bump (#791). The same
-    # value and reasoning as Kapowarr's, the other SQLite upgrade subject
-    # (#696). SQLite's journal keeps the store crash-safe if a stop is ever cut
-    # short, so a kill costs in-flight work rather than the database.
+    # Stop grace: Docker's default, stated; the upgrade lane requires exit 0/143 inside it
+    # (#781, #696). SQLite stays crash-safe if a stop is cut short.
     stop_grace_period: 10s
     restart: unless-stopped
     logging: *default-logging

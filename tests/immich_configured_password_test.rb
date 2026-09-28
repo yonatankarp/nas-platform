@@ -17,18 +17,8 @@ TASK_FILE = File.join(ROOT, "roles", "immich", "tasks", "configured_password.yml
 TOKEN = "configured-password-fixture-token"
 MUTATION_METHODS = %w[POST PUT PATCH DELETE].freeze
 FORBIDDEN_BODY_KEYS = %w[password isAdmin].freeze
-# How long one ansible-playbook boot is given before it is called hung. This is
-# not a performance assertion: every behavioural property below has its own
-# check. This check boots ansible sixteen times, serially, and forks no case
-# pool of its own, but tests/validate-policy.sh runs its own checks in a pool of
-# `nproc` workers, so on a four-core runner three other checks are resident
-# alongside those boots, several of which fork case pools of the same width, and
-# a play that takes two seconds unloaded takes far longer. A literal 30 was the
-# tipping point that reported the gate's own contention as a behavioural failure
-# in tests/audiobookshelf_initial_scan_behavior_test.rb (#462); 120 is what
-# tests/media_acquisition_reconciliation_support.rb and that sibling both budget
-# for the same operation, and their comments argue the same runner. This was the
-# last copy carrying a literal. Overridable for anyone who wants it strict.
+# A hang bound, not a performance assertion: the gate's pool runs checks
+# concurrently, so boots are slow under load (#462). Overridable.
 PLAYBOOK_TIMEOUT_SECONDS = Float(ENV.fetch("IMMICH_PLAYBOOK_TIMEOUT", "120"))
 
 class FixtureTimeout < StandardError; end
@@ -96,38 +86,9 @@ def bounded_capture(stream, limit_bytes)
   bytes
 end
 
-# Every join on the timeout path is bounded, and must stay bounded. A reader
-# thread returns at EOF, EOF needs every write end of the pipe closed, and
-# terminate_process_group only reaches the process *group* -- anything that left
-# it (a detached ansible-connection, any grandchild that called setsid) survives
-# holding the pipe, so an unbounded join turns this check into the hang it exists
-# to detect. The _run docstring in scripts/production_auto_deploy.py records the
-# same lesson for the poller. The bound costs nothing: the statement after the
-# joins raises FixtureTimeout, which carries only the budget, so the output those
-# joins would wait for is discarded either way.
-#
-# The two report_on_exception lines belong to that same path. When a bounded join
-# returns nil the reader is still parked in IO#read, and popen3's block form
-# closes the pipe in its own ensure on the way out, so the thread dies with
-# "stream closed in another thread (IOError)" and prints a header and a stack
-# trace per reader into a gate whose failures are read by substring. Silencing
-# the report hides nothing: those values are never consumed on the timeout path,
-# and Thread#value still re-raises a thread's exception on the success path where
-# they are.
-#
-# This copy is the one the three siblings were reconciled to in #470, after they
-# had drifted to unbounded joins here. Four copies agreeing is what makes that
-# reconciliation checkable, so copy from this one rather than reverting it.
-# Canonical among those four only. execute_provider in
-# tests/mac/pin-protected-input.rb is the same lineage -- built on a
-# terminate_group byte-identical to terminate_process_group above -- but a
-# different function, and differently hardened rather than better: it bounds its
-# reader and writer joins in its own ensure and forces EOF itself instead of
-# leaving that to popen3's, while it carried the unbounded wait_thread.join this
-# file never had, until #470 bounded it there too. Its bounded_read is where the
-# capture limit above came from (#474); the two answer an overrun differently,
-# and the comment on the success path below says why this one raises where that
-# one returns a flag.
+# Every join on the timeout path is bounded: a grandchild that left the process
+# group can hold the pipe open forever. report_on_exception is off because the
+# parked readers die with IOError when popen3 closes the pipe (#470).
 def capture3_with_timeout(environment, *command, chdir:, timeout_seconds:,
                           capture_limit_bytes: CAPTURE_LIMIT_BYTES)
   Open3.popen3(environment, *command, chdir: chdir, pgroup: true) do |stdin, stdout, stderr, wait_thread|
@@ -197,35 +158,15 @@ def run_configured_password(port, phases, *arguments,
   end
 end
 
-# The fixture answers a status and a JSON body; the shared fixture server puts
-# them on the wire.
 def send_response(status, response)
   [status, JSON.generate(response)]
 end
 
-# How long the blocked fixture below may take to unwind after it is told to
-# stop. It is told to stop by a pipe it is already selecting on, so the honest
-# figure is milliseconds; five seconds is slack for a contended runner. A
-# fixture that outlasts it is reported as a fault rather than killed quietly,
-# because the whole claim of the refusal case is that the serve loop leaves
-# through its own break.
+# Unwind bound for the blocked fixture; outlasting it is a fault, not a kill.
 BLOCKED_JOIN_SECONDS = 5
 
-# A fixture that reads the request and then answers nothing, so a play cannot
-# finish however fast this machine boots ansible. It is what makes the refusal
-# case at the foot of this file deterministic rather than a bet on a boot
-# outlasting its budget, which is what #463 built the Audiobookshelf equivalent
-# for. The wait is on the shutdown pipe rather than a sleep, so the loop still
-# leaves through its own break.
-#
-# It cannot go through with_http_fixture, and that is why the accept loop is
-# duplicated here: that helper always writes a response to the request it read,
-# and a write to a socket whose peer has just been SIGKILLed raises
-# Errno::EPIPE from the fixture thread on the second or third write, which is a
-# flake rather than a result. Answering nothing means never writing.
-#
-# It serves no users, so the user list with_immich_users was handed reaches the
-# caller's block untouched and unread. Nothing on this path inspects it.
+# Reads the request and answers nothing, so the refusal case is deterministic.
+# Not with_http_fixture: writing to a SIGKILLed peer raises EPIPE and flakes.
 def with_blocked_immich_fixture
   server = TCPServer.new("127.0.0.1", 0)
   shutdown_reader, shutdown_writer = IO.pipe
@@ -246,9 +187,7 @@ def with_blocked_immich_fixture
         socket.close unless socket.closed?
       end
     end
-  # A peer signalled mid-request resets or closes the connection under the read
-  # above. That is the case under test doing its job, not a fixture fault, and
-  # neither reset nor broken pipe is an IOError.
+  # A peer signalled mid-request is the case under test, not a fixture fault.
   rescue IOError, Errno::EBADF, Errno::ECONNRESET, Errno::EPIPE
     nil
   rescue StandardError => caught
@@ -539,25 +478,9 @@ with_immich_users(complete_users) do |port, requests, _users|
   check_no_mutation(failures, requests, "verification mutated shouldChangePassword=true")
 end
 
-# The refusal path of capture3_with_timeout above, proved the way the three
-# sibling copies prove theirs. What this covers is the wrapper -- the process
-# group is signalled, the run is abandoned, and the budget is named in the
-# diagnostic with the unit it deserves -- and not the detection of a hung HTTP
-# call: one second is shorter than an ansible boot on the runners this gate
-# uses, so the play is usually refused before it reaches the fixture at all.
-# The blocked fixture is what keeps the case deterministic on a machine fast
-# enough to boot inside the budget.
-#
-# The budget is one second and never the 120-second default. A
-# deliberate-failure case left on a default budget is precisely CLAUDE.md's
-# fourth static-budget occurrence, where a wrapper that stopped refusing sat on
-# READY_TIMEOUT_SECONDS for 180 seconds twice and took one check from 26s to
-# 368s. There is no retry and no fallback here: if the refusal does not arrive,
-# the case records that and returns.
-#
-# The user list is inert here -- a blocked fixture answers nothing, so it serves
-# nobody -- and complete_users is passed only to keep one entry point for every
-# fixture in this file.
+# The refusal path of capture3_with_timeout: the process group is signalled and
+# the budget named. One second, never the default, so a wrapper that stopped
+# refusing cannot sit on a long budget.
 with_immich_users(complete_users, blocked: true) do |port, _requests, _users|
   run_configured_password(port, ["reconcile"], timeout_seconds: 1)
   failures << "blocked configured-password fixture did not time out diagnostically"

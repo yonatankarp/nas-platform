@@ -6,27 +6,12 @@
   vars:
     deployment_target_service: vaultwarden
     deployment_target_require_current_release: true
-    # The one directory this role touches beyond the five paths
-    # deployment_target_service already derives. Ansible creates nothing under
-    # it; the container owns everything inside.
+    # The one extra directory; the container owns everything inside.
     deployment_target_extra_paths:
       - "{{ vaultwarden_data_host_path }}"
 
-# THE ORIGIN, AND WHY A BARE ADDRESS IS REFUSED RATHER THAN ACCEPTED.
-#
-# DOMAIN is the origin Bitwarden clients and the web vault bind their WebAuthn
-# credentials and their two-factor flows to. It must be the full https:// form
-# with no port, because Tailscale Serve terminates TLS on 443 in front of this
-# stack, and it must be a name: WebAuthn's relying-party identifier is a domain,
-# and a bare IPv4 literal is not one. The breakage is not a refusal at
-# registration time -- it is a security key that enrols and then never
-# authenticates, which reads as a client fault and is configuration.
-#
-# platform_public_host is a LAN address in some environments and 127.0.0.1 in
-# inventory/mac.yml, so this is a value that arrives from the environment and
-# nothing in the tree guarantees. Hence a refusal rather than trust.
-#
-# Every term in the message is defined whether the assertion holds or not.
+# DOMAIN is what WebAuthn and 2FA bind to: https, no port, and a name, since a bare IPv4
+# enrols a key that never authenticates. platform_public_host is not guaranteed a name.
 - name: Require a Vaultwarden origin clients can bind credentials to
   ansible.builtin.assert:
     that:
@@ -50,22 +35,8 @@
     success_msg: >-
       Vaultwarden publishes {{ vaultwarden_domain }}, a named https origin with
       no port.
-  # THE GATE ALONE, AND DELIBERATELY NOT vaultwarden_runtime_env.stat.exists.
-  # This assertion validates a variable, not a file: it touches no Compose
-  # invocation, so a missing runtime .env cannot affect whether it holds, and it
-  # is the one task here that must still refuse a bad DOMAIN on a host that has
-  # never converged.
-  #
-  # It also cannot read that fact yet. The stat that registers it is thirty-odd
-  # lines below, after the template, and Ansible resolves a `when` at the moment
-  # the task runs -- so the term was a forward reference. It short-circuited
-  # while the gate was false and was therefore invisible: dark, this task skips
-  # on the first term and never evaluates the second. With the gate true it
-  # failed the run at the FIRST task of the enabled path, in all four
-  # combinations including a host whose .env was present, because the variable
-  # simply does not exist yet -- `A 'when' expression failed: 'vaultwarden_runtime_env'
-  # is undefined`. Under the five-minute poller that is every five minutes, on
-  # the live NAS, with the repository as the only way in.
+  # The gate alone: vaultwarden_runtime_env is registered below, so referencing it here is
+  # an undefined forward reference once the gate is on.
   when: vaultwarden_deployment_enabled | bool
 
 - name: Render the Vaultwarden environment
@@ -74,38 +45,9 @@
     dest: "{{ platform_runtime_dir }}/services/vaultwarden/.env"
     mode: "0600"
 
-# EVERY COMPOSE INVOCATION BELOW NEEDS THIS FILE, INCLUDING THE TEARDOWN, and
-# under --check the task above did not write it.
-#
-# services/vaultwarden/compose.yml references ${NAS_UID:?} and its siblings, and
-# the `:?` suffix makes Compose refuse rather than default -- which is the whole
-# point of that convention. So `state: absent` cannot parse the project either:
-# a tear-down still has to resolve the document to know what it is tearing down.
-# Measured, both directions: with the file absent, `state: absent` and
-# `state: present` alike fail `Return code 1 is non-zero`, and the daemon's own
-# line is `couldn't find env file: .../runtime/services/vaultwarden/.env`; with
-# it present, both succeed under --check.
-#
-# WHAT THAT BROKE IS THE ONE THING CLAUDE.md TELLS AN OPERATOR TO DO FIRST.
-# `--check --diff` against a host that has not yet converged this release died
-# at this role, on a stack that is gated off and deploys nothing. CI cannot see
-# it: tests/integration_controller.sh runs its --check --diff as phase 3, after
-# two live converges, so the file always exists by the time the review runs.
-#
-# A live run always has the file, because the template above just wrote it, so
-# this fact is transparent there. Absent, it means this platform has never
-# rendered a runtime environment for this service on this host -- so it never
-# deployed the project, and there is nothing to tear down. The one state that
-# reads wrong is a runtime directory deleted out from under running containers,
-# which the report below names rather than silently skipping.
-# AFTER THE TEMPLATE, AND THAT ORDERING IS LOAD-BEARING. On a live first
-# converge of a fresh host the render above has just written the file, so this
-# reads it as present and the deployment proceeds. Moved above the template it
-# would read "absent" on exactly that run and skip the deployment entirely --
-# trading a failure that is loud for a stack that silently never deploys.
-#
-# Which is why the assertion above carries the gate term alone rather than this
-# one: no task may read this fact before this point, and nothing here needs to.
+# Every Compose call below, teardown included, needs the .env (its `${VAR:?}` refuse
+# unset), and --check did not write it. Absent means never deployed here. Must stay after
+# the template, or a first live converge would read "absent" and skip deploying.
 - name: Read whether a Vaultwarden runtime environment exists on this host
   ansible.builtin.stat:
     path: "{{ platform_runtime_dir }}/services/vaultwarden/.env"
@@ -113,83 +55,11 @@
   changed_when: false
   check_mode: false
 
-# NOTHING MAY OPEN THE ADMIN PANEL, AND THIS IS THE TASK THAT SAYS SO OUT LOUD.
-#
-# Opening /admin and saving anything writes config.json into DATA_FOLDER, and
-# that file then outranks every environment variable this role renders: the
-# converge would render .env correctly, the container would ignore it, and
-# nothing would report a difference. Omitting ADMIN_TOKEN disables the panel.
-#
-# An omission is invisible, which is the point of checking it: nothing fails
-# today if a future edit adds the variable back.
-#
-# TWO KEYS, NOT ONE, AND THE SECOND IS THE WORSE DOOR. Measured against this
-# pin, /admin serves 85 bytes of "the admin panel is disabled" with the token
-# absent; with `ADMIN_TOKEN=<value>` it serves a 6.4 KB login page; and with
-# `DISABLE_ADMIN_TOKEN=true` it serves the 140 KB ADMIN PANEL ITSELF, with no
-# authentication of any kind. Guarding only ADMIN_TOKEN would have left the
-# variable that Vaultwarden's own warning message recommends -- "To enable the
-# admin page without a token, use DISABLE_ADMIN_TOKEN" -- wide open.
-#
-# `ADMIN_TOKEN=` is refused too, and the reason has moved rather than gone away.
-# On this pin an empty value DOES disable the panel: the body is byte-identical
-# to the absent case. What it still does is log `[NOTICE] You are using a plain
-# text ADMIN_TOKEN which is insecure` beside two warnings, so the two states are
-# distinguishable and only one of them is declared. That behaviour is a property
-# of this release rather than of the setting, which is the argument for refusing
-# the key outright rather than for trusting what an empty one happens to do --
-# and the platform's own `${VAR:?}` convention makes rendering it empty the
-# obvious way to make a value optional.
-#
-# THIS GUARD PARSES THE DOCUMENT RATHER THAN MATCHING ITS TEXT, AND THAT IS THE
-# SECOND CORRECTION IT HAS TAKEN. It began as a line sweep for `ADMIN_TOKEN:`;
-# that missed DISABLE_ADMIN_TOKEN, so a key was added; and the sweep then still
-# could not see `- DISABLE_ADMIN_TOKEN=true`, because Compose's list form of
-# `environment:` writes `KEY=VALUE` with no colon and puts a list marker where
-# the anchor expected indentation. Proved end to end: the assert passed and
-# printed "the /admin panel is disabled" while `docker compose config` showed
-# `DISABLE_ADMIN_TOKEN: "true"` and /admin served a live unauthenticated panel.
-#
-# Two regex misses in the same guard is the shape saying the approach is wrong,
-# not that a third pattern is needed. A parse makes the document's shape stop
-# being something this guard has to anticipate: both forms of `environment:`
-# reduce to the same list of names, and a form nobody here has thought of is
-# still a mapping or a sequence.
-#
-# `env_files:` on the Compose module is not `env_file:` inside a service -- the
-# first supplies values for the `${...}` interpolations these documents name,
-# the second hands a whole file to the container -- so the second is refused
-# alongside the keys, since it would carry either of them where this guard would
-# never see it.
-#
-# THE SWEEP READS THE INSTALLED RELEASE, WHICH A REVIEW HAS NOT INSTALLED.
-# platform_current_dir is `current`, and activating a new release is a command
-# task that check mode skips -- roles/deployment_bundle/tasks/target.yml says so
-# where it relaxes its own release requirement for exactly this reason. So under
-# --check, `current` still names the PREVIOUS release, and for a service this
-# platform has never converged that release has no services/vaultwarden/ at all.
-# The slurp then dies on a file that is simply not there.
-#
-# That is not hypothetical: it is what `--check --diff` against the real NAS did
-# at task 1366 of an otherwise complete review, `File not found:
-# /volume1/Docker/nas-platform/current/services/vaultwarden/compose.yml`. The
-# window is narrow and it is real -- it opens when this release merges and
-# closes at its first live converge, once per new service -- and it is the one
-# review an operator is told to run before applying anything.
-#
-# WHAT THE DEFERRAL COSTS, said plainly rather than glossed. On the review path
-# the admin-panel guard below does not run, so `--check --diff` no longer proves
-# that ADMIN_TOKEN and DISABLE_ADMIN_TOKEN are absent from what would be
-# deployed. That is a real narrowing and not a free fix. Two things bound it:
-# the guard still runs on every live converge, before any container is created,
-# which is the run where it has to hold; and
-# tests/release_path_read_test.rb pins the repository-side half in CI, so the
-# keys cannot reach a release in the first place without a red check.
-#
-# Absent WITHOUT check mode is a different state and is NOT collapsed into this
-# one. A live converge whose installed release lacks its own Compose file is a
-# real fault -- deployment_bundle just installed that release -- and silently
-# skipping the guard is precisely the dangerous half, so it fails.
+# Nothing may open /admin: saving there writes config.json, which silently outranks the
+# rendered .env. ADMIN_TOKEN (even empty) and DISABLE_ADMIN_TOKEN (an unauthenticated
+# panel) and a container env_file are refused by parsing, not text matching, which missed
+# the list form twice. Under --check `current` may lack this service, so the sweep defers;
+# live, a missing Compose file fails. tests/release_path_read_test.rb covers the repo side.
 - name: Read whether the installed release carries the Vaultwarden Compose definitions
   ansible.builtin.stat:
     path: >-
@@ -250,14 +120,7 @@
   register: vaultwarden_compose_sources
   when: vaultwarden_release_carries_service
 
-# The two Compose tags this platform uses are stripped before parsing, and
-# NOTHING ELSE IS. ansible.builtin.from_yaml refuses an unknown tag rather than
-# ignoring it, so a document carrying any other one fails here loudly instead of
-# being parsed into a shape this guard would then under-read -- which is the
-# failure mode the text sweep had and the reason for parsing at all. Verified
-# both ways on services/vaultwarden/compose.mac.yml: unstripped it raises
-# "could not determine a constructor for the tag '!override'", stripped it
-# yields the service mapping.
+# Only the two Compose tags this platform uses are stripped; from_yaml refuses any other.
 - name: Parse the deployed Vaultwarden Compose documents
   ansible.builtin.set_fact:
     vaultwarden_compose_documents: >-
@@ -268,9 +131,7 @@
          | map('from_yaml') | list }}
   when: vaultwarden_release_carries_service
 
-# EVERY SERVICE IN EVERY DEPLOYED FILE, not just the `vaultwarden` key. A second
-# service added to this project would carry the same hazard, and naming one key
-# here would be the same class of assumption the text sweep kept making.
+# Every service in every file, not only `vaultwarden`.
 - name: Resolve the environment every deployed Vaultwarden container would receive
   ansible.builtin.set_fact:
     vaultwarden_declared_services: >-
@@ -280,19 +141,8 @@
          | map(attribute='value') | select('mapping') | list }}
   when: vaultwarden_release_carries_service
 
-# Compose accepts `environment:` as a mapping of names to values OR as a
-# sequence of `NAME=VALUE` strings, and the two are the same declaration. Both
-# reduce to names here so the assertion below reads one list rather than
-# branching on shape. A string is itself a Jinja `sequence`, which is why the
-# sequence arm rejects mappings rather than selecting lists: the elements are
-# mappings or lists, never bare strings.
-#
-# `selectattr('environment', 'defined')` rather than
-# `map(attribute='environment', default=None)`, because that default is not
-# applied to a mapping that simply lacks the key -- it raises
-# "object of type 'dict' has no attribute 'environment'" instead, which is what
-# services/vaultwarden/compose.mac.yml does on every run, since a platform
-# override declares a container name and ports and no environment at all.
+# Both `environment:` forms reduce to names. selectattr('environment', 'defined') because
+# map(default=) raises on a mapping lacking the key (compose.mac.yml has none).
 - name: Resolve the configuration keys the deployed Compose files declare
   ansible.builtin.set_fact:
     vaultwarden_declared_env_names: >-
@@ -307,14 +157,8 @@
       {{ vaultwarden_declared_services | select('contains', 'env_file') | list }}
   when: vaultwarden_release_carries_service
 
-# THE TRIPWIRE, AND IT IS NOT DECORATION. Every term above is a lookup that
-# yields an empty list rather than an error when the document is not the shape
-# it expects, so a derivation that quietly stopped reading anything would let
-# the assertion below pass on a file declaring both keys. These two names are
-# the ones services/vaultwarden/compose.yml is required to declare by the
-# canonical file itself, so finding them proves the parse reached the
-# environment it is about to judge. This is the same reason
-# roles/image_downgrade_guard reports every state in which it declines to judge.
+# Tripwire: the parse must find the keys compose.yml is known to declare, or a shape
+# mismatch would silently pass the assertion below.
 - name: Require the Vaultwarden configuration sweep to have read the environment
   ansible.builtin.assert:
     that:
@@ -365,11 +209,8 @@
       DISABLE_ADMIN_TOKEN or a service-level env_file, so the /admin panel is
       disabled and the rendered environment is the only configuration.
   when: vaultwarden_release_carries_service
-# `state: absent` rather than a skipped deployment, so switching the gate off is
-# a deployment decision in both directions rather than a converge that leaves
-# containers running that nothing in the repository claims. remove_orphans
-# reaches the ones a previous revision of the Compose file declared and this one
-# no longer does.
+# `state: absent` makes the gate a decision in both directions; remove_orphans reaches
+# containers an earlier revision declared.
 - name: Stop the disabled Vaultwarden project
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/vaultwarden"
@@ -383,9 +224,7 @@
     - not vaultwarden_deployment_enabled | bool
     - vaultwarden_runtime_env.stat.exists
 
-# Named rather than skipped in silence, because the two reasons to be here are
-# very different: an operator reviewing a host that has never run this release,
-# and a runtime directory that has gone missing under a stack that is still up.
+# Named: never-deployed review versus a runtime directory lost under a running stack.
 - name: Report the Vaultwarden Compose work a missing runtime environment defers
   ansible.builtin.debug:
     msg: >-
@@ -413,30 +252,8 @@
       poller brings the stack up on its next five-minute tick.
   when: not vaultwarden_deployment_enabled | bool
 
-# THE SECOND HALF OF THE SAME GUARD, AND IT WATCHES THE CONSEQUENCE RATHER THAN
-# THE CAUSE. "The admin panel is the only writer of config.json" is an upstream
-# claim, not a property this platform can see, so the file's absence is asserted
-# on every converge rather than inferred from the token's absence. A fresh start
-# creates no config.json -- measured against this pin -- so the file existing at
-# all means something wrote a configuration that now outranks the rendered .env.
-#
-# Ungated: it runs whether or not the stack is deployed, because the state it
-# refuses is exactly a file left behind by an earlier run that WAS enabled.
-#
-# AND IT SITS AFTER THE TEAR-DOWN, WHICH IS THE WHOLE OF WHY IT MOVED. It was
-# ahead of it, and that made the disabled path unreachable in exactly the state
-# that most plausibly motivates disabling: a config.json appeared, so the server
-# is running a policy this repository did not write, and an operator turns the
-# gate off to stop it. With the refusal first, the run died before
-# `state: absent` -- measured, `ok=1 failed=1` with the project still up -- and
-# the message told the operator to converge again, which refused identically on
-# every five-minute tick. A guard that cannot be switched off by the switch
-# provided for switching it off is a trap rather than a guard.
-#
-# Nothing is weakened by the move. The refusal is still ungated and still fails
-# the run; on the enabled path the tear-down above is skipped, so this is the
-# same position it always had -- ahead of the downgrade guard, the pre-upgrade
-# copy and every Compose invocation that creates anything.
+# config.json must not exist: /admin being its only writer is an upstream claim. Ungated,
+# and after the teardown so turning the gate off still works when config.json appeared.
 - name: Read the Vaultwarden configuration override that must not exist
   ansible.builtin.stat:
     path: "{{ vaultwarden_config_json_path }}"
@@ -467,18 +284,8 @@
       {{ vaultwarden_config_json_path }} does not exist, so the rendered
       environment is the configuration in force.
 
-# BEFORE THE DEPLOYMENT, because the point is to refuse while there is still a
-# healthy stack to protect. Vaultwarden migrates its own SQLite store when it
-# starts, so a pin older than one that has already run here writes nothing and
-# refuses to open the store -- inside the container, which is a crash loop every
-# converge repeats rather than a failure a play reports (#511).
-#
-# Here the hazard is doubled and services/vaultwarden/compose.yml records why:
-# CVE-2026-27801 is a two-factor bypass affecting everything up to and including
-# 1.34.3, so a rollback below 1.35.0 is not only a store it cannot open, it is
-# that CVE back in force. This guard compares image versions and would refuse
-# such a rollback for the store reason; nothing here reads the CVE floor, which
-# is why the floor is written beside the pin.
+# Before deploying: the store migrates one-way (#511). A rollback below 1.35.0 would also
+# restore CVE-2026-27801; the floor is written beside the pin in compose.yml.
 - name: Refuse a Vaultwarden image older than the store this host has migrated
   ansible.builtin.include_role:
     name: image_downgrade_guard
@@ -491,42 +298,10 @@
     - vaultwarden_deployment_enabled | bool
     - vaultwarden_runtime_env.stat.exists
 
-# AFTER THE DOWNGRADE GUARD AND BEFORE THE DEPLOYMENT, which is the only window
-# in which either control is worth anything: the guard refuses a pin older than
-# the store this host has already migrated, and this copies the store aside so
-# that a pin NEWER than it is reversible at all. Both have to happen while there
-# is still a healthy stack to protect.
-#
-# roles/pre_upgrade_backup carries the argument for the stop, the copy and the
-# rescue. INCLUDED RATHER THAN IMPORTED, the way roles/image_downgrade_guard is,
-# and --list-tasks no longer expanding it is the price. An imported role brings
-# its argument validation along as a task tagged `always`, so it runs in every
-# tagged converge and in verify.yml, where the terms below are undefined and
-# failed the run on them -- measured on a probe play. The include is reached by
-# the role-level tags as its tasks are, and validates only when it runs.
-#
-# WHY A FILE COPY AND NOT THE APPLICATION'S OWN BACKUP. Bindery's equivalent
-# POSTs /backup to the application and takes a `VACUUM INTO` the application
-# performs on its own live database. Vaultwarden's equivalent lives behind the
-# admin panel, which this platform deliberately does not open, and the image
-# ships no sqlite3 -- measured: `command -v sqlite3` finds nothing in the pinned
-# image, which carries cp and tar and no more. ADM has none either. So there is
-# no route to an application-consistent copy of a RUNNING store here, and the
-# container is stopped first. services/vaultwarden/compose.yml declares
-# stop_grace_period: 30s for exactly this: the log is committed and the database
-# closed rather than a -wal being left for the next start to recover.
-#
-# rsa_key* is a glob because the pinned image writes rsa_key.pem and older and
-# newer ones have written a .pub beside it; it is the key every session token
-# this server ever issued is signed with, so a store restored without it logs
-# every client out and is the difference between a rollback and a re-enrolment.
-# It is why the copy is 0600 inside a 0700 directory and treated as
-# secret-bearing wherever it is copied to next.
-#
-# The role reads Vaultwarden's pin from Vaultwarden's own compose.yml itself --
-# the candidate release under --check, `current` live (#858). It used to reuse
-# this file's parse of `current`, so a review of a bump planned no copy while the
-# live run took one.
+# Copies the store aside after the guard, before the deployment (roles/pre_upgrade_backup,
+# included not imported). No on-demand backup without /admin and no sqlite3, so the
+# container is stopped first. rsa_key* signs every session: without it a restore logs
+# every client out; the copy is 0600 in 0700 and secret-bearing.
 - name: Guard the Vaultwarden store before a pinned upgrade
   ansible.builtin.include_role:
     name: pre_upgrade_backup
@@ -543,13 +318,8 @@
     - vaultwarden_deployment_enabled | bool
     - vaultwarden_runtime_env.stat.exists
 
-# The block exists for one thing the rescue does with the failure: it hands the
-# deployment's own message to roles/container_health, which either explains it in
-# terms of the container state Docker reports or re-raises it unchanged.
-# Compose's `--wait` fails a crash-looping container with "container ... is
-# unhealthy", which says nothing about why. roles/bindery/tasks/main.yml carries
-# the long form of this argument; #509 built the mechanism and #537 wired the
-# remaining single-`up` roles into it.
+# The rescue hands the failure to roles/container_health, which explains it from
+# Docker's state or re-raises it unchanged (#509, #537).
 - name: Deploy Vaultwarden, catching a container that runs but never serves
   when:
     - vaultwarden_deployment_enabled | bool
@@ -566,23 +336,15 @@
         wait_timeout: "{{ platform_compose_wait_timeout }}"
       register: vaultwarden_deploy
   rescue:
-    # First, and before anything else can rebind it: ansible_failed_result
-    # belongs to whichever rescue is running.
+    # First, before anything else rebinds ansible_failed_result.
     - name: Record the failed Vaultwarden deployment
       ansible.builtin.set_fact:
         vaultwarden_deploy_failure_message: >-
           {{ ansible_failed_result.msg
              | default('the Vaultwarden deployment failed and reported no message') }}
 
-# Immediately after the deployment and before everything that trusts it. A
-# container in `Restarting` still appears in `docker container ls --quiet`, so
-# the CPU verification below would sail straight past one and the readiness probe
-# after it would fail on a timeout that names nothing (#510).
-#
-# This pass detects, prints the evidence and publishes
-# container_health_stuck_services WITHOUT refusing, because the recreate below
-# has to happen before the verdict. It still re-raises a deployment failure that
-# no stuck container explains.
+# Right after deploy: a `Restarting` container would pass later checks (#510). Detects
+# without refusing; the recreate comes first.
 - name: Detect a Vaultwarden container that runs but never serves
   ansible.builtin.include_role:
     name: container_health
@@ -596,15 +358,8 @@
     - vaultwarden_deployment_enabled | bool
     - vaultwarden_runtime_env.stat.exists
 
-# EXACTLY ONE force-recreate, of only the services Docker says are stuck.
-# FORCED, because `up -d` against an unchanged specification keeps the same
-# container and recreates nothing; `dependencies: false` renders as --no-deps.
-# CONDITIONAL, and that condition is the whole idempotence argument: the list is
-# empty on a converged host and empty under --check, so this task is skipped on
-# every run that has nothing to repair. BOUNDED AT ONE PER RUN by being a single
-# task rather than a loop, with the verdict below re-checking, so a container
-# looping for a reason a recreate cannot fix never goes green and never becomes
-# an invisible retry loop.
+# Exactly one forced, --no-deps recreate of only the stuck services. Skipped on a
+# converged host and under --check; the verdict below re-checks.
 - name: Recreate a Vaultwarden container that runs but never serves
   when:
     - vaultwarden_deployment_enabled | bool
@@ -625,18 +380,13 @@
       when: container_health_stuck_services | default([]) | length > 0
       register: vaultwarden_wedged_recreate
   rescue:
-    # Carried rather than re-raised here. `--wait` fails a container that came
-    # back unhealthy, which the re-check below diagnoses far better than Compose
-    # can; a recreate that failed for any OTHER reason left no stuck container
-    # behind, and the second pass re-raises this message unchanged for that case.
+    # Carried, not re-raised: the re-check diagnoses an unhealthy result better.
     - name: Record the Vaultwarden recreate that did not recover the service
       ansible.builtin.set_fact:
         vaultwarden_recreate_failure_message: >-
           The force-recreate reported: {{ ansible_failed_result.msg
           | default('no message') }}
 
-# Whether a recreate was actually spent, recorded before the second pass
-# overwrites the list it was decided from.
 - name: Record whether a Vaultwarden recreate was spent
   ansible.builtin.set_fact:
     vaultwarden_recreate_spent: >-
@@ -659,9 +409,6 @@
     - vaultwarden_runtime_env.stat.exists
     - ansible_check_mode
 
-# The verdict. Nothing stuck here means the recreate worked, or that there was
-# never anything to repair; either way the run continues. Anything still stuck
-# fails, and says the retry has already been spent.
 - name: Refuse a Vaultwarden container that stayed wedged after its recreate
   ansible.builtin.include_role:
     name: container_health
@@ -685,10 +432,7 @@
     - vaultwarden_deployment_enabled | bool
     - vaultwarden_runtime_env.stat.exists
 
-# /alive is unauthenticated and answers a JSON timestamp string, so readiness
-# can be polled without presenting anything. It is a readiness probe rather than
-# a verification: what the deployment actually enforces is asserted in
-# tasks/verify.yml.
+# /alive is unauthenticated; tasks/verify.yml asserts what is enforced.
 - name: Wait for Vaultwarden application readiness
   ansible.builtin.uri:
     url: "{{ vaultwarden_url }}/alive"
@@ -700,18 +444,7 @@
   delay: "{{ platform_readiness_delay }}"
   changed_when: false
   check_mode: false
-  # `not ansible_check_mode` is the third term and it is not decoration, for the
-  # same reason the wedged-container recovery above defers: Compose's dry run
-  # starts nothing, so on a host where this stack is not already up there is no
-  # listener and the probe answers `Connection refused` -- a review failing on
-  # the absence of a thing the review deliberately did not create.
-  #
-  # That is not hypothetical and it is not the fresh-host case. It is exactly
-  # the chunk-2 review: the gate flips, so a runtime .env has been rendered on
-  # every dark converge and the container has never existed, and
-  # `--check --diff` is what CLAUDE.md tells the operator to run first.
-  # Measured on that state before this term: `Status code was -1 and not [200]:
-  # Connection refused`.
+  # Skipped under --check: the dry run starts nothing, so there may be no listener.
   when:
     - vaultwarden_deployment_enabled | bool
     - vaultwarden_runtime_env.stat.exists

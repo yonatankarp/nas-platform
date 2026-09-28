@@ -1,15 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# The deployment record is what a human actually reads after a deployment, so
-# what it says — and when it stays silent — is a contract. Two pieces make it
-# up: one per-service report, delivered to Pushover by
-# roles/deployment_bundle/tasks/pushover_publish.yml, and the run-level summary
-# behind them, which site.yml only ever hands to the deployment poller as JSON
-# (#558 stage 4a removed the plain summary it used to publish). The second half
-# of this file runs the delivery against a local fixture speaking Pushover's
-# shapes: an authoritative refusal fails the converge, and nothing that is not
-# an answer does.
+# The per-service deployment report delivered to Pushover, the run-level summary handed
+# to the poller as JSON, and how the delivery reads Pushover's answers.
 
 require "fileutils"
 require "json"
@@ -27,10 +20,7 @@ include TestScaffold
 
 DIGEST_A = "@sha256:#{'a' * 64}"
 DIGEST_B = "@sha256:#{'b' * 64}"
-# Sentinels rather than anything shaped like a real pair, so a transcript
-# containing one is unambiguous.
-# One sentinel per application, so a message sent with the wrong application's
-# token is visible as that token rather than as "a token".
+# Sentinels, one per application, so a wrong application's token is visible as that token.
 CONTAINERS_TOKEN = "probe-pushover-containers-token-never-valid"
 DEPLOYMENTS_TOKEN = "probe-pushover-deployments-token-never-valid"
 ALERTS_TOKEN = "probe-pushover-alerts-token-never-valid"
@@ -47,8 +37,6 @@ REFUSAL = "Pushover refused the deployment notification."
 
 failures = []
 
-# Every row answers from this probe. What the test reads afterwards is what
-# arrived, decoded the way Pushover decodes a form POST.
 def with_http_probe(expected_count, answer: ACCEPTED, &block)
   requests = []
   with_http_fixture(->(port) { block.call(port, requests) }) do |method, target, headers, body|
@@ -56,8 +44,6 @@ def with_http_probe(expected_count, answer: ACCEPTED, &block)
                   "form" => URI.decode_www_form(body).to_h }
     answer
   end
-  # nil leaves the count to the row, whose own check can say what an extra
-  # request means rather than aborting the file before it reports.
   raise "deployment record probe request count differs: #{requests.length}" unless
     expected_count.nil? || requests.length == expected_count
 end
@@ -80,8 +66,7 @@ def write_release(deploy_root, revision, images)
   release
 end
 
-# A real repository, because the summary reads the commit subjects a deployment
-# carries from the controller checkout rather than from the target.
+# A real repository: the summary reads commit subjects from the controller checkout.
 def with_controller_repository
   Dir.mktmpdir("nas-platform-deployment-summary-") do |directory|
     repository = File.join(directory, "controller")
@@ -99,9 +84,7 @@ def with_controller_repository
     run.call("add", "README")
     run.call("commit", "-qm", "feat: first release")
     previous = Open3.capture3("git", "-C", repository, "rev-parse", "HEAD").first.strip
-    # The pin lands in a Compose file beside an unrelated one, as it does in
-    # services/arr/compose.yml, so only a search for the exact reference can
-    # name the commit that introduced it.
+    # Beside an unrelated pin, so only an exact-reference search names the right commit.
     FileUtils.mkdir_p(File.join(repository, "services", "media"))
     File.write(File.join(repository, "services", "media", "compose.yml"),
                "image: #{CURRENT_IMAGES.dig('jellyfin', 'jellyfin')}\n" \
@@ -109,8 +92,6 @@ def with_controller_repository
     run.call("add", "services")
     run.call("commit", "-qm", "fix: pin jellyfin 10.11.0")
     introducing = Open3.capture3("git", "-C", repository, "rev-parse", "HEAD").first.strip
-    # A later document quoting the same pin is the newest commit the reference
-    # appears in, and must not be mistaken for the one that moved the image.
     FileUtils.mkdir_p(File.join(repository, "docs"))
     File.write(File.join(repository, "docs", "service-dossiers.md"),
                "Jellyfin runs #{CURRENT_IMAGES.dig('jellyfin', 'jellyfin')}\n")
@@ -124,13 +105,11 @@ def with_controller_repository
   end
 end
 
-# What summary.yml says when it cannot hand the poller its summary.
 UNANNOUNCED = "so the deployment poller will not announce this release"
 
 SUMMARY_PATH_VARIABLE = "PLATFORM_DEPLOYMENT_SUMMARY_PATH"
 
-# Unset unless a row sets it, so a variable in the shell running this file can
-# never turn the plain-summary rows into poller rows.
+# Unset unless a row sets it, so the caller's shell cannot turn these into poller rows.
 def run_bundle_task(tasks_from, variables, *arguments, environment: { SUMMARY_PATH_VARIABLE => nil })
   report = [{
     "name" => "Report the deployment",
@@ -148,20 +127,15 @@ def run_report(variables, *arguments, **options)
   run_bundle_task("report", variables, *arguments, **options)
 end
 
-# The shared delivery on its own. The report bounds its own message before the
-# delivery sees it, so the delivery's cut and its refusal naming are exercised
-# here directly rather than through a caller that can no longer reach them.
+# The delivery on its own: the report bounds its message before the delivery sees it.
 def run_publish(variables, *arguments)
   run_bundle_task("pushover_publish", variables, *arguments)
 end
 
-# What summary.yml says when no poller asked for the summary.
 UNREQUESTED = "no deployment poller asked for this run's summary"
 
-# The form every delivery must be, whichever message it carries. `token` names
-# the vault variable whose sentinel must arrive; `extras` is the exact set of
-# optional fields (html, ttl) the caller sends, so a field that leaks into the
-# other caller is as visible as one that goes missing.
+# `extras` is the exact set of optional fields the caller sends, so a leak is as
+# visible as a loss.
 def check_delivery_form(failures, label, request, priority, token:, extras: {})
   form = request["form"] || {}
   check(failures, request["method"] == "POST" && request["target"] == ENDPOINT_PATH,
@@ -193,11 +167,8 @@ CURRENT_IMAGES = {
   "pinchflat" => { "pinchflat" => "ghcr.io/kieraneglin/pinchflat:v2.28.0#{DIGEST_A}" }
 }.freeze
 
-# A Renovate batch in miniature, sized so both halves overrun Pushover's limits
-# by construction. The title is three 77-character names plus "+37", which is
-# 253 characters: past 250, but inside the five characters of leeway Jinja's
-# truncate grants by default, so the row also proves that leeway is off. Forty
-# change lines of about 90 characters put the body past 1024.
+# Sized so both halves overrun Pushover's limits: a 253-character title (past 250 but
+# inside Jinja truncate's default leeway, so the leeway must be off) and a body past 1024.
 LONG_NAMES = (1..40).map { |index| format("service-%02d-%s", index, "x" * 66) }
 LONG_HEADLINE = "NAS deployed: #{LONG_NAMES.first(3).join(', ')} +37"
 
@@ -217,10 +188,7 @@ with_controller_repository do |directory, repository, previous, current, introdu
     }.merge(TOKENS).merge(overrides)
   end
 
-  # With the variable unset -- an operator converge, a workstation run -- a moved
-  # release publishes nothing and writes nothing (#558 stage 4a). Both halves are
-  # asserted: a request would be the plain summary back, and a file would be a
-  # summary written for a poller that is not there.
+  # Unset (an operator converge), a moved release publishes nothing and writes nothing (#558).
   [["a moved release", previous], ["a first install", ""]].each do |label, predecessor|
     before = Dir.glob(File.join(directory, "**", "*"), File::FNM_DOTMATCH).sort
     with_http_probe(nil) do |port, requests|
@@ -242,19 +210,13 @@ with_controller_repository do |directory, repository, previous, current, introdu
   end
 
   # --- the poller's half of the handshake (#558) -----------------------------
-  #
-  # The poller alone sets the variable, and with it set this file writes the
-  # summary and publishes NOTHING: the poller sends the one message once verify
-  # passes. Unset -- an operator converge, or a poller older than the variable --
-  # the rows above send and write nothing. At most one message either way.
+  # With the variable set this writes the summary and publishes nothing; the poller sends it.
   summary_path = File.join(directory, "state", "deployment-summary.json")
   FileUtils.mkdir_p(File.dirname(summary_path))
   poller_environment = { SUMMARY_PATH_VARIABLE => summary_path }
   read_summary = lambda do
     File.exist?(summary_path) ? JSON.parse(File.read(summary_path)) : nil
   end
-  # Every poller row counts its own requests, so a publish that leaked past the
-  # variable is named here rather than aborting the file in the probe.
   check_unpublished = lambda do |label, requests|
     check(failures, requests.empty?,
           "#{label}: summary.yml published although the poller asked for the summary; " \
@@ -289,10 +251,8 @@ with_controller_repository do |directory, repository, previous, current, introdu
     written = File.read(summary_path)
     check(failures, TOKENS.values.none? { |secret| written.include?(secret) } && !written.include?(USER_KEY),
           "the poller's summary must carry no Pushover credential")
-    # The contract has two halves in two languages, and each suite asserts its
-    # own copy of the shape. This is the one place they meet: the poller's own
-    # reader must accept exactly what this play just wrote, or a drift on either
-    # side sends nothing with both suites green. The poller is stdlib-only.
+    # The one place both languages' copies of the shape meet: the poller must read exactly
+    # what this play wrote. The poller is stdlib-only.
     reader = "import pathlib, sys; sys.path.insert(0, sys.argv[1]); import production_auto_deploy as p; " \
              "p.read_release_summary(pathlib.Path(sys.argv[2]), sys.argv[3])"
     refusal, accepted = Open3.capture2e("python3", "-B", "-c", reader, File.join(ROOT, "scripts"),
@@ -302,8 +262,6 @@ with_controller_repository do |directory, repository, previous, current, introdu
           "so the poller would announce nothing: #{refusal.lines.last&.strip}")
   end
 
-  # Nothing moved, a review, or a selective converge: nothing to announce, and no
-  # file that could be mistaken for one.
   [["an unmoved release", { "deployment_bundle_previous_release_id" => current }, []],
    ["check mode", { "deployment_bundle_previous_release_id" => previous }, ["--check"]],
    ["a selective converge", {}, []]].each do |label, overrides, arguments|
@@ -317,8 +275,6 @@ with_controller_repository do |directory, repository, previous, current, introdu
     check(failures, !File.exist?(summary_path), "#{label} must write no poller summary")
   end
 
-  # A first install names no predecessor, has no Git range to read, and so no
-  # commit for any image.
   FileUtils.rm_f(summary_path)
   with_http_probe(nil) do |port, requests|
     _stdout, stderr, status = run_summary(
@@ -334,9 +290,8 @@ with_controller_repository do |directory, repository, previous, current, introdu
                     [["added", nil], ["added", nil]],
         "a first install must write an empty previous, no commits and no image commits: #{first.inspect}")
 
-  # A summary that cannot be written is a notification lost, never a deployment
-  # failed: every service has converged by now, and a fatal write would skip
-  # verify and the poller's reinstall. Each case measured fatal before the rescue.
+  # A failed summary write is a lost notification, never a failed deployment: a fatal
+  # write would skip verify and the poller's reinstall.
   read_only = File.join(directory, "read-only")
   occupied = File.join(directory, "occupied")
   FileUtils.mkdir_p([read_only, occupied])
@@ -366,9 +321,6 @@ with_controller_repository do |directory, repository, previous, current, introdu
     File.chmod(0o700, read_only)
   end
 
-  # A refusal names the token the caller chose and no other. The summary was the
-  # caller that sent with the Deployments token until stage 4a, so the delivery
-  # is driven with that name directly.
   with_http_probe(1, answer: [400, JSON.generate({ "status" => 0 })]) do |port, _requests|
     stdout, stderr, status = run_publish(
       base.call(port, "deployment_pushover_token_variable" => "vault_pushover_deployments_token",
@@ -383,8 +335,6 @@ with_controller_repository do |directory, repository, previous, current, introdu
           "a refused delivery disclosed a Pushover token")
   end
 
-  # A converge that reinstalls the same revision recreated nothing, and the
-  # per-service reports stay silent for it too.
   with_http_probe(0) do |port, _requests|
     _stdout, stderr, status = run_summary(
       base.call(port, "deployment_bundle_previous_release_id" => current)
@@ -393,16 +343,12 @@ with_controller_repository do |directory, repository, previous, current, introdu
           "unchanged deployment summary fixture failed: #{stderr.lines.last&.strip}")
   end
 
-  # A selective converge never rebuilds the bundle, so nothing names the release
-  # it replaced. Reporting every image as newly installed would be a lie.
   with_http_probe(0) do |port, _requests|
     _stdout, stderr, status = run_summary(base.call(port, {}))
     check(failures, status.success?,
           "selective deployment summary fixture failed: #{stderr.lines.last&.strip}")
   end
 
-  # Check mode reviews a deployment. Publishing during a review would announce
-  # a deployment that never happened.
   with_http_probe(0) do |port, _requests|
     _stdout, stderr, status = run_summary(
       base.call(port, "deployment_bundle_previous_release_id" => previous), "--check"
@@ -411,12 +357,8 @@ with_controller_repository do |directory, repository, previous, current, introdu
           "check-mode deployment summary fixture failed: #{stderr.lines.last&.strip}")
   end
 
-  # Over Pushover's limits. Unbounded, this is a 400 with status 0 -- an
-  # authoritative refusal that fails the converge after every service already
-  # deployed -- so the fixture answers exactly that for an overlong field, and
-  # the row proves the cut happened before the request rather than trusting it.
-  # Driven through the delivery directly since stage 4a: the plain summary was
-  # the caller whose body was unbounded, and the report bounds its own.
+  # Unbounded, this is a 400 with status 0 that fails the converge after every service
+  # deployed, so the fixture answers exactly that to an overlong field.
   expected_lines = LONG_NAMES.map { |name| "- #{name} 1.0.0 → 2.0.0" }.join("\n")
   long_requests = []
   with_http_fixture(lambda { |port|
@@ -448,11 +390,7 @@ with_controller_repository do |directory, repository, previous, current, introdu
         "a cut notification must keep its beginning and end with a visible marker")
 end
 
-# The per-service report is the detail behind the summary, and only a service
-# Compose actually recreated has any detail to give. The summary already says a
-# deployment happened and which images it moved, so a service left running
-# unchanged publishes nothing rather than one "already current" message per
-# service on every release.
+# Only a service Compose actually recreated reports; an unchanged one stays silent.
 RELEASE = "c" * 40
 PREDECESSOR = "d" * 40
 
@@ -466,17 +404,13 @@ def report_variables(url, overrides)
   }.merge(TOKENS).merge(overrides)
 end
 
-# The report's When line is the controller's clock at render time, so a row
-# accepts any minute between just before the play started and just after it
-# ended, in the exact form the report writes.
+# The When line is the controller's clock at render time, so any minute of the play is accepted.
 def report_minutes(started, finished)
   (((started.to_i / 60) - 1)..((finished.to_i / 60) + 1)).map do |minute|
     Time.at(minute * 60).utc.strftime("%d %b %H:%M UTC")
   end
 end
 
-# The closing pointer, present only when the poller asked for the summary and
-# the release moved -- the run that will actually produce a Deployments message.
 DETAILS_LINE = "<i>Details are in the Deployments message for this release.</i>"
 
 def report_lines(service, release, started, finished, details: false)
@@ -525,8 +459,6 @@ check_report(failures, "recreated", RECREATED, 1) do |request, started, finished
         "#{form['message'].inspect}")
 end
 
-# Under the poller, on a moved release, the Deployments message will exist, and
-# the report says where the rest of the release is.
 check_report(failures, "recreated under the poller", RECREATED, 1,
              environment: POLLER_ASKED) do |request, started, finished|
   form = request["form"] || {}
@@ -535,8 +467,7 @@ check_report(failures, "recreated under the poller", RECREATED, 1,
         "#{form['message'].inspect}")
 end
 
-# The message is HTML, so a service name is text inside markup rather than
-# markup, and the title -- which Pushover never parses -- stays as written.
+# The message is HTML, so a service name is escaped text; the title is never parsed.
 HOSTILE_SERVICE = %(Paperless & "Tika" <i>'x'</i>)
 check_report(failures, "a service name carrying markup",
              RECREATED.merge("deployment_report_service" => HOSTILE_SERVICE), 1) do |request, started, finished|
@@ -546,16 +477,11 @@ check_report(failures, "a service name carrying markup",
   escaped = "Paperless &amp; &#34;Tika&#34; &lt;i&gt;&#39;x&#39;&lt;/i&gt;"
   check(failures, report_lines(escaped, RELEASE, started, finished).include?(form["message"]),
         "every value in the report's HTML must be escaped: #{form['message'].inspect}")
-  # Six elements of its own -- <b> and <font> on each of three lines -- and not
-  # one more from the name.
   check(failures, form["message"].to_s.scan("<").length == 12,
         "the report's only markup must be its own: #{form['message'].inspect}")
 end
 
-# Escaping expands, and a cut after escaping can split an entity or the closing
-# tag. The name is cut first, so even a name made of nothing but ampersands
-# arrives whole: complete entities, a closed tag, under Pushover's cap, and never
-# reaching the publish task's own cut.
+# Escaping expands, so the name is cut first: a cut after escaping can split an entity.
 check_report(failures, "a service name long enough to overrun the message",
              RECREATED.merge("deployment_report_service" => "&" * 300), 1) do |request, started, finished|
   message = (request["form"] || {})["message"].to_s
@@ -565,14 +491,10 @@ check_report(failures, "a service name long enough to overrun the message",
         "an overlong service name must keep whole entities and its closing tag: #{message[0, 40].inspect}")
 end
 
-# The release moved, but Compose left this service running the image it already
-# had. The summary speaks for the release; this service stays quiet.
 check_report(failures, "already current", {
                "deployment_bundle_previous_release_id" => PREDECESSOR
              }, 0)
 
-# A converge that reinstalls the installed revision deployed nothing, so only a
-# service Compose actually touched has anything to report.
 check_report(failures, "unmoved release", {
                "deployment_bundle_previous_release_id" => RELEASE
              }, 0)
@@ -588,17 +510,12 @@ check_report(failures, "unmoved release with a recreation", {
         "the report must not point at one: #{form['message'].inspect}")
 end
 
-# A selective converge never rebuilds the bundle, so nothing moved.
 check_report(failures, "selective converge", {}, 0)
 
-# Check mode reviews a deployment rather than performing one.
 check_report(failures, "check mode", RECREATED, 0, "--check")
 
 # --- what Pushover answers, and what the converge makes of it --------------
-#
-# Run through the report, the delivery's one caller since #558 stage 4a. The accepted row is asserted by what it does not say: a
-# delivered message is silent, and the non-verdict notice appearing would mean
-# an answer was misread.
+# A delivered message is silent; the non-verdict notice appearing means an answer was misread.
 def check_answer(failures, label, output, status, expect_failure:, expect_text:, forbid_text:)
   check(failures, status.success? != expect_failure,
         "#{label} must #{expect_failure ? 'fail' : 'not fail'} the converge")
@@ -617,8 +534,6 @@ end
     expect_failure: true, expect_text: REFUSAL, forbid_text: NON_VERDICT },
   { label: "a 5xx, which is not an answer", answer: [500, JSON.generate({ "status" => 0 })],
     expect_failure: false, expect_text: NON_VERDICT, forbid_text: REFUSAL },
-  # Pushover's own quota answer: this message was not delivered, but nothing
-  # about the credentials was refused.
   { label: "a 429 over the monthly quota", answer: [429, JSON.generate({ "status" => 0 })],
     expect_failure: false, expect_text: NON_VERDICT, forbid_text: REFUSAL },
   # A captive portal or proxy, with an authoritative-looking code and no verdict.
@@ -626,8 +541,7 @@ end
     expect_failure: false, expect_text: NON_VERDICT, forbid_text: REFUSAL },
   { label: "a 403 carrying HTML", answer: [403, "<html><body>Blocked</body></html>", "text/html"],
     expect_failure: false, expect_text: NON_VERDICT, forbid_text: REFUSAL },
-  # Pushover's status is an integer. false == 0 and true == 1 in Jinja, and
-  # "0" becomes 0 under | int, so each of these would be an invented verdict.
+  # false == 0 and true == 1 in Jinja, and "0" | int is 0, so each would invent a verdict.
   { label: "a 400 whose status is false", answer: [400, JSON.generate({ "status" => false })],
     expect_failure: false, expect_text: NON_VERDICT, forbid_text: REFUSAL },
   { label: "a 400 whose status is the string \"0\"", answer: [400, JSON.generate({ "status" => "0" })],
@@ -642,8 +556,6 @@ end
   end
 end
 
-# The refusal names the keys to fix. Checked apart from the row above so a
-# message that lost the key names is its own diagnostic.
 with_http_probe(1, answer: [400, JSON.generate({ "status" => 0 })]) do |port, _requests|
   stdout, stderr, = run_report(report_variables(endpoint(port), RECREATED))
   output = stdout + stderr
@@ -658,9 +570,7 @@ with_http_probe(1, answer: [400, JSON.generate({ "status" => 0 })]) do |port, _r
 end
 
 closed_port = refusing_port
-# An outage, and the #521 shape: a uri that refuses before it makes any request
-# registers no status at all, which must read as no verdict rather than as a
-# refusal.
+# The #521 shape: a uri that refuses before any request registers no status, which is no verdict.
 {
   "a Pushover that refuses the connection" => "http://127.0.0.1:#{closed_port}#{ENDPOINT_PATH}",
   "a url the module refuses to parse" => "not-a-url-at-all"
@@ -671,25 +581,8 @@ closed_port = refusing_port
 end
 
 # --- the site.yml callers under tests/ redirect the endpoint ---------------
-#
-# The role default is Pushover itself, and the Mac lane converges with the
-# operator's real vault, so a caller that loses its override pushes a
-# notification to the household's devices for every service a run recreates.
-#
-# PINNED, NOT DERIVED, and this covers exactly the three commands below. A scan
-# for files that put site.yml into an ansible-playbook argv was tried and does
-# not hold: the two lane wrappers receive the playbook through a variable, so
-# they carry no site.yml literal, while the poller's tests and the docs tests
-# carry one without converging anything. A new caller has to be added here by
-# hand. Known callers and how each reaches one of these three commands:
-#   * tests/integration.sh -> tests/integration_controller.sh -> run_play
-#   * tests/mac/run.sh, tests/mac/hooks/drift/20-dozzle.sh and 40-komga.sh ->
-#     mac_ansible_playbook
-#   * tests/contracts/audiobookshelf-runtime.rb's inactive-administrator mode ->
-#     its own audiobookshelf_playbook_command
-# Every other ansible-playbook call under tests/ runs verify.yml, which cannot
-# reach the report, or a fixture playbook. Read out of the function each command
-# is built in, so a line moved outside it does not satisfy the check.
+# The role default is Pushover and the Mac lane uses the real vault, so a caller losing its
+# override notifies the household. Pinned, not derived: a new caller is added here by hand.
 LANE_ENDPOINT = "http://127.0.0.1:1/1/messages.json"
 DEPLOYMENT_ENDPOINT_OVERRIDES = {
   "tests/integration_controller_lib.sh" => [

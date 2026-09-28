@@ -1,43 +1,22 @@
 #!/usr/bin/env ruby
-# The runtime half of the Seerr service contract: what can only be decided
-# against a deployed Seerr, its database and the encrypted vault.
-#
-# usage: seerr-runtime.rb
-#
-# It takes NO arguments. Every input arrives in the environment, exported by
-# tests/contracts/seerr.sh: PLATFORM_SEERR_PORT, PLATFORM_SEERR_CONTAINER,
-# PLATFORM_SEERR_ARRS, PLATFORM_SEERR_PUSHOVER_BLANKED, PLATFORM_DOCKER_ROOT,
-# PLATFORM_CONTRACT_VAULT_FILE and PLATFORM_CONTRACT_VAULT_PASSWORD_FILE.
-#
+# Runtime half of the Seerr contract, against a deployed Seerr, its database
+# and the encrypted vault. No arguments: every input comes from the environment
+# tests/contracts/seerr.sh exports.
 require "json"
 require "net/http"
 require "open3"
 require "uri"
 require "yaml"
 
-# How long a real Seerr is given to answer its status endpoint. Like every other
-# input to this half it arrives in the environment rather than as a constant,
-# which is what let #319 shorten it for the one caller that ever wanted a
-# different budget: the run-mode environment rows in tests/seerr_contract_test.rb
-# reached this program when a planted regression let a refusal through, and there
-# was no Seerr behind the port at all.
-#
-# #331 removed that caller instead of shortening it -- those rows now substitute
-# a stub for this program, so reaching it is the regression rather than a wait --
-# and nothing in the tree sets this name any more. The override is kept because a
-# caller that must not sit out three minutes against a port nothing answers is a
-# recurring shape, and because a deployment reads the default either way.
+# An environment input so a caller facing a port nothing answers can shorten it.
 READY_TIMEOUT_SECONDS = Integer(ENV.fetch("PLATFORM_SEERR_READY_TIMEOUT_SECONDS", "180"), 10)
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_SEERR_PORT'), 10)}")
 CONTAINER = ENV.fetch("PLATFORM_SEERR_CONTAINER")
 ARRS_EXPECTED = ENV.fetch("PLATFORM_SEERR_ARRS") == "true"
-# "true" where the converge blanked the Pushover pair: tests/mac/lib.sh does,
-# because that lane holds the operator's real vault and Seerr's Pushover address
-# cannot be redirected.
+# "true" where the converge blanked the Pushover pair (the Mac lane, whose real
+# vault cannot be redirected).
 PUSHOVER_BLANKED = ENV.fetch("PLATFORM_SEERR_PUSHOVER_BLANKED") == "true"
-# The user table is Seerr's real state and the only thing that closes its
-# anonymous takeover window: a restore that brought back settings.json without
-# this file would reopen it.
+# The user table closes the anonymous takeover window; settings.json alone would not.
 DATABASE = File.join(ENV.fetch("PLATFORM_DOCKER_ROOT"), "seerr", "config", "db", "db.sqlite3")
 
 def fail_contract(message)
@@ -95,8 +74,6 @@ vault_error.replace("\0" * vault_error.bytesize)
 key = vault.fetch("vault_seerr_api_key")
 household = Array(vault["vault_managed_jellyfin_users"]).map { |entry| entry.fetch("username") }
 
-# Three access outcomes on a protected route: refused anonymously, refused with
-# a wrong key, accepted with exactly the vault's.
 fail_contract("Seerr served a protected route to an anonymous request") unless
   request("/api/v1/user").code == "401"
 fail_contract("Seerr accepted a key the platform never authored") unless
@@ -117,16 +94,12 @@ household.each do |username|
   fail_contract("#{username} carries a request quota the design does not grant") unless
     row["movieQuotaLimit"].nil? && row["tvQuotaLimit"].nil?
 
-  # X-API-User impersonates, so the second identity's own view proves the split
-  # from the outside without the contract ever holding that user's password.
+  # X-API-User impersonates, proving the split without holding that user's password.
   as_user = json(request("/api/v1/auth/me", key: key, user: row.fetch("id")), "the impersonated identity")
   fail_contract("#{username} sees a different identity than Seerr stored") unless
     as_user["id"] == row.fetch("id") && as_user["permissions"] == 160
 end
 
-# The anonymous public settings are what a visitor sees before signing in, and
-# they carry the three switches the design's clause about newly discovered
-# users rests on.
 public_settings = json(request("/api/v1/settings/public"), "the Seerr public settings")
 fail_contract("Seerr still redirects visitors to its setup wizard") unless
   public_settings["initialized"] == true
@@ -134,9 +107,7 @@ fail_contract("Seerr left a local password login path open") unless
   public_settings["localLogin"] == false
 fail_contract("Seerr would silently create any Jellyfin user who signs in") unless
   public_settings["newPlexLogin"] == false
-# Not an oversight: mediaServerLogin is the switch that enables Jellyfin
-# sign-in at all, so with it false the two imported identities could not reach
-# the service either.
+# mediaServerLogin enables Jellyfin sign-in at all; false would lock out both identities.
 fail_contract("Seerr disabled Jellyfin sign-in for its own identities") unless
   public_settings["mediaServerLogin"] == true
 fail_contract("Seerr is not pointed at a Jellyfin media server") unless
@@ -151,8 +122,7 @@ jellyfin = json(request("/api/v1/settings/jellyfin", key: key), "the Seerr Jelly
 fail_contract("Seerr does not name the platform's Jellyfin server") unless
   jellyfin["ip"] == "jellyfin" && jellyfin["port"] == 8096
 
-# The takeover window: the same anonymous route that created the owner must now
-# refuse to be pointed at a Jellyfin server the platform never named.
+# The takeover window: this route must refuse a Jellyfin server the platform never named.
 takeover = Net::HTTP::Post.new(URI.join(BASE, "/api/v1/auth/jellyfin"))
 takeover["Content-Type"] = "application/json"
 takeover.body = JSON.dump(
@@ -173,8 +143,6 @@ fail_contract("Seerr accepted a foreign Jellyfin server after bootstrap") unless
     fail_contract("Seerr's #{kind} server is not addressed by service alias") unless
       row["hostname"] == kind
   else
-    # Neither arr runs on a host without the transport, so a declared row would
-    # name a host that does not resolve.
     fail_contract("Seerr declared a #{kind} server on a host with no transport") unless rows.empty?
   end
 end
@@ -182,9 +150,7 @@ end
 pushover = json(request("/api/v1/settings/notifications/pushover", key: key), "the Seerr Pushover agent")
 fail_contract("Seerr's Pushover agent is disabled") unless pushover["enabled"] == true
 fail_contract("Seerr's Pushover agent does not send request events") unless pushover["types"] == 152
-# Seerr's agent posts to a hardcoded Pushover address, so a lane that converges
-# with a real vault cannot redirect it the way it redirects the relay: the Mac
-# lane blanks the pair instead, and says so here.
+# Seerr's agent posts to a hardcoded Pushover address, so the Mac lane blanks the pair.
 expected_pair = if PUSHOVER_BLANKED
                   ["", ""]
                 else

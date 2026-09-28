@@ -1,17 +1,8 @@
 ---
-# Verification has to prove the three containers are wired to each other, not
-# that a port is open (#445). /api/health cannot: it answered 200 four seconds
-# after start, before the application had reached anything.
-#
-# admin.checkConnections can. It runs a search against Meilisearch and fetches
-# chrome's /json/version, and reports each as connected or not. Measured both
-# ways against this pin: with chrome stopped, browser.connected false with
-# "getaddrinfo ENOTFOUND chrome"; with Meilisearch stopped, searchEngine and
-# vectorStore false. It is an administrator procedure, so answering 200 also
-# proves the vault identity still administers the instance.
-#
-# And the door: config.clientConfig is unauthenticated and reports the effective
-# DISABLE_SIGNUPS, which is the one setting whose drift would matter most.
+# Proves the three containers are wired (#445): /api/health answers before
+# anything is reached, while admin.checkConnections probes Meilisearch and
+# chrome and proves the vault identity still administers. clientConfig reports
+# the effective DISABLE_SIGNUPS unauthenticated.
 
 - name: Read a Karakeep sign-in token for verification
   tags: [platform_verify_karakeep]
@@ -87,8 +78,7 @@
     - karakeep_deployment_enabled | bool
     - not ansible_check_mode
 
-# Not redacted: the conditions read statuses and booleans, never a credential,
-# and redacting them would hide the one actionable sentence this produces.
+# Not redacted: statuses and booleans only.
 - name: Require a wired and closed Karakeep during exact verification
   tags: [platform_verify_karakeep]
   ansible.builtin.assert:

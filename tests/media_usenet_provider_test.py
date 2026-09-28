@@ -1,29 +1,8 @@
 #!/usr/bin/env python3
-"""Contract tests for the operator-owned Usenet provider shape filter.
+"""Contract tests for the operator-owned Usenet provider shape filter (#298).
 
-Every rule in `filter_plugins/media_usenet_provider.py` moved out of
-`vault_credential_schema` when the four non-credential provider values stopped
-being vault-authored (#298). The rules did not change in that move and these
-tests are what keeps them from drifting afterwards, so most cases here are the
-same cases the vault filter's tests made against the six strings.
-
-The one thing that did change is typing, and it is what most of the rejection
-cases below are about. The vault could only carry `"563"` and `"1"`; operator
-policy carries `563` and `true`, so the tests assert the types are enforced
-rather than coerced. Two of them are worth naming:
-
-* **A boolean port is rejected rather than clamped.** `isinstance(True, int)`
-  is true in Python, so a filter that only range-checked would read `port:
-  true` as the number 1 and accept it as a valid port.
-* **A string TLS flag is rejected rather than accepted.** SABnzbd parses a
-  server flag with `bool_conv(int_conv())`, so `"true"` is stored as 0. That is
-  a silently disabled TLS connection on a server that still looks configured
-  for it, which is the single worst outcome available in this file and the
-  reason the value is a boolean at all.
-
-The undeclared case is a first-class accepted shape, not an edge case. It is
-the state every real target is in until someone buys a subscription (#292), and
-#295's `downloaders` integration lane converges it.
+Types are enforced, not coerced: a boolean port and a string TLS flag (which
+SABnzbd would store as 0) are rejected. The undeclared provider is accepted.
 """
 
 from pathlib import Path
@@ -59,9 +38,7 @@ class AcceptedShapesTest(unittest.TestCase):
         self.assertEqual(media_usenet_provider_errors(UNDECLARED), [])
 
     def test_an_undeclared_provider_ignores_the_other_three(self):
-        # An operator who has not bought a subscription has no port, tier or
-        # TLS preference to state, so nothing else is consulted. This is what
-        # lets inventory carry one shape for both states.
+        # Without a subscription nothing else is consulted.
         self.assertEqual(
             media_usenet_provider_errors(
                 {"host": "", "port": 0, "connections": 0, "ssl": "no"}),
@@ -89,9 +66,7 @@ class AcceptedShapesTest(unittest.TestCase):
 
 class HostTest(unittest.TestCase):
     def test_an_uppercase_host_is_refused(self):
-        # ConfigServer.set_dict lowercases the host, so a declaration carrying
-        # uppercase can never equal what SABnzbd stored and would be pushed on
-        # every run forever.
+        # SABnzbd lowercases the host; uppercase would be pushed every run.
         errors = media_usenet_provider_errors(declared(host="News.Example.Com"))
         self.assertEqual(errors,
                          ["media_usenet_provider.host: must be a bare lowercase"
@@ -137,9 +112,6 @@ class NumberTest(unittest.TestCase):
                      "range SABnzbd stores without clamping"])
 
     def test_a_string_number_is_refused_rather_than_coerced(self):
-        # The vault carried these as strings and this filter deliberately does
-        # not, so accepting "563" here would reintroduce the untyped shape the
-        # move exists to replace.
         for key in ("port", "connections"):
             with self.subTest(key=key):
                 self.assertEqual(
@@ -202,9 +174,7 @@ class MappingShapeTest(unittest.TestCase):
                          ["media_usenet_provider: unexpected username"])
 
     def test_a_credential_key_here_is_refused_as_unexpected(self):
-        # The whole point of the split is that the account name and password
-        # are not operator policy. Writing one here has to fail rather than be
-        # quietly ignored, or a reader could believe it took effect.
+        # Credentials belong in the vault; writing one here must fail.
         errors = media_usenet_provider_errors(
             {**DECLARED, "username": "who", "password": "secret"})
         self.assertEqual(errors,
@@ -212,15 +182,12 @@ class MappingShapeTest(unittest.TestCase):
                           "username"])
 
     def test_a_shape_violation_suppresses_the_rule_violations(self):
-        # Reporting a rule against a mapping of the wrong shape would name a
-        # key the operator did not write, or miss one they did.
         errors = media_usenet_provider_errors({"host": "News.Example.Com"})
         self.assertEqual(
             errors, ["media_usenet_provider: missing port, connections, ssl"])
 
     def test_no_message_carries_a_value_or_a_comparand(self):
-        # The same rule vault_credential_schema keeps: a diagnostic names
-        # fields and nothing else, so it stays printable from a fail_msg.
+        # A diagnostic names fields only, so it stays printable.
         planted = declared(host="SECRETHOST", port=99999, connections=0,
                            ssl="SECRETFLAG")
         joined = " ".join(media_usenet_provider_errors(planted))

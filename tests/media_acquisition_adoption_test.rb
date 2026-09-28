@@ -87,10 +87,7 @@ cases.each do |(library_nonempty, state_present, adopt_input), expected_success|
 end
 
 # Persistence is a property of one task: a writing module whose arguments name
-# the one-run input. The pattern this replaced ran with /m over the whole file,
-# so any writing module anywhere and any later mention of the variable matched,
-# whether or not they were the same task — and a rename that split them across
-# tasks would have hidden a real one.
+# the one-run input.
 PERSISTING_MODULES = /\.(copy|template|lineinfile|blockinfile)\z/
 def guard_task_strings(node)
   case node

@@ -7,18 +7,12 @@
   ansible.builtin.include_tasks: inputs.yml
   when: not (deployment_bundle_controller_inputs_validated | default(false) | bool)
 
-# Once, ahead of every mutation this role makes, and only when the play has
-# not already validated the same paths in its pre_tasks. site.yml validates
-# them before preflight, so a full converge skips this; a playbook that uses
-# the role on its own still validates before it touches anything.
+# Skipped when site.yml's pre_tasks already validated the same paths.
 - name: Validate target containment when not already checked by the play
   ansible.builtin.include_tasks: target.yml
   vars:
-    # This validates the whole platform path set rather than one service's, so
-    # it derives no service paths.
     deployment_target_service: ""
-    # A deployment may legitimately replace an older active release. Runtime
-    # service callers require the current release once the pointer is active.
+    # A deployment may replace an older active release.
     deployment_target_require_current_release: false
     deployment_target_extra_paths: []
   when: not (deployment_bundle_target_validated | default(false) | bool)
@@ -106,9 +100,7 @@
     follow: false
   register: deployment_bundle_current
 
-# Read before the pointer moves: after activation nothing on the target still
-# names the release this run replaced, and the deployment summary needs it to
-# say what changed rather than only what is now installed.
+# Read before the pointer moves: afterwards nothing names the replaced release.
 - name: Record the release the deployment pointer named
   ansible.builtin.set_fact:
     deployment_bundle_previous_release_id: >-
@@ -196,10 +188,7 @@
   changed_when: false
   when: not ansible_check_mode
 
-# 0755, and the only tracked helper that is not 0644. SABnzbd refuses to offer a
-# post-processing script to a category unless the file carries the executable bit
-# on Unix, and it reports that per job rather than at start-up -- so at 0644 this
-# lands, mounts, reconciles and then silently scans nothing.
+# 0755: SABnzbd silently skips a post-processing script without the executable bit.
 - name: Copy the tracked SABnzbd ClamAV gate from the controller
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/services/downloaders/clamav_gate.py"
@@ -360,9 +349,7 @@
   changed_when: true
   when: deployment_bundle_switch_required
 
-# Tagged always so a selective converge (--tags komga) still resolves the Compose
-# selection its service role needs, against whichever release `current` names.
-# Placed last so a full run reads the release this play just activated.
+# Tagged always so a selective converge still resolves its Compose selection.
 - name: Resolve the deployed Compose selection for every service
   ansible.builtin.include_tasks:
     file: compose_files.yml

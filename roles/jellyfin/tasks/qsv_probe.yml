@@ -1,34 +1,8 @@
 ---
-# What this establishes: the Jellyfin container can open the NAS render device,
-# load the iHD VA-API driver, and decode a frame through Quick Sync. It is a
-# hardware proof rather than a configuration one -- nothing in this repository
-# can converge it, and no task the role runs depends on its result.
-#
-# It runs only under exact verification. roles/jellyfin/tasks/verify.yml is the
-# single include site and gates it twice, with `never` and with a run-tag
-# condition; the comment there records why one of those is not enough. It is
-# deliberately absent from roles/jellyfin/tasks/deploy.yml (#535): jellyfin
-# precedes seerr, immich, paperless_ngx and nextcloud in site.yml, so a fatal
-# probe reached from the converge -- or from the --check --diff review the
-# platform requires before applying -- would strand four stacks on a hardware
-# fault that harms none of them. The poller runs verify.yml with
-# platform_verify_jellyfin immediately after site.yml, so nothing is detected
-# later than it was before, only reported without taking anything down with it.
-#
-# The baseline this is read against, measured in the running container on the
-# NAS on 2026-09-10:
-#
-#   libva info: VA-API version 1.23.0
-#   libva info: Trying to open /usr/lib/jellyfin-ffmpeg/lib/dri/iHD_drv_video.so
-#   libva info: Found init function __vaDriverInit_1_23
-#   libva info: va_openDriver() returns 0
-#   rc=0
-#
-# QSV works on this host today, so a nonzero exit is a regression against a
-# measured working state -- a driver that stopped loading, a render device the
-# container can no longer open, or an image bump that broke the QSV stack -- and
-# it means Jellyfin has fallen back to software transcoding on a four-core NAS
-# whose containers are pinned to CPUs 0-2.
+# Hardware proof that the container can open the render device, load iHD and
+# decode through Quick Sync; nothing converges it. Reached only from verify.yml,
+# never the converge (#535). QSV worked on 2026-09-10, so a nonzero exit is a
+# regression and means software transcoding on pinned CPUs.
 - name: Probe the Jellyfin QSV hardware device
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/jellyfin"
@@ -42,10 +16,8 @@
       - -loglevel
       - error
       - -init_hw_device
-      # This runs inside the container, but the host variable is still the right
-      # source: services/jellyfin/compose.yml maps the render device onto itself
-      # rather than renaming it, and tests/contracts/jellyfin-static.rb pins that exact
-      # identity mapping, so the container path is the host path.
+      # Compose maps the render device onto itself, so the host path is the
+      # container path (pinned by tests/contracts/jellyfin-static.rb).
       - vaapi=va:{{ platform_render_device_path }},driver=iHD
       - -init_hw_device
       - qsv=qs@va
@@ -68,16 +40,7 @@
       not ((platform_compose_kind | default('') == 'integration') and
            (deployment_bundle_test_mode | default(false) | bool))
   changed_when: false
-  # A verification playbook converges nothing, so there is nothing here for
-  # --check to simulate: the probe reads the hardware and must really run.
   check_mode: false
-  # Measured against community.docker 5.3.0: docker_compose_v2_exec sets
-  # check_rc only when `detach` is true, so without this line the module reports
-  # success on every exit code and the probe establishes nothing at all (#521).
-  #
-  # `default(1)` and not `default(0)`. failed_when replaces the module's own
-  # verdict, so a module that refused before it ran anything -- an unreachable
-  # project directory, a missing .env -- registers no rc, and defaulting that to
-  # zero would report the refusal as a passing probe. That was #521's own
-  # near-miss, and it is what the fourteen other exec tasks in the tree default.
+  # docker_compose_v2_exec checks rc only with detach (#521); default(1) so a
+  # module that refused before running is not read as a pass.
   failed_when: jellyfin_qsv_probe.rc | default(1) | int != 0

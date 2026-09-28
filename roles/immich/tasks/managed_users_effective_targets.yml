@@ -1,10 +1,6 @@
 ---
-# Run by roles/managed_users after the stable-identity refusal and before the
-# repair (managed_users_before_repair_tasks), in reconcile and verify, --check
-# included. managed_users_matches holds the listing re-read after creation in a
-# reconcile that created or re-read, and the first listing otherwise. The reads
-# registered here are what tasks/managed_users.yml repairs from and what the
-# verify phase's preference verdicts compare.
+# Included by roles/managed_users before the repair; registers the reads that
+# tasks/managed_users.yml repairs from and that verify compares.
 - name: Read Immich managed user preferences
   ansible.builtin.uri:
     url: >-

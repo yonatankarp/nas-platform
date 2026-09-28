@@ -1,12 +1,6 @@
 #!/usr/bin/env ruby
-# The static half of the Trailarr service contract: declared trailer writer
-# ownership, decided from the repository alone with nothing deployed.
-#
+# Static half of the Trailarr contract, decided from the repository alone.
 # usage: trailarr-static.rb REPOSITORY
-#
-# PLATFORM_CONTRACT_REPO_DIR names the same repository and is read below for
-# tests/policy_support.rb, so this program carries no copy of flatten_tasks.
-#
 require "yaml"
 
 root = ARGV.fetch(0)
@@ -31,9 +25,7 @@ end
 require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
 include PolicySupport
 
-# The environment file is a line-oriented grammar, so it is read as the
-# assignments it declares: a commented-out sample of the right assignment
-# satisfies a substring search while the live line exports something else.
+# Read as assignments: a commented-out sample would satisfy a substring search.
 def environment_assignments(path)
   File.readlines(path, chomp: true).filter_map do |line|
     stripped = line.strip
@@ -48,21 +40,15 @@ if failures.empty?
   compose = YAML.safe_load_file(File.join(root, "services/trailarr/compose.yml"), aliases: true)
   service = compose.fetch("services").fetch("trailarr")
 
-  # Trailarr reads Radarr and Sonarr over their own APIs by Compose service
-  # name, and every connection it declares is validated with a live call at
-  # write time, so it has to sit on the shared control network. The two Phase 2
-  # self-contained contracts assert the *absence* of a networks key; neither of
-  # those assertions may be copied here.
+  # Trailarr validates connections with live calls by service name, so it joins
+  # the control network (unlike the self-contained contracts).
   failures << "Trailarr must join the shared media control network" unless
     Array(service["networks"]) == %w[default media-control]
   failures << "the shared media control network must be the external one" unless
     compose.dig("networks", "media-control") ==
       { "external" => true, "name" => "${PLATFORM_MEDIA_NETWORK:?}" }
 
-  # The entrypoint runs as root, reuses the existing account for the supplied
-  # pair, chowns the data directory and re-executes through gosu. A `user:` key
-  # would start it as non-root and break that whole sequence, so the identity
-  # can only arrive under PUID/PGID.
+  # The root entrypoint chowns and drops through gosu; `user:` would break it.
   failures << "Trailarr must not override the container user" if service.key?("user")
   {
     "PUID" => "${NAS_UID:?}",
@@ -71,16 +57,12 @@ if failures.empty?
     failures << "Trailarr must take the platform identity as #{name}" unless
       service.dig("environment", name) == expected
   end
-  # UMASK appears nowhere in the application or its start scripts, so declaring
-  # it would be a no-op a reader mistakes for a control.
+  # UMASK is read nowhere, so declaring it would be a no-op mistaken for a control.
   failures << "Trailarr must not declare an unsupported UMASK" if
     service.fetch("environment", {}).key?("UMASK")
 
-  # Movies and Series are mounted separately, at exactly the container paths
-  # Radarr and Sonarr use for the same host directories. That equality is what
-  # lets every connection carry an empty path_mappings list, because Trailarr
-  # appends a trailing slash to a mapping on write and a declared identity
-  # mapping therefore reads back different from what was sent.
+  # Container paths equal Radarr's and Sonarr's, so no path mapping is needed (a
+  # mapping reads back with a trailing slash and reports drift).
   failures << "Trailarr must mount exactly its config and the two arr libraries" unless
     Array(service["volumes"]) == [
       "${TRAILARR_CONFIG_PATH:?}:/config",
@@ -88,9 +70,7 @@ if failures.empty?
       "${TRAILARR_SERIES_PATH:?}:/data/media/Series"
     ]
 
-  # The identity halves. The `:?` suffix is what turns an unset credential into
-  # a refused deployment rather than a published default administrator holding a
-  # full write session over the Movies and Series trees.
+  # `:?` refuses an unset credential rather than publishing a default admin.
   {
     "API_KEY" => "${TRAILARR_API_KEY:?}",
     "WEBUI_USERNAME" => "${TRAILARR_WEBUI_USERNAME:?}",
@@ -100,10 +80,6 @@ if failures.empty?
       service.dig("environment", name) == expected
   end
 
-  # WEBUI_DISABLE_AUTH mints a session for any caller when true. The others keep
-  # Trailarr from becoming a creator of library directories or a deleter of
-  # media, and stop the container installing yt-dlp from the network at start,
-  # which is what a digest-pinned platform exists to prevent.
   {
     "WEBUI_DISABLE_AUTH" => "False",
     "CREATE_MISSING_FOLDERS" => "False",
@@ -122,8 +98,7 @@ if failures.empty?
   failures << "the Mac override must republish the web UI on the harness port" unless
     mac.dig("services", "trailarr", "ports") == ["${TRAILARR_HOST_PORT:?}:7889"]
 
-  # The image ships curl but neither wget nor busybox, so a wget probe would
-  # report unhealthy forever.
+  # curl ships in the image; wget and busybox do not.
   failures << "Trailarr must probe its unauthenticated status route with curl" unless
     Array(service.dig("healthcheck", "test")).join(" ").include?(
       "curl --fail --silent --show-error http://127.0.0.1:7889/status"
@@ -140,12 +115,7 @@ if failures.empty?
     failures << "Trailarr must write the declared #{name.split('_')[1]} library" unless
       defaults[name] == expected
   end
-  # The one comparison nothing else in the repository makes: a container path
-  # that stopped matching the arr's own root folder would need a path mapping,
-  # and a path mapping reads back with a trailing slash and reports drift
-  # forever. It reads the Compose mount rather than a role default, because the
-  # mount is what actually decides the container path -- a default restating it
-  # would agree with the arr while the mount had already drifted away (#358).
+  # Read from the Compose mount, which decides the container path (#358).
   library_mounts = Array(service["volumes"]).map(&:to_s)
   {
     "${TRAILARR_MOVIES_PATH:?}" => "arr_radarr_root_folder",
@@ -157,19 +127,12 @@ if failures.empty?
   failures << "Trailarr must address both arrs by their Compose service alias" unless
     Array(defaults["trailarr_connections"]).map { |entry| entry["url"] } ==
       ["http://radarr:7878", "http://sonarr:8989"]
-  # Permission to fetch stays off by default, so a disposable lane never makes an
-  # outbound request to YouTube. Only a host may open it.
+  # Fetching stays off by default, so a lane never calls YouTube.
   failures << "Trailarr monitoring must default to off" unless
     defaults["trailarr_monitoring_enabled"] == false
-  # Intent is the other half and defaults on, which is what makes the reconcile
-  # reachable in a lane that keeps the gate shut. The two must stay separate
-  # variables: collapsing them would mean a lane can only execute the reconcile
-  # by also permitting the download.
+  # Intent is separate from permission, so a lane can reconcile without downloading.
   failures << "Trailarr must intend a trailer for every item by default" unless
     defaults["trailarr_monitor_all_media"] == true
-  # Both seeded profiles ship mkv/vp9/opus and the Movie one ships the trailer
-  # beside the movie file. Both are reconciled to a directly playable container
-  # in a Trailers/ subdirectory of the item's own folder.
   failures << "Trailarr must reconcile both seeded trailer profiles" unless
     Array(defaults["trailarr_trailer_profiles"]).map { |entry| entry["id"] } == [1, 2]
   failures << "Trailarr must declare a directly playable trailer in the item's own folder" unless
@@ -178,7 +141,6 @@ if failures.empty?
       "custom_folder" => "{media_folder}", "file_format" => "mp4",
       "video_format" => "h264", "audio_format" => "aac"
     }
-  # Present is the drift; a converge removes the line rather than writing one.
   failures << "Trailarr must require every hand-written application key absent" unless
     Array(defaults["trailarr_config_env_absent_keys"]).sort == %w[
       CREATE_MISSING_FOLDERS DELETE_TRAILER_CONNECTION DELETE_TRAILER_MEDIA
@@ -192,10 +154,8 @@ if failures.empty?
   failures << "Trailarr env must render the CPU set exactly once" unless
     env_assignments.select { |name, _value| name == "PLATFORM_CONTAINER_CPUSET" } ==
       [["PLATFORM_CONTAINER_CPUSET", "{{ platform_effective_container_cpuset }}"]]
-  # Two files, two rules, opposite directions. Compose interpolates $ in an env
-  # file and silently truncates an unescaped bcrypt hash to the empty string, so
-  # here every $ is doubled; /config/.env is sourced by bash instead and takes
-  # the same hash single-quoted and not doubled.
+  # Compose truncates an unescaped $ in an env file, so every $ is doubled there;
+  # /config/.env is sourced by bash and takes the hash single-quoted instead.
   failures << "Trailarr env must double every $ in the administrator hash for Compose" unless
     env_assignments.include?(
       ["TRAILARR_WEBUI_PASSWORD_HASH",
@@ -210,14 +170,8 @@ if failures.empty?
 
   role_tasks = Dir[File.join(root, "roles/trailarr/tasks/*.yml")].sort
   tasks = role_tasks.flat_map { |path| flatten_tasks(YAML.safe_load_file(path, aliases: true)) }
-  # One `up` here since #646, which is the deployment. The bounded recovery that
-  # #537 bracketed it with moved to roles/container_health/tasks/recover.yml --
-  # this role held 114 lines of it byte-identical with five others -- so what is
-  # counted here is the include that spends it rather than the force-recreate
-  # itself. Counted separately from the deployment rather than as a total, so a
-  # second plain deployment is still refused and a recovery included twice in one
-  # converge is still refused; roles/container_health/tasks/recover.yml holding
-  # exactly one force-recreate is tests/container_health_wiring_test.rb's.
+  # One deployment `up`; recovery lives in roles/container_health/tasks/recover.yml
+  # (#646) and is counted as its include.
   compose_ups = tasks.select { |task| task.dig("community.docker.docker_compose_v2", "state") == "present" }
   failures << "Trailarr must deploy through docker_compose_v2" unless
     compose_ups.count { |task| !task["community.docker.docker_compose_v2"].key?("recreate") } == 1
@@ -229,30 +183,19 @@ if failures.empty?
   failures << "Trailarr must verify its effective project CPU policy" unless
     tasks.count { |task| task.dig("vars", "container_cpu_service_name") == "trailarr" } == 1
 
-  # /config/.env is under a bind mount rather than in the Compose spec, so
-  # docker_compose_v2 will not recreate the container when it changes and the
-  # running process keeps the values it read at start. The repair only takes
-  # effect because the role restarts the service when it changed something.
+  # /config/.env is not in the Compose spec, so only the role's restart applies it.
   restart = tasks.find do |task|
     task.dig("community.docker.docker_compose_v2", "state") == "restarted"
   end
   failures << "Trailarr must restart itself onto a repaired application environment" unless
     restart && restart["when"].to_s.include?("trailarr_config_env_repair is changed")
 
-  # PUT /api/v1/settings/update reports failure with HTTP 200 and prose in the
-  # body, so a task asserting status_code 200 passes on every failure -- and
-  # every call writes to /config/.env, which is the drift mechanism itself.
+  # settings/update reports failure as HTTP 200 and rewrites /config/.env.
   failures << "Trailarr must never reconcile through the settings update route" if
     tasks.any? { |task| task.to_s.include?("settings/update") }
 
-  # batch_update's action is typed as a bare string with no enum, its four
-  # accepted values live only in the endpoint description, and it answered a
-  # successful monitor with a literal null body. A status code therefore proves
-  # nothing here, exactly as it proves nothing for settings/update above, so the
-  # reconcile has to read the library back and assert on what it finds.
-  # Splitting permission from intent is only worth anything if the include
-  # respects both. Dropping either clause is a silent change of meaning that no
-  # other check would notice, so the condition is pinned here by name.
+  # batch_update's status proves nothing, so the reconcile reads the library back.
+  # Both permission and intent clauses are pinned by name.
   monitoring_include = tasks.find do |task|
     task["ansible.builtin.include_tasks"].to_s.include?("reconcile_monitoring.yml")
   end
@@ -279,16 +222,12 @@ if failures.empty?
       monitoring.count { |task|
         task.dig("ansible.builtin.uri", "url").to_s.end_with?("media/all")
       } == 2
-  # An item Trailarr already counts satisfied must be excluded by set membership.
-  # downloaded_at reads null even on a satisfied item, so keying off it would
-  # re-monitor every finished title forever.
+  # downloaded_at is null even when satisfied, so exclude by set membership.
   failures << "Trailarr must exclude satisfied media by set membership" unless
     monitoring.any? { |task|
       task.dig("ansible.builtin.uri", "url").to_s.end_with?("media/downloaded")
     } && monitoring.to_s.include?("difference") &&
       !monitoring.to_s.include?("downloaded_at")
-  # Every task carrying the API key is redacted, so the count is reported by a
-  # separate debug built from ids and lengths alone.
   failures << "Trailarr monitoring must redact every task carrying the API key" unless
     monitoring.select { |task| task.to_s.include?("vault_trailarr_api_key") }
               .all? { |task| task["no_log"] == true }
@@ -296,7 +235,6 @@ if failures.empty?
     monitoring.any? { |task|
       task["ansible.builtin.debug"] && task["no_log"].nil?
     }
-  # A converged library must write nothing, or the role reports changed forever.
   failures << "Trailarr must skip the batch update when nothing is unmonitored" unless
     monitoring.any? { |task|
       task.dig("ansible.builtin.uri", "url").to_s.include?("media/batch_update") &&
@@ -304,16 +242,12 @@ if failures.empty?
           clause.to_s.include?("trailarr_media_to_monitor | length > 0")
         }
     }
-  # A read that does not run under --check leaves the selection empty and makes
-  # the prediction a lie.
   failures << "Trailarr monitoring reads must run under check mode" unless
     monitoring.select { |task| task["ansible.builtin.uri"] &&
                                task.dig("ansible.builtin.uri", "method") == "GET" }
               .all? { |task| task["changed_when"] == false && task["check_mode"] == false }
 
-  # The reconcile is a hand-rolled parse and compare rather than a template,
-  # because the entrypoint rewrites the GPU block and the yt-dlp version line on
-  # every start and a whole-file template would report changed forever.
+  # Parsed, not templated: the entrypoint rewrites parts of the file on every start.
   reconcile_env = File.read(File.join(root, "roles/trailarr/tasks/reconcile_env.yml"))
   failures << "the Trailarr application environment must not be templated whole" if
     reconcile_env.include?("ansible.builtin.template")
@@ -323,14 +257,9 @@ if failures.empty?
   end
   failures << "Trailarr must leave the entrypoint's own keys alone" if
     reconcile_env.include?("YTDLP_VERSION") || reconcile_env.include?("GPU_AVAILABLE")
-  # A YAML block scalar keeps a backslash as an ordinary character and Jinja's
-  # string literal does not unescape it back, so joining on a written-out
-  # backslash-n collapses the whole file onto one line. The application sources
-  # that as a single comment and keeps nothing, and the repair reports changed
-  # forever because what it wrote never matches what it reads back. The
-  # separator must come from a scalar YAML resolves to a real newline first.
-  # Read without the commentary, so the rule can be explained in the file it
-  # governs without the explanation tripping it.
+  # The separator must be a real newline: a written-out \n in a block scalar joins
+  # the file onto one line that the app reads as a comment. Comments are stripped
+  # so this explanation cannot trip the rule.
   reconcile_env_code = reconcile_env.lines.reject { |line| line.strip.start_with?("#") }.join
   failures << "the Trailarr application environment must be joined on a real newline" if
     reconcile_env_code.include?(%q{join('\n')}) || reconcile_env_code.include?(%q{~ '\n'})
@@ -361,9 +290,7 @@ if failures.empty?
     uri.is_a?(Hash) && uri["url"] == "{{ trailarr_api }}/settings/" && !uri.key?("headers")
   end
   failures << "Trailarr verification must probe a protected route anonymously" if anonymous.nil?
-  # The application ships admin / trailarr and the hash of that password is a
-  # literal in its own settings module, so the account is refused rather than
-  # merely overwritten.
+  # The shipped admin/trailarr account is refused, not merely overwritten.
   published_default = verification.find do |task|
     task.dig("ansible.builtin.uri", "body", "password") == "trailarr"
   end
@@ -384,7 +311,6 @@ if failures.empty?
     conditions.include?("trailarr_verify_authenticated.status") &&
     conditions.include?("trailarr_verify_anonymous.status") &&
     conditions.include?("trailarr_verify_default_identity.status")
-  # The diagnosis is the point of deferring, so it must not be redacted away.
   failures << "the Trailarr outcome assertion must stay readable" if
     outcome_assertion && outcome_assertion["no_log"]
 
@@ -396,10 +322,8 @@ if failures.empty?
 end
 
 unless failures.empty?
-  # Every violation, one per line, each line naming the contract that authored it.
-  # The prefix is not decoration: tests/<service>_contract_test.rb requires a row
-  # that says "this must be refused" to see it, so a Ruby backtrace or a shell
-  # diagnostic can no longer stand in for a refusal (#352).
+  # One line per violation with the contract's prefix, which contract tests
+  # match on (#352).
   warn failures.map { |failure| "Trailarr contract failed: #{failure}" }.join("\n")
   exit 1
 end

@@ -12,11 +12,7 @@
     deployment_target_require_current_release: true
     deployment_target_extra_paths:
       - "{{ downloaders_sabnzbd_config_host_path }}"
-      # SABnzbd bind-mounts the post-processing gate out of the release, so the
-      # role touches it as surely as it touches the compose files and has to say
-      # so here. A release missing it starts a SABnzbd whose categories name a
-      # script that is not there, which SABnzbd reports per job rather than at
-      # start-up.
+      # SABnzbd bind-mounts the post-processing gate out of the release.
       - "{{ platform_current_dir }}/services/downloaders/clamav_gate.py"
 
 - name: Require INI-safe SABnzbd administrator credentials
@@ -27,17 +23,9 @@
     fail_msg: SABnzbd administrator credentials must be nonempty single-line values.
   no_log: true
 
-# The operator-owned half of the provider, held to the rules SABnzbd's own
-# normalization imposes: it lowercases and strips the host and clamps the port
-# and the connection count, and a value it would rewrite can never equal the
-# declared one, so the reconciliation below would push it again on every run for
-# as long as it stood. These rules moved out of the credential contract with the
-# values (#298); the filter names the offending field and never echoes a value,
-# so this message is safe to print in full.
-#
-# Ungated on purpose. An undeclared provider is a valid state but a *malformed*
-# declaration is not, and the filter already treats an empty host as the
-# undeclared shape rather than as a bad one.
+# SABnzbd normalises host, port and connection count; a value it would rewrite
+# never equals the declared one and would reconcile forever (#298). Ungated:
+# an empty host is the undeclared shape, not a malformed one.
 - name: Require a SABnzbd-storable Usenet provider policy
   ansible.builtin.assert:
     that: media_usenet_provider | media_usenet_provider_errors | length == 0
@@ -45,18 +33,9 @@
       The declared Usenet provider policy is malformed:
       {{ (media_usenet_provider | media_usenet_provider_errors) | join('; ') }}
 
-# The invariant three consumers below depend on, and the one the split
-# dissolved. The credential contract used to hold all six provider values in a
-# single all-or-nothing group, so a non-empty host proved the credentials existed
-# too and `downloaders_usenet_provider_declared` was sufficient on its own. The
-# contract now sees only the two credentials and cannot see the host, so nothing
-# else would notice a host declared with no account, or an account with no host
-# -- the first reconciles a server that cannot authenticate, the second leaves a
-# paid subscription silently unused.
-#
-# This runs before the provider credential guard below, before
-# reconcile_sabnzbd.yml and before verify.yml, because every one of them reads
-# that variable as proof the credentials are there.
+# The credential contract no longer sees the host, so host and credentials must
+# agree here, before everything that treats a declared provider as proof the
+# credentials exist.
 - name: Require both halves of the Usenet provider declaration to agree
   ansible.builtin.assert:
     that:
@@ -69,19 +48,9 @@
       and the account name says who it belongs to.
   no_log: true
 
-# SABnzbd writes what it is given into `sabnzbd.ini`, whose grammar is one key
-# per line. It hex-encodes a password carrying a control character but does
-# nothing of the sort for the account name, so a newline there corrupts the file
-# SABnzbd itself writes. The surrounding whitespace rule is `OptionStr`, which
-# strips the name before storing it, and a value SABnzbd rewrites can never
-# equal the declared one. The asterisk rule is `OptionPassword.set`, which
-# silently discards a value that is all asterisks because that is what its own
-# masked read-back looks like.
-#
-# These rules reject an empty value, which is what an undeclared provider is, so
-# the guard is gated rather than relaxed: a declared provider is held to every
-# rule and an undeclared one has no credential to hold. Left ungated it refused
-# to deploy anything at all on a target with no Usenet subscription.
+# sabnzbd.ini is one key per line and the account name is not escaped; OptionStr
+# strips whitespace and OptionPassword.set drops all-asterisk values. Gated,
+# because an undeclared provider has no credential to hold.
 - name: Require INI-safe SABnzbd Usenet provider credentials
   ansible.builtin.assert:
     that:
@@ -94,18 +63,8 @@
   when: downloaders_usenet_provider_declared | bool
   no_log: true
 
-# The post-processing gate is bind-mounted out of the release, and a changed
-# bind source is not a changed container: Docker resolves a bind-mount source
-# once, when the container starts, so SABnzbd keeps the inode from whichever
-# release was current then while `current` moves on underneath it (#810 -- a
-# container started four releases earlier was still executing that release's
-# copy, and a release that carried no gate at all leaves Docker's auto-created
-# empty directory mounted there instead, which SABnzbd reports per job as
-# "Cannot run script"). The gate's own sha256 reaches a container label through
-# the environment, so editing the gate is a changed definition and Compose
-# recreates SABnzbd -- and only then, rather than on every release, which is
-# what keeps a merge from interrupting an active download. services/kapowarr
-# carries its task handler patch and services/dozzle its alert relay the same way.
+# The gate's sha256 reaches a container label so an edited gate recreates
+# SABnzbd; Docker resolves a bind source only at start (#810).
 - name: Inspect the SABnzbd ClamAV gate carried by the release
   ansible.builtin.stat:
     path: "{{ platform_current_dir }}/services/downloaders/clamav_gate.py"
@@ -114,10 +73,8 @@
     checksum_algorithm: sha256
   register: downloaders_clamav_gate
 
-# Under --check the release is staged nowhere, so `current` is still the
-# previous release, and the deploy that introduces the gate finds no file there.
-# Only then is the controller's copy hashed instead: it is the byte-identical
-# source deployment_bundle copies into the release on a real run.
+# Under --check `current` is still the previous release, so the controller's
+# byte-identical copy is hashed instead.
 - name: Require the SABnzbd ClamAV gate to be a regular file
   ansible.builtin.assert:
     that:
@@ -178,13 +135,8 @@
     - not downloaders_sabnzbd_bootstrap_state.stat.exists | bool
   no_log: true
 
-# The block exists for one thing the rescue does with the failure: it hands the
-# deployment's own message to roles/container_health, which either explains it in
-# terms of the container state Docker reports or re-raises it unchanged.
-# Compose's `--wait` fails a crash-looping container with "container ... is
-# unhealthy", which says nothing about why. roles/bindery/tasks/main.yml carries
-# the long form of this argument; #509 built the mechanism and #537 wired the
-# remaining eleven single-`up` roles into it.
+# The rescue hands the failure to roles/container_health, which explains a
+# crash-looping container Compose reports only as "unhealthy" (#509, #537).
 - name: Deploy the Phase 1 downloader project, catching a container that runs but never serves
   when: media_usenet_enabled | bool
   block:
@@ -199,23 +151,15 @@
         wait_timeout: "{{ platform_compose_wait_timeout }}"
       register: downloaders_deploy
   rescue:
-    # First, and before anything else can rebind it: ansible_failed_result
-    # belongs to whichever rescue is running.
+    # First: ansible_failed_result belongs to whichever rescue is running.
     - name: Record the failed downloader deployment
       ansible.builtin.set_fact:
         downloaders_deploy_failure_message: >-
           {{ ansible_failed_result.msg
              | default('the downloader deployment failed and reported no message') }}
 
-# Immediately after the deployment and before everything that trusts it. A
-# container in `Restarting` still appears in `docker container ls --quiet`, so
-# the CPU verification below would sail straight past one and the readiness probe
-# after it would fail on a timeout that names nothing (#510).
-#
-# This pass detects, prints the evidence and publishes
-# container_health_stuck_services WITHOUT refusing, because the recreate below
-# has to happen before the verdict. It still re-raises a deployment failure that
-# no stuck container explains.
+# A `Restarting` container still passes `docker container ls` (#510). This pass
+# only detects and publishes the stuck list; the verdict follows the recreate.
 - name: Detect a downloader container that runs but never serves
   ansible.builtin.include_role:
     name: container_health
@@ -227,16 +171,9 @@
     container_health_refuse: false
   when: media_usenet_enabled | bool
 
-# EXACTLY ONE force-recreate, of only the services Docker says are stuck.
-# FORCED, because `up -d` against an unchanged specification keeps the same
-# container and recreates nothing; `dependencies: false` renders as --no-deps, so
-# a healthy sibling in the same project is not taken down to repair one container.
-# CONDITIONAL, and that condition is the whole idempotence argument: the list is
-# empty on a converged host and empty under --check, so this task is skipped on
-# every run that has nothing to repair. BOUNDED AT ONE PER RUN by being a single
-# task rather than a loop, with the verdict below re-checking, so a container
-# looping for a reason a recreate cannot fix never goes green and never becomes
-# an invisible retry loop.
+# At most one forced recreate per run, of only the stuck services, without
+# deps. The list is empty on a converged host and under --check, which keeps
+# this idempotent; the verdict below re-checks.
 - name: Recreate a downloader container that runs but never serves
   when: media_usenet_enabled | bool
   block:
@@ -255,18 +192,14 @@
       when: container_health_stuck_services | default([]) | length > 0
       register: downloaders_wedged_recreate
   rescue:
-    # Carried rather than re-raised here. `--wait` fails a container that came
-    # back unhealthy, which the re-check below diagnoses far better than Compose
-    # can; a recreate that failed for any OTHER reason left no stuck container
-    # behind, and the second pass re-raises this message unchanged for that case.
+    # Carried, not re-raised: the re-check below diagnoses an unhealthy container
+    # better, and the second pass re-raises any other failure.
     - name: Record the downloader recreate that did not recover the service
       ansible.builtin.set_fact:
         downloaders_recreate_failure_message: >-
           The force-recreate reported: {{ ansible_failed_result.msg
           | default('no message') }}
 
-# Whether a recreate was actually spent, recorded before the second pass
-# overwrites the list it was decided from.
 - name: Record whether a downloader recreate was spent
   ansible.builtin.set_fact:
     downloaders_recreate_spent: >-
@@ -286,9 +219,6 @@
     - ansible_check_mode
     - media_usenet_enabled | bool
 
-# The verdict. Nothing stuck here means the recreate worked, or that there was
-# never anything to repair; either way the run continues. Anything still stuck
-# fails, and says the retry has already been spent.
 - name: Refuse a downloader container that stayed wedged after its recreate
   ansible.builtin.include_role:
     name: container_health
@@ -339,11 +269,7 @@
     tasks_from: report
   vars:
     deployment_report_service: Downloaders
-    # Both Compose results, because a force-recreate that repaired a wedged
-    # container changed the deployment as surely as the deploy above did, and a
-    # report gated on the deploy alone would say nothing on the one converge an
-    # operator most wants to hear about. It is registered even when skipped, and
-    # `default({})` covers the paths that never reach it at all.
+    # Both Compose results: a repairing force-recreate changed the deployment too.
     deployment_report_changed: >-
       {{ (downloaders_deploy is changed)
          or ((downloaders_wedged_recreate | default({})) is changed) }}

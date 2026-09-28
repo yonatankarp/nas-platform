@@ -1,17 +1,7 @@
 #!/usr/bin/env ruby
-# The static half of the Beszel service contract: the telemetry policy the
-# role declares, its argument validation, the Compose definition's agent and
-# socket-proxy shape, the two inventories' capability declarations, the two
-# Mac hooks and the agreement between the drift hook's refusal anchor and the
-# fail_msg of the role guard it anchors on, all decided from the repository
-# alone with nothing deployed.
-#
-# usage: beszel-static.rb REPOSITORY
-#
-# PLATFORM_CONTRACT_REPO_DIR names the tree being inspected, which is where
-# tests/policy_support.rb and tests/http_fixture_support.rb are required from --
-# not the checkout this file lives in. Run it through tests/contracts/beszel.sh
-# rather than directly.
+# Static half of the Beszel contract, decided from the repository alone.
+# usage: beszel-static.rb REPOSITORY (run through tests/contracts/beszel.sh;
+# support files are required from PLATFORM_CONTRACT_REPO_DIR).
 root = ARGV.fetch(0)
 defaults = YAML.safe_load_file(File.join(root, "roles/beszel/defaults/main.yml"))
 vars = YAML.safe_load_file(File.join(root, "roles/beszel/vars/main.yml"))
@@ -22,25 +12,13 @@ probe = File.file?(probe_path) ? File.read(probe_path) : ""
 probe_support_path = File.join(root, "module_utils/beszel_telemetry.py")
 probe_support = File.file?(probe_support_path) ? File.read(probe_support_path) : ""
 require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
-# The prefix ansible-core prints in front of a failing task's fail_msg, taken
-# from the one place that states it rather than transcribed a third time. The
-# drift hook's anchor is that prefix followed by the guard's own diagnostic, and
-# both halves are read here from the tree being inspected: a core release that
-# rephrases the prefix is fixed in HttpFixtureSupport and this contract follows.
+# The ansible-core fail_msg prefix, read from HttpFixtureSupport rather than restated.
 require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "http_fixture_support")
 include PolicySupport
-# main.yml is read through static_role_tasks, which splices a statically imported
-# stage file in where it stands and leaves a dynamic include alone -- the role
-# Ansible runs. The Beszel role is one stage per file, so a bare read of the index
-# would find none of the required_tasks below and this contract would abort on a
-# role it never looked at.
+# static_role_tasks splices static imports in; a bare read of main.yml finds no tasks.
 role_tasks = flatten_tasks(PolicySupport.static_role_tasks(role_path))
 role_task_names = role_tasks.filter_map { |task| task["name"] if task.is_a?(Hash) }
-# Assertions about what the role does read the parsed structure rather than the
-# file's bytes: a task name or a registered variable that survives only inside a
-# comment is not something the role executes. role_strings collects the strings
-# one at a time rather than joining them, because a pattern matched against a
-# joined blob spans two unrelated tasks and reports a violation neither contains.
+# Collect strings one at a time: a pattern over a joined blob spans unrelated tasks.
 def role_strings(node)
   case node
   when Hash then node.flat_map { |key, value| [key.to_s] + role_strings(value) }
@@ -69,13 +47,8 @@ refuse("freshness must cover exactly three one-minute samples") unless
   defaults["beszel_telemetry_freshness_seconds"] == 180
 refuse("telemetry polling timeout differs") unless
   defaults["beszel_telemetry_poll_timeout_seconds"] == 90
-# The Dozzle alert relay's /beszel route, authenticated with the relay's own
-# token. The relay sets the priority, 1 for a problem and -1 for its recovery,
-# so a URL still naming pushover:// would ring every recovery again. A URL
-# without the header is refused by the relay with 401, and one carrying a
-# Pushover token instead would put a publishing credential in Beszel's database.
-# Equality is the whole check. The three refusals before it only name which of
-# those defects it is.
+# The relay's /beszel route with its own token: a pushover:// URL would ring every
+# recovery, and a Pushover token here would put a publishing credential in Beszel's DB.
 notification_url = defaults["beszel_notification_url"].to_s.strip
 refuse("notification webhook still sends to pushover:// directly instead of through the relay") if
   notification_url.start_with?("pushover://")
@@ -87,31 +60,22 @@ refuse("notification webhook is not the alert relay's /beszel route with the rel
   notification_url ==
     "generic://alert-relay:{{ dozzle_alert_relay_port }}/beszel?disabletls=yes&template=json" \
     "&@Authorization={{ ('Bearer ' ~ vault_dozzle_alert_relay_token) | urlencode }}"
-# The diagnostic's scheme label has to match the managed URL's scheme. Left on
-# the previous scheme, it reports [REDACTED] for the correct webhook forever and
-# nothing fails (#598). The fact is no_log and reaches only a fail_msg, so this
-# is the one place it is observed.
+# A stale scheme label reports [REDACTED] for the correct webhook forever (#598).
 webhook_summary = role_tasks.find do |task|
   task.is_a?(Hash) && task["name"] == "Summarize the managed relay webhook without URL bodies"
 end
 webhook_scheme = webhook_summary&.dig("ansible.builtin.set_fact", "beszel_webhook_scheme").to_s
 refuse("webhook scheme summary does not match the relay URL's generic:// scheme") unless
   webhook_scheme.include?("select('match', '^generic://')") && !webhook_scheme.include?("pushover")
-# The relay gives a Beszel alert its "Open in Beszel" button only when the link
-# starts with its BESZEL_LINK_BASE, and Beszel builds that link from its own
-# APP_URL. Two sources that happen to agree are not enough: a mismatch drops
-# every button, and no alert or check notices. So both must be the one
-# inventory variable, read bare, in both roles' environment files.
+# Both roles must read the one inventory variable, or the relay drops every
+# "Open in Beszel" button silently.
 beszel_env = File.read(File.join(root, "roles/beszel/templates/env.j2"))
 dozzle_env = File.read(File.join(root, "roles/dozzle/templates/env.j2"))
 refuse("Beszel's APP_URL and the relay's BESZEL_LINK_BASE are not both beszel_app_url") unless
   beszel_env.lines.include?("BESZEL_APP_URL={{ beszel_app_url }}\n") &&
     dozzle_env.lines.include?("BESZEL_LINK_BASE={{ beszel_app_url }}\n") &&
     compose.dig("services", "hub", "environment", "APP_URL") == "${BESZEL_APP_URL:?}"
-# Scoped to the one variable rather than to the whole file: naming the required
-# categories anywhere else, including in a comment, is not the same as deriving
-# them, and matching a literal expression would miss the same inference written
-# with different spacing.
+# Scoped to the one variable: a mention elsewhere is not a derivation.
 effective_categories = vars["beszel_effective_required_telemetry_categories"].to_s
 refuse("effective categories must use explicit inventory policy") unless
   vars.key?("beszel_effective_required_telemetry_categories") &&
@@ -153,9 +117,6 @@ refuse("persisted telemetry probe does not receive the total deadline") unless
 refuse("deadline probe implementation is absent") unless
   probe.include?("poll_telemetry") && probe_support.include?('fetcher("system_stats"') &&
     probe_support.include?('fetcher("container_stats"')
-# The persisted-telemetry evidence has to come out of the probe's own registered
-# result. Naming the variable somewhere in the file proved nothing about which
-# task produced it or whether anything consumed it.
 refuse("role treats live health as persisted telemetry") unless
   collection_poll && collection_poll["register"] == "beszel_telemetry_probe_result" &&
     role_tasks.any? do |task|
@@ -166,13 +127,8 @@ refuse("role treats live health as persisted telemetry") unless
 intel = compose.fetch("services").fetch("agent-intel")
 portable = compose.fetch("services").fetch("agent-portable")
 proxy = compose.fetch("services").fetch("socket-proxy")
-# The hub alone joins the external bridge host_prep creates for the Dozzle alert
-# relay, and names default beside it: a service with a networks key joins only
-# what it lists, so dropping default cuts the portable agent off from hub:8090.
-# The socket proxy shares only the internal docker-api network, and only with
-# agent-portable (#829); docker-api-publish is its own, and carries the
-# loopback port agent-intel reaches it on. Every service's membership is pinned,
-# so a hub moved onto the proxy's network is a refusal.
+# A service with a networks key joins only what it lists, so the hub keeps
+# default; the socket proxy shares only docker-api with agent-portable (#829).
 refuse("hub must join default and the external alert-relay bridge, and nothing else may") unless
   compose.fetch("services").fetch("hub")["networks"] == %w[default alert-bridge] &&
     compose["networks"] == { "default" => {},
@@ -187,10 +143,7 @@ refuse("NAS Intel agent image differs") unless
 refuse("NAS Intel render device differs") unless
   intel.fetch("devices").first == "${NAS_RENDER_DEVICE:?}:${NAS_RENDER_DEVICE:?}" &&
     nas_inventory.fetch("platform_render_device_path") == "/dev/dri/renderD128"
-# One Compose slot per inventory disk, each SATA base device onto itself and each
-# NVMe namespace onto its controller name, read-only. The counts come from the
-# NAS inventory, so a disk added there without a slot -- or a slot without a disk
-# -- is a refusal here as well as in the role's own assertion.
+# One read-only Compose slot per inventory disk, counted from the NAS inventory.
 sata = nas_inventory.fetch("platform_smart_sata_devices")
 nvme = nas_inventory.fetch("platform_smart_nvme_namespaces")
 expected_smart_devices =
@@ -207,11 +160,8 @@ slot_conditions = Array(slot_guard&.dig("ansible.builtin.assert", "that")).join(
 refuse("role does not pin the S.M.A.R.T. slot count to Compose") unless
   slot_conditions.include?("platform_smart_sata_devices | length == #{sata.length}") &&
     slot_conditions.include?("platform_smart_nvme_namespaces | length == #{nvme.length}")
-# A declared disk missing from the host must not stop the agent starting or the
-# deploy running. The role stats every slot's path for real, --check included,
-# warns about each one that is not a device node rather than failing, and env.j2
-# renders a slot's path only when it was found. tests/beszel_telemetry_ansible_test.rb
-# runs these tasks against absent paths; this holds their shape.
+# A declared disk missing from the host warns rather than fails; the behaviour
+# is tested in tests/beszel_telemetry_ansible_test.rb, this holds the shape.
 smart_stat = role_tasks.find { |task| task["name"] == "Look for each declared S.M.A.R.T. device node on this host" }
 smart_warn = role_tasks.find { |task| task["name"] == "Warn about declared S.M.A.R.T. devices absent from this host" }
 env_render = role_tasks.find { |task| task["name"] == "Render the Beszel environment" }
@@ -253,46 +203,20 @@ refuse("Mac verification does not execute persisted telemetry proof") unless
 refuse("Mac drift hook does not execute category rejection semantics") unless
   drift_hook.include?('ruby "$mac_script_dir/../beszel_telemetry_probe_test.rb"')
 
-# The drift hook's refusal anchor, asserted as an agreement rather than as a
-# third copy of the sentence. tests/mac/verify.sh verifies every service in one
-# playbook, so a hook that asserts nothing beyond that command exiting non-zero
-# is satisfied by an unrelated service failing -- it was, until #440. The grep
-# for "<TASK_REFUSAL_PREFIX><fail_msg>" is what makes the hook test Beszel, and
-# nothing static said so until #450: deleting or broadening it left this contract
-# green, which is the same shape as the defect #440 closed one level up.
-#
-# Both halves are read from what the role and the fixture support actually
-# declare, so rewording the guard's fail_msg without rewording the hook is a
-# refusal here rather than a hook that has quietly stopped anchoring on
-# anything. "Verify the managed application user contract" is the guard the hook
-# names because it is the first tagged refusal reachable under
-# --tags platform_verify_beszel; the hook's own comment records why.
+# The drift hook must grep "<TASK_REFUSAL_PREFIX><fail_msg>", or an unrelated
+# service failing satisfies it (#440). Both halves are read from the tree.
 app_user_guards = role_tasks.select { |task| task["name"] == "Verify the managed application user contract" }
 refuse("the managed application user guard is absent or ambiguous") unless app_user_guards.length == 1
-# assert is read through its FQCN alone: ansible-lint's production profile
-# rejects the short form, so a bare assert: cannot reach this tree. The safe
-# navigation is what the refusal above already excludes: it keeps a run in which
-# that refusal was removed reporting the empty diagnostic below by name, rather
-# than a NoMethodError backtrace.
+# FQCN only: ansible-lint's production profile rejects the short form.
 guard_diagnostic = app_user_guards.first&.dig("ansible.builtin.assert", "fail_msg").to_s.strip
 refuse("the managed application user guard states no diagnostic to anchor on") if guard_diagnostic.empty?
-# Two ways to leave the anchor below pinning a sentence the run can never print,
-# both of which leave the YAML it is read from untouched. no_log censors the
-# fail_msg at runtime, so the capture the hook greps says the output has been
-# hidden instead; an untagged guard is not selected by --tags
-# platform_verify_beszel at all, so tests/mac/verify.sh never reaches it. Either
-# one fails the hook on every drift run -- but the drift hook runs only under
-# tests/mac/run.sh, a hand-run lifecycle proof rather than a CI lane, so "loud"
-# means loud the next time somebody runs the Mac proof. That is the wait this
-# contract exists to remove. #444 recorded the absent no_log as load-bearing and
-# left nothing pinning it.
+# no_log or a missing tag would leave the anchor pinning a sentence the run can
+# never print, and the drift hook only runs in the hand-run Mac proof (#444).
 refuse("the managed application user guard censors the diagnostic the hook reads") if
   app_user_guards.first["no_log"]
 refuse("the managed application user guard is not selected by the verification tag") unless
   Array(app_user_guards.first["tags"]).include?("platform_verify_beszel")
-# Comment lines dropped first: an anchor that survives only inside the hook's own
-# explanation of the anchor is not something the hook runs, and a whole-file
-# substring cannot tell those apart.
+# Comment lines dropped: an anchor only in the hook's explanation is not run.
 drift_hook_code = drift_hook.lines.reject { |line| line.strip.start_with?("#") }.join
 refuse("Mac drift hook does not anchor on the managed application user guard's own refusal") unless
   drift_hook_code.include?("#{HttpFixtureSupport::TASK_REFUSAL_PREFIX}#{guard_diagnostic}")

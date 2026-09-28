@@ -1,57 +1,11 @@
 #!/usr/bin/env ruby
 # A file this platform renders into a container's state tree must be openable by
-# the container that reads it.
-#
-# THE HOLE THIS CLOSES (#548). roles/adguard rendered AdGuardHome.yaml at mode
-# 0600 and declared no owner, so the file belonged to whichever account ran
-# Ansible -- root inside the CI controller container. The container runs as
-# ${NAS_UID}:${NAS_GID}, could not open its own configuration, and exited
-# immediately with `failed to parse configuration file err="open ...: permission
-# denied"`. Docker reported `restarting exit=1` with an EMPTY health log,
-# because a process that dies before it serves never reaches its health check.
-#
-# #577 REMOVED THAT SERVICE AND THIS FILE STAYS, which is the whole reason it was
-# written as a sweep over every role rather than as a line in the adguard
-# contract. AdGuard turned out to be the only role missing a convention arr,
-# downloaders, pinchflat and trailarr already followed, so what this guards is
-# the next service added and not the one that exposed it. Its self-test rows
-# moved with the removal -- they are planted into roles/trailarr and
-# services/vaultwarden now -- because a self-test whose plants no longer apply
-# is a clean report that means nothing.
-#
-# THE REASON NOTHING LOCAL SAW IT, and the reason this is a sweep rather than a
-# line in a contract: **Docker Desktop for Mac does not enforce bind-mount
-# ownership.** Every uid inside a container reads every bind-mounted file there,
-# so the property this file asserts does not exist on the machine most of this
-# repository is written on. It exists on the NAS and on a CI runner. An
-# empirical proof -- converge, converge again, read the diff -- cannot find this
-# defect on a Mac however carefully it is run, which is exactly what happened:
-# the image was started successfully here half a dozen times, idempotence was
-# demonstrated byte for byte, and the lane still refused the container.
-#
-# WHY THE SUBJECT IS DERIVED AND NOT LISTED. The rule only bites where the
-# container is NOT root, so the subject is every service whose Compose file gives
-# a container the shared numeric identity. roles/beszel is the counter-example
-# that proves it: it writes a 0600 keypair with no owner and is correct, because
-# its hub container runs as root and therefore owns what Ansible wrote. Deriving
-# the subject from the Compose files rather than naming it means beszel drops out
-# by being root instead of by being excused, and a service that later gains a
-# `user:` key is in scope the moment it does.
-#
-# WHY A FILE OF ITS OWN rather than a section of one of the eight scripts in
-# POLICY_SCRIPTS: the same reason tests/container_health_wiring_test.rb and
-# tests/deployment_gate_coverage_test.rb state for themselves. This reads
-# services/manifest.yml, every services/*/compose.yml and every roles/*/tasks
-# tree, and tests/policy_mutation_support.rb plants defects into several of
-# those. Inside one of the eight, every such mutation would newly be detected by
-# that script, the per-site declared sets in tests/policy_manifest_test.rb would
-# drift, and `--audit` would fail. Outside them it cannot happen.
+# the container that reads it (#548). Docker Desktop does not enforce bind-mount
+# ownership, so only a Linux host sees this defect. The subject is derived from
+# the Compose files (non-root containers only), and this is a file of its own so
+# policy mutations do not drift tests/policy_manifest_test.rb's declared sets.
 
-# Explicitly, not transitively. permitted_classes below names Date, and on this
-# workstation `require "yaml"` happens to define it -- psych pulls it in -- while
-# on the CI runner's psych it does not, so 5f7c1155 had to add this line after a
-# check died there with `uninitialized constant Date (NameError)` on a tree that
-# was green locally.
+# Explicitly: permitted_classes names Date, which some psych versions do not load.
 require "date"
 require "fileutils"
 require "open3"
@@ -63,73 +17,31 @@ require_relative "policy_support"
 
 include TestScaffold
 
-# Overridable so that --self-test below can run this same program against a
-# planted copy of the tree, which is what CLAUDE.md means by showing a checker
-# a real defect before trusting its clean report.
+# Overridable so --self-test can run against a planted copy of the tree.
 ROOT = ENV.fetch("PLATFORM_RENDERED_OWNERSHIP_ROOT", File.expand_path("..", __dir__))
 
-# The two ways the platform identity reaches a container, and both count. A
-# service either takes it directly as a numeric `user:`, or -- the linuxserver.io
-# family -- starts as root and re-executes as PUID/PGID through s6 or gosu. The
-# second is not a weaker case: the process that finally opens the file is the
-# unprivileged one either way, which is why roles/arr, roles/downloaders and
-# roles/trailarr all declare owner on files their PUID containers read.
+# The platform identity reaches a container directly as `user:` or via a
+# root entrypoint re-executing as PUID/PGID; both count.
 PLATFORM_IDENTITY = "${NAS_UID:?}:${NAS_GID:?}"
 PLATFORM_UID_ENVIRONMENT = "${NAS_UID:?}"
 
-# The stacks that run at least one container under the platform identity, pinned
-# in both directions rather than only counted. A derived subject list that
-# quietly empties passes every property below vacuously, and a floor alone cannot
-# tell "Komga was removed" from "Komga stopped matching the selector".
-#
-# vaultwarden (#547) is on the list and contributes no subject, which is the
-# state this list has to be able to express. Its container takes the platform
-# identity directly, so it is in scope by the rule above; it simply renders
-# nothing into its own state tree -- the only file the role writes is the
-# runtime .env, and that is Compose's `--env-file`, read by the Docker CLI on
-# the host rather than by anything inside the container. Being listed is what
-# makes that a checked fact rather than an assumption, and what puts the role in
-# scope the moment it does render into /data.
+# Pinned both ways so a derived subject list cannot quietly empty. vaultwarden
+# (#547) is listed but renders nothing into its state tree.
 EXPECTED_IDENTITY_SERVICES = %w[
   arr audiobookshelf bindery downloaders dozzle jellyfin kapowarr komga
   paperless-ngx pinchflat seerr trailarr vaultwarden
 ].freeze
 IDENTITY_FLOOR = 13
-# Every rendered file the rule reaches today, counted off this sweep's own
-# summary line rather than reasoned about. Held as a floor for the same reason
-# every other list here is: a selector that stops matching reports success. It
-# stood at 4 against a live 6 until #577 re-derived it, which is exactly the
-# staleness a `>=` floor cannot report.
-#
-# Overridable for the same reason ROOT above is, and only by the self-test: the
-# negative-control row widens one subject's mode, so the planted tree really
-# does hold one subject fewer and an exact floor would fail that row for a
-# reason that has nothing to do with what it asserts. The row lowers the floor
-# by exactly the subject it removed rather than the floor being left slack for
-# everybody -- slack is what let this number sit two below the tree. Derived
-# from the constant rather than restated, so adding a subject cannot leave a
-# second number behind that nothing bumps.
+# Exact floor, counted off this sweep's summary line; only the self-test's
+# negative-control row lowers it, by exactly the subject it removed.
 SUBJECT_FLOOR = Integer(ENV.fetch("PLATFORM_RENDERED_OWNERSHIP_SUBJECT_FLOOR", "5"))
 
 WRITING_MODULES = %w[ansible.builtin.template ansible.builtin.copy].freeze
 
 # --- self-test ---------------------------------------------------------------
-#
-# Each row plants exactly one thing in a throwaway copy of the tree and requires
-# this sweep to name it -- or, for the negative control, to stay silent. The
-# first row is the defect that actually broke the adguard integration lane,
-# replanted into roles/trailarr once #577 removed the role it was found in, so
-# this file's clean report means something rather than being asserted.
-#
-# WHY TWO SUBJECTS RATHER THAN ONE. Rows 1, 2 and 4 need a role that renders a
-# restricted-mode file into a path one of its own identity containers mounts,
-# and roles/trailarr is the cleanest: its reconcile_env.yml writes exactly one
-# such file, so each substitution below is unambiguous. Row 3 needs a stack
-# whose whole identity is one `user:` key, so that removing that key really does
-# drop the service out of the selector -- services/trailarr takes the identity
-# through PUID/PGID and services/dozzle declares `user:` on two containers, so
-# neither would; services/vaultwarden is one container with one key and is the
-# stack the pinned list above already explains carries no subject of its own.
+# Each row plants one defect in a throwaway tree and requires the sweep to name
+# it (or stay silent, for the negative control). roles/trailarr renders exactly
+# one restricted file; services/vaultwarden's identity is a single `user:` key.
 SELF_TEST_TREES = %w[services roles].freeze
 
 SELF_TEST_ROWS = [
@@ -161,14 +73,8 @@ SELF_TEST_ROWS = [
     expects: "no longer reads as running a container under the shared numeric identity"
   },
   {
-    # THE DEFECT #596 CLOSED, and the file it is planted in was chosen for what
-    # it does NOT contribute. Corrupting reconcile_env.yml would drop a counted
-    # subject too, take the count to four and breach SUBJECT_FLOOR -- so the row
-    # would pass on the floor and prove nothing about the refusal it is written
-    # for. reconcile_connections.yml renders no restricted-mode file today, so
-    # the count stays at five and the floor stays satisfied, which is exactly
-    # the state the old `rescue Psych::Exception; nil` was silent in: a file
-    # whose contribution was zero is free to acquire a violation unseen.
+    # #596, planted in a file that contributes no subject, so the count and floor
+    # stay satisfied and only the parse refusal can catch it.
     name: "a task file that could not be parsed, whose contribution was zero",
     plant: lambda { |root|
       path = File.join(root, "roles/trailarr/tasks/reconcile_connections.yml")
@@ -177,19 +83,14 @@ SELF_TEST_ROWS = [
     expects: '["roles/trailarr/tasks/reconcile_connections.yml"] could not be parsed'
   },
   {
-    # The negative control, and the reason the mode test is not decoration: a
-    # world-readable file needs no owner, because any uid can open it. Without
-    # this row the sweep could be demanding ownership of everything and its
-    # passing rows would say nothing about the condition it claims to apply.
+    # The negative control: a world-readable file needs no owner.
     name: "a world-readable file, which needs no owner and must not be reported",
     plant: lambda { |root|
       path = File.join(root, "roles/trailarr/tasks/reconcile_env.yml")
       source = File.read(path)
       source = source.sub(/^    owner: "\{\{ nas_uid \}\}"\n    group: "\{\{ nas_gid \}\}"\n/, "")
-      # Anchored on the destination rather than on the mode alone. The role
-      # renders one restricted file today, so a bare substitution would be
-      # correct by luck; anchoring means a second one arriving does not silently
-      # widen the wrong task and make this row report the defect it removed.
+      # Anchored on the destination, so a second restricted file cannot make this
+      # row widen the wrong task.
       File.write(path, source.sub(%r{(trailarr_config_host_path \}\}/\.env"\n    mode: )"0600"}, '\\1"0644"'))
     },
     subject_floor: (SUBJECT_FLOOR - 1).to_s,
@@ -256,9 +157,7 @@ rescue Errno::ENOENT, Psych::Exception
   {}
 end
 
-# The right-hand side each environment name is rendered from, out of the role's
-# own env.j2, with the whitespace inside a Jinja expression normalised so that
-# two hand-written spellings of the same path compare equal.
+# Each env name's right-hand side from env.j2, Jinja whitespace normalised.
 def env_assignments(root, role)
   template = File.join(root, "roles", role, "templates", "env.j2")
   return {} unless File.file?(template)
@@ -271,17 +170,9 @@ def env_assignments(root, role)
   end
 end
 
-# A container the platform identity reaches, and both routes count. A service
-# either takes it directly as a numeric `user:`, or -- the linuxserver.io family
-# and Paperless -- starts as root and re-executes as the uid it was handed under
-# a name of its own: PUID, USERMAP_UID, USER_ID. The second is not the weaker
-# case, because the process that finally opens the file is the unprivileged one
-# either way.
-#
-# That name is DERIVED rather than listed. Chasing spellings is how a list goes
-# quietly out of date, so this asks the role's own env.j2 whether the value the
-# container interpolates is rendered from nas_uid, which is true of every
-# spelling at once and of the next one nobody has invented yet.
+# A container the platform identity reaches: numeric `user:`, or a uid variable
+# (PUID, USERMAP_UID, USER_ID, ...) derived by asking env.j2 whether the value is
+# rendered from nas_uid rather than by listing spellings.
 def identity_container?(spec, assignments)
   return false unless spec.is_a?(Hash)
   return true if spec["user"].to_s == PLATFORM_IDENTITY
@@ -293,16 +184,8 @@ def identity_container?(spec, assignments)
   end
 end
 
-# The bind-mount sources of those containers, as the environment names Compose
-# interpolates. This is what turns "a file the role renders" into "a file a
-# container can actually see": a path no identity container mounts is a path no
-# such container reads, whoever owns it.
-# The host paths those containers bind-mount, as the path expressions env.j2
-# renders. Compared as PREFIXES rather than by the variable they mention, which
-# is the difference between "a file inside a mounted directory" and "a file that
-# merely shares a variable with one": roles/arr mounts
-# {{ platform_runtime_dir }}/services/arr/configarr-secrets.yml and renders its
-# .env one directory up, and a variable-name comparison cannot tell those apart.
+# The host paths identity containers bind-mount, compared as PREFIXES: a file
+# inside a mounted directory, not one merely sharing a variable with it.
 def mounted_paths(root, service, role)
   assignments = env_assignments(root, role)
   compose_containers(root, service).flat_map do |_name, spec|
@@ -335,11 +218,7 @@ check(failures, unexpected.empty?,
       "this sweep's pinned list. A stack that stops running as root is in scope for the rule " \
       "below the moment it does; add it here rather than leaving it unswept")
 
-# A mode that denies read to `other`. Such a file is openable by its owner and
-# its group and by nobody else, which is the whole of the hazard: a container
-# running as an arbitrary uid is neither, unless Ansible was told to make it one.
-# An unparseable mode is treated as a subject rather than skipped, because an
-# unreadable declaration is exactly where this defect could hide next.
+# A mode denying read to `other`. An unparseable mode is a subject, not skipped.
 def restricted_mode?(mode)
   text = mode.to_s.strip
   return true unless text.match?(/\A0?[0-7]{3,4}\z/)
@@ -348,15 +227,8 @@ def restricted_mode?(mode)
 end
 
 subjects = 0
-# A TASK FILE THAT COULD NOT BE PARSED IS NOT A TASK FILE THAT WRITES NOTHING
-# (#596). This rescued to nil and the file's contribution silently became zero,
-# which SUBJECT_FLOOR cannot see: it counts the restricted-mode writes this
-# sweep found, and a violation living in a file whose prior contribution was
-# zero costs the count nothing. Measured on this tree: a planted owner-less
-# 0600 template into {{ dozzle_state_root }} failed by name, and appending one
-# unclosed quote to the same file printed "5 restricted-mode files ... all
-# owned by it" and exited 0. The paths are recorded and refused on, so the loss
-# is reported whatever the subject count then is.
+# A task file that could not be parsed is not one that writes nothing (#596):
+# its paths are recorded and refused, whatever the subject count.
 unreadable_task_files = []
 identity_services.sort.each do |service|
   role = roles[service]
@@ -372,9 +244,7 @@ identity_services.sort.each do |service|
       unreadable_task_files << path.delete_prefix("#{ROOT}/")
       nil
     end
-    # A document that parsed to something other than a list of tasks is a file
-    # this sweep has no business reading, not a file it failed to read: an
-    # empty stage file loads as nil and legitimately declares nothing.
+    # An empty stage file loads as nil and legitimately declares nothing.
     next unless document.is_a?(Array)
 
     relative = path.delete_prefix("#{ROOT}/")

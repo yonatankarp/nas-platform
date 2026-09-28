@@ -1,16 +1,6 @@
 ---
-# Komga's managed-user reconciliation is roles/managed_users, parameterised.
-# This file stays a file rather than collapsing into main.yml's two call sites
-# for two reasons. Its opening assert is what makes komga_managed_users_phase a
-# gated variable, so tests/policy_test.rb keeps holding main.yml's two callers
-# to exactly the phases named here -- the shared role's own argument spec
-# enforces the value it receives, but nothing there can see that a caller of
-# THIS file passed a phase komga does not implement. And the parameter mapping
-# is stated once rather than twice.
-#
-# Every Komga-specific value lives in defaults/main.yml as komga_managed_users_*,
-# so what follows is a one-to-one map and a reader comparing this service's
-# contract against another's reads two defaults files rather than two task files.
+# roles/managed_users, parameterised from defaults/main.yml. Kept as a file so its
+# phase assert gates komga_managed_users_phase for tests/policy_test.rb.
 - name: Validate the Komga managed-user phase
   ansible.builtin.assert:
     that:

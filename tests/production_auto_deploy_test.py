@@ -181,11 +181,8 @@ class ConfigTest(PollerTestCase):
         self.assertEqual(config.hourly_only_verify_tags, "platform_verify_mdraid")
 
     def test_a_configuration_from_an_older_template_has_no_hourly_only_tags(self):
-        # The install play copies the poller before it renders deployer.json, so
-        # this script meets a file without the key for at least one run (#327):
-        # one written before #618, and one written by #618's template, whose
-        # periodic_verify_tags restates the deploy list and must not be read as
-        # hourly-only, or the services would verify twice under the array's record.
+        # The poller meets a pre-#618 file, or #618's whose periodic_verify_tags must
+        # not be read as hourly-only (#327).
         for extra in ({}, {"periodic_verify_tags": (
                 "platform_verify_beszel,platform_verify_dozzle,platform_verify_mdraid")}):
             with self.subTest(extra=extra):
@@ -199,20 +196,14 @@ class ConfigTest(PollerTestCase):
                 self.assertEqual(config.verify_tags, "platform_verify_beszel,platform_verify_dozzle")
 
     def test_a_configuration_without_ping_urls_loads_with_no_ping(self):
-        # Every configuration an installer before #606 wrote, and the one this
-        # poller meets for a run when the install play copies it and then fails
-        # to render deployer.json (#327).
+        # What an installer before #606 wrote (#327).
         config = self.loaded_config()
 
         self.assertEqual(config.healthchecks_poller_ping_url, "")
         self.assertEqual(config.healthchecks_verify_ping_url, "")
 
     def test_a_pre_pushover_configuration_loads_and_cannot_publish(self):
-        # The install play copies this poller before it renders deployer.json, so
-        # the first tick after the move to Pushover reads the file the pre-Pushover
-        # template wrote (#327). Refusing it would stop every deployment with
-        # nothing able to heal the host: it loads, says so in one stderr line,
-        # and publishes nothing.
+        # The pre-Pushover template's file must load with one stderr line, not refuse (#327).
         payload = self.config_payload(
             retired_curl_config=str(self.root / ".config/nas-platform/retired.curl"),
             retired_topic_critical="nas-critical",
@@ -288,8 +279,7 @@ class ConfigTest(PollerTestCase):
                          (one, "https://hc-ping.com/two"))
 
     def test_load_config_refusals_name_their_cause_exactly(self):
-        # The wording is pinned, not merely the exception type: load_config is
-        # split into helpers (#837) and a refusal must read the same afterwards.
+        # Wording is pinned: load_config was split into helpers (#837).
         cases = (
             ({"external_scheduler": "true"}, "external_scheduler must be a boolean"),
             ({"external_scheduler": 1}, "external_scheduler must be a boolean"),
@@ -333,8 +323,6 @@ class ConfigTest(PollerTestCase):
             "pushover_alerts_curl_config, pushover_deployments_curl_config, "
             "which the configuration does not name\n",
         )
-        # A refused configuration says nothing about Pushover: the warning is
-        # printed only once every refusal has had its chance.
         payload["repository_url"] = "http://github.com/x/y.git"
         self.config_path.write_text(json.dumps(payload), encoding="utf-8")
         stderr = io.StringIO()
@@ -440,10 +428,7 @@ class EligibilityTest(PollerTestCase):
         self.assertIn("exactly one is required", detail)
 
     def test_a_cancelled_run_is_superseded_rather_than_refused(self):
-        """A run can end without ever judging the revision it was running: by
-        hand, or `skipped`, `stale` or `neutral`, and — until `cancel-in-progress`
-        was confined to pull requests — by the next merge cancelling it. Reading
-        any of those as a red main pages a human for a verdict nobody reached."""
+        """A run that ended without judging its revision must not read as a red main."""
 
         config = self.loaded_config()
 
@@ -583,13 +568,7 @@ class EligibilityTest(PollerTestCase):
 
 
 class SelectionTest(PollerTestCase):
-    """Which revision a poll picks when main has moved on since CI started.
-
-    A run takes longer than the gap between merges, so the head of main is
-    usually still going while the revision behind it has already passed. The
-    poller used to look at the head and nothing else, which meant a green
-    revision sat undeployed for as long as the next commit's run took.
-    """
+    """Which revision a poll picks when main has moved on since CI started."""
 
     GREEN_RUN = EligibilityTest.GREEN_RUN
     RED_RUN = {**EligibilityTest.GREEN_RUN, "conclusion": "failure"}
@@ -738,11 +717,7 @@ class SelectionTest(PollerTestCase):
 class MonotonicSelectionTest(PollerTestCase):
     """#916: a poll never selects a revision that is not newer than the deployed one.
 
-    The attempted record used to be the only thing keeping the walk from going
-    backwards, and it is pruned to its newest entries; GitHub then served a
-    runs page weeks behind the head, and the poller checked out two revisions
-    from the 16th and 17th on the live NAS. Ancestry against a real repository,
-    because the answer is git's exit code and a stub would only restate it.
+    Ancestry is checked against a real repository: the answer is git's exit code.
     """
 
     GREEN_RUN = EligibilityTest.GREEN_RUN
@@ -942,7 +917,6 @@ class StateTest(PollerTestCase):
 
         recorded = production_auto_deploy.attempted_shas(config)
         self.assertEqual(len(recorded), production_auto_deploy.ATTEMPTED_RETENTION_COUNT)
-        # The newest survive; the oldest are dropped.
         self.assertIn(shas[-1], recorded)
         self.assertNotIn(shas[0], recorded)
 
@@ -965,7 +939,6 @@ class StateTest(PollerTestCase):
 
         config = self.loaded_config()
         now = datetime(2026, 8, 20, tzinfo=timezone.utc)
-        # Fill the record past its cap with entries old enough to age out.
         stale = datetime(2020, 1, 1, tzinfo=timezone.utc)
         (config.state_root / "attempted").write_text(
             "".join(
@@ -980,9 +953,7 @@ class StateTest(PollerTestCase):
         self.assertEqual(recorded, {MAIN_SHA})
 
     def test_pruning_an_all_legacy_record_empties_it(self):
-        """Bare SHAs carry no age, so they cannot be kept once pruning runs.
-        Documented deliberately: the entry being recorded is what protects the
-        current revision, not the legacy rows."""
+        """Bare SHAs carry no age, so pruning drops them."""
 
         now = datetime(2026, 8, 20, tzinfo=timezone.utc)
         self.assertEqual(
@@ -1009,9 +980,7 @@ class StateTest(PollerTestCase):
         self.assertEqual(body.count(MAIN_SHA), 1)
 
     def test_a_quiet_poller_still_expires_old_attempts(self):
-        """Recording an attempt prunes as a side effect, so the age bound used
-        to wait for the next deployment. A platform that changes rarely is
-        exactly the one whose record would never be cleaned."""
+        """Pruning must not wait for the next deployment."""
 
         config = self.loaded_config()
         old = datetime.now(timezone.utc) - timedelta(
@@ -1087,9 +1056,7 @@ class StateTest(PollerTestCase):
             self.assertTrue(second)
 
     def test_the_holder_records_who_it_is_while_it_holds(self):
-        """Issue #326: the operator who lost the race could not tell what had
-        happened, because the only thing the lock said was that it was taken.
-        deployment_bundle reads this record to name the holder it refuses for."""
+        """deployment_bundle reads this record to name the holder it refuses for (#326)."""
 
         config = self.loaded_config()
         with production_auto_deploy.deployment_lock(config, holder="operator converge"):
@@ -1106,9 +1073,7 @@ class StateTest(PollerTestCase):
             )
 
     def test_the_record_is_cleared_when_the_lock_is_released(self):
-        """scripts/image_prune.py takes this same lock and writes no record, so a
-        record left behind by the last deployment would name a finished process
-        as the holder of a lock something else is holding now."""
+        """image_prune takes this lock without a record, so a stale record would misname it."""
 
         config = self.loaded_config()
         with production_auto_deploy.deployment_lock(config):
@@ -1142,9 +1107,7 @@ class DeployHarness:
             rendered = [str(a) for a in arguments]
             calls.append((rendered, kwargs))
             if stall_on is not None and any(stall_on in part for part in rendered):
-                # What _run raises when its own deadline expires, which is the
-                # only way this suite can observe a stalled command without
-                # waiting for one.
+                # What _run raises when its own deadline expires.
                 raise subprocess.TimeoutExpired(rendered, kwargs["timeout"])
             code = returncode
             if fail_on is not None and any(fail_on in part for part in rendered):
@@ -1155,13 +1118,7 @@ class DeployHarness:
 
     @contextlib.contextmanager
     def running(self, **kwargs):
-        """Record every command, its options and every backoff slept between them.
-
-        The sleeps are recorded rather than taken. A retry ladder that really
-        slept would put its backoff on the wall clock of the `static` job, which
-        CLAUDE.md is emphatic is how that budget keeps being blown, and would
-        measure Python's sleep rather than this file's behaviour.
-        """
+        """Record every command, its options and every backoff, without really sleeping."""
 
         calls, run = self.record_runs(**kwargs)
         slept: list[float] = []
@@ -1200,10 +1157,7 @@ class DeployTest(DeployHarness, PollerTestCase):
         self.assertEqual(calls[2][:3], ["/usr/local/bin/git", "checkout", "--detach"])
         self.assertEqual(calls[2][3], MAIN_SHA)
 
-        # The lock is fully resolved and hashed (#827): --require-hashes refuses
-        # any entry that lost its hash, and no --upgrade, because every entry is
-        # an == pin and a changed pin applies without it -- all --upgrade could
-        # add is a reason to look past the lock.
+        # Fully hashed lock (#827); no --upgrade, since every entry is an == pin.
         self.assertTrue(calls[3][0].endswith("pip"))
         self.assertEqual(
             calls[3][1:-1],
@@ -1252,15 +1206,8 @@ class DeployTest(DeployHarness, PollerTestCase):
         self.assertEqual(galaxy[0][1:3], ["collection", "install"])
         self.assertIn("--collections-path", galaxy[0])
         self.assertEqual(galaxy[0][galaxy[0].index("--collections-path") + 1], expected)
-        # Read the requirements path through its own flag rather than at a fixed
-        # offset from the end. The flag is what makes the path mean anything:
-        # without it ansible-galaxy asks Galaxy for a collection *named* by that
-        # path, so the pinned community.docker stops being installed and the
-        # sync still reports success -- and a positional check passes on exactly
-        # that deletion, because dropping the flag leaves the path in place and
-        # merely shifts what precedes it. The same offset then reds a correct
-        # argv as soon as a later flag is appended, which #704's --no-cache
-        # already had to reason about. Backwards on both counts.
+        # Read the path through its flag, not a fixed offset: without the flag galaxy
+        # treats the path as a collection name and still reports success.
         self.assertIn("--requirements-file", galaxy[0])
         requirements = galaxy[0][galaxy[0].index("--requirements-file") + 1]
         self.assertTrue(requirements.endswith("requirements.yml"))
@@ -1272,14 +1219,7 @@ class DeployTest(DeployHarness, PollerTestCase):
                 self.assertEqual(options["env"]["ANSIBLE_COLLECTIONS_PATH"], expected)
 
     def test_the_collection_install_declines_the_galaxy_api_cache(self):
-        """The HOME this call runs under is the checkout's parent, a directory
-        that survives every deployment, and ansible-galaxy writes its API cache
-        entry blank before filling in `results` -- so a run that dies between the
-        two poisons that HOME for 24 hours and fails this call on every candidate
-        revision afterwards. The ladder does not recover it: the refusal is
-        deterministic, and this poller is what would otherwise apply the fix.
-        --force re-downloads regardless, so the cache was buying a version lookup
-        on a path that fetches anyway."""
+        """A blank galaxy API cache entry in the persistent HOME would fail every later run."""
 
         config = self.loaded_config()
         _outcome, calls, kwargs = self.deploy_with(config)
@@ -1288,8 +1228,6 @@ class DeployTest(DeployHarness, PollerTestCase):
             i for i, c in enumerate(calls) if c[0].endswith("ansible-galaxy")
         )
         self.assertIn("--no-cache", calls[galaxy_index])
-        # Stated here because the flag is only worth anything against a HOME that
-        # persists; an ephemeral one would make it a formality.
         self.assertEqual(
             kwargs[galaxy_index]["env"]["HOME"], str(config.checkout.parent)
         )
@@ -1302,9 +1240,7 @@ class DeployTest(DeployHarness, PollerTestCase):
         self.assertLess(galaxy_index, first_play)
 
     def test_a_failed_collection_sync_stops_before_any_play(self):
-        """Still a stop, but a classified one: the install reaches
-        galaxy.ansible.com, so an exhausted ladder there says nothing about the
-        revision and the caller decides what it costs."""
+        """Still a stop, but classified: galaxy.ansible.com says nothing about the revision."""
 
         config = self.loaded_config()
         with self.running(fail_on="ansible-galaxy") as (calls, _slept):
@@ -1324,9 +1260,7 @@ class DeployTest(DeployHarness, PollerTestCase):
         self.assertLess(pip_index, first_ansible)
 
     def test_the_self_reinstall_replays_the_installer_choices(self):
-        """The fourth play reinstalls this poller. Without the installer's own
-        variables the role rejects its own invocation, which is how a deploy
-        can succeed through verification and still fail at the last step."""
+        """Without the installer's variables the fourth play rejects its own invocation."""
 
         config = self.loaded_config()
         _outcome, calls, _kwargs = self.deploy_with(config)
@@ -1366,9 +1300,7 @@ class DeployTest(DeployHarness, PollerTestCase):
         )
 
     def test_a_deployments_verify_play_never_carries_the_hourly_only_tags(self):
-        # Byte for byte what a deployment ran before the hourly list existed: a
-        # failure there quarantines the revision, and platform_verify_mdraid
-        # fails for a whole rebuild while the array still serves (#609).
+        # Exactly what ran before the hourly list existed (#609).
         config = self.loaded_config()
         _outcome, calls, _kwargs = self.deploy_with(config)
         (verify_call,) = [call for call in calls if "verify.yml" in call]
@@ -1395,13 +1327,7 @@ class DeployTest(DeployHarness, PollerTestCase):
                 self.assertIn(str(config.vault_password_file), call)
 
     def test_no_play_supplies_vault_values_outside_the_checkout(self):
-        """Credentials come from the candidate's own committed group_vars.
-
-        An out-of-checkout copy passed as extra vars outranks group_vars, so a
-        stale one silently shadows the revision being deployed while every
-        play still reports success. Only the password provider, which cannot
-        be committed, stays outside.
-        """
+        """Credentials come from the candidate's own group_vars; extra vars would shadow them."""
 
         config = self.loaded_config()
         _outcome, calls, _kwargs = self.deploy_with(config)
@@ -1433,9 +1359,7 @@ class DeployTest(DeployHarness, PollerTestCase):
             self.assertNotIn("PLATFORM_VAULT_FILE", environment)
 
     def test_a_revision_no_longer_on_main_is_never_checked_out(self):
-        """A revision behind the head is named by GitHub's record of what it
-        ran, which is a record of the past. Only the branch just fetched says
-        what main is now."""
+        """Only the freshly fetched branch says what main is now."""
 
         config = self.loaded_config()
         outcome, calls, _kwargs = self.deploy_with(config, fail_on="merge-base")
@@ -1451,9 +1375,7 @@ class DeployTest(DeployHarness, PollerTestCase):
         self.assertTrue(all(call[0] != "ansible-playbook" for call in calls))
 
     def test_a_failed_tooling_sync_stops_before_any_play(self):
-        """Still a stop, but a classified one since #415: the pip install
-        reaches pypi.org, so an exhausted ladder there says nothing about the
-        revision and the caller decides what it costs."""
+        """Still a stop, but classified since #415: pypi.org says nothing about the revision."""
 
         config = self.loaded_config()
         with self.running(fail_on="bin/pip") as (calls, _slept):
@@ -1524,9 +1446,7 @@ class DeployTest(DeployHarness, PollerTestCase):
         )
 
     def test_only_the_deployments_plays_are_handed_a_summary_path(self):
-        """The #558 handshake's first half: with the variable, site.yml writes the
-        summary and publishes nothing, so it must reach the plays deploy() runs
-        and nothing else -- verify.yml shares the environment builder."""
+        """The #558 handshake: only deploy()'s plays get the summary path."""
 
         config = self.loaded_config()
         variable = production_auto_deploy.SUMMARY_PATH_ENVIRONMENT
@@ -1548,9 +1468,7 @@ class DeployTest(DeployHarness, PollerTestCase):
                          "the hourly verify must never be handed the summary path")
 
     def test_the_plays_are_told_the_poller_already_holds_the_lock(self):
-        """deploy() runs inside poll()'s lock, and deployment_bundle refuses a
-        converge another process is running. Without this declaration the poller
-        would be refused by the guard it installs, on every tick."""
+        """Without this the poller would be refused by its own lock guard on every tick."""
 
         config = self.loaded_config()
         environment = production_auto_deploy._ansible_environment(config)
@@ -1560,13 +1478,7 @@ class DeployTest(DeployHarness, PollerTestCase):
 
 
 class DeployBudgetTest(DeployHarness, PollerTestCase):
-    """What the steps before the first play are allowed to cost.
-
-    The timeout each command is given is recorded and asserted rather than
-    waited out: the question is which budget the code chose, and a test that
-    measured it with a stopwatch would answer that in wall time the `static` job
-    has to pay for.
-    """
+    """What the steps before the first play are allowed to cost, recorded not timed."""
 
     FETCH = "fetch"
     GALAXY = "ansible-galaxy"
@@ -1582,17 +1494,11 @@ class DeployBudgetTest(DeployHarness, PollerTestCase):
         ]
 
     def test_nothing_before_the_plays_carries_the_hour_long_command_budget(self):
-        """The general form of #351. COMMAND_TIMEOUT_SECONDS is an hour, which
-        is the right budget for a converge and the wrong one for anything the
-        poller runs while holding the deployment lock before it starts. Stated
-        over every such call rather than over the fetch alone, so the next
-        command added here inherits the rule instead of the defect.
+        """#351 in general: no pre-play step gets the hour-long converge budget.
 
-        Bounded by the largest budget a step before the plays legitimately has,
-        rather than by inequality with the hour: a ladder gives its first
-        attempt whatever is left of its deadline, which is a hair under the
-        constant, so `!= COMMAND_TIMEOUT_SECONDS` would hold even for a command
-        handed the whole hour."""
+        Bounded by the largest legitimate pre-play budget, since a ladder's first
+        attempt gets a hair under the full deadline.
+        """
 
         config = self.loaded_config()
         _outcome, calls, kwargs = self.deploy_with(config)
@@ -1612,8 +1518,6 @@ class DeployBudgetTest(DeployHarness, PollerTestCase):
     def test_the_fetch_is_bounded_in_minutes_and_the_local_steps_below_that(self):
         config = self.loaded_config()
         _outcome, calls, kwargs = self.deploy_with(config)
-        # argv[1] is the git subcommand, and the first three commands a deploy
-        # runs are the three steps of the checkout.
         budgets = dict(
             zip((call[1] for call in calls[:3]), (o["timeout"] for o in kwargs[:3]))
         )
@@ -1628,16 +1532,11 @@ class DeployBudgetTest(DeployHarness, PollerTestCase):
             self.assertEqual(
                 budgets[step], production_auto_deploy.GIT_LOCAL_TIMEOUT_SECONDS
             )
-            # The relationship rather than the numbers: a transfer needs longer
-            # than a local ref comparison, and this survives either constant
-            # being retuned.
+            # The relationship, not the numbers, so either constant can be retuned.
             self.assertGreater(budgets["fetch"], budgets[step])
 
     def test_a_stalled_fetch_is_abandoned_at_its_bound_and_not_retried_in_place(self):
-        """The defect #351 names. A blackholed connection used to park the
-        deployment lock for an hour; it now costs one bounded attempt, and the
-        retry happens on the next tick with the lock released rather than
-        immediately, when a killed fetch is least likely to succeed."""
+        """#351: a blackholed fetch costs one bounded attempt; the retry is next tick."""
 
         config = self.loaded_config()
         with self.running(stall_on=self.FETCH) as (calls, slept):
@@ -1664,8 +1563,6 @@ class DeployBudgetTest(DeployHarness, PollerTestCase):
         self.assertEqual(
             slept, list(production_auto_deploy.NETWORK_RETRY_BACKOFF_SECONDS)
         )
-        # Nothing after the fetch ran, and in particular nothing was checked out
-        # from a fetch that did not land.
         self.assertTrue(all(self.FETCH in rendered for rendered, _ in calls))
 
     def test_the_collection_install_retries_within_the_budget_it_already_had(self):
@@ -1686,11 +1583,7 @@ class DeployBudgetTest(DeployHarness, PollerTestCase):
         )
 
     def test_the_pip_install_retries_within_the_budget_it_already_had(self):
-        """#415, and the reason the guard above could not find it: the pip
-        install was already inside TOOLING_TIMEOUT_SECONDS, so a budget check
-        passes over it whether or not it takes the ladder. What was missing was
-        the retry and the classification, which are what this asserts. The
-        budget stays a total, so the ladder adds no lock time."""
+        """#415: the pip install retries and classifies within its existing total budget."""
 
         config = self.loaded_config()
         with self.running(fail_on=self.PIP) as (calls, slept):
@@ -1704,8 +1597,6 @@ class DeployBudgetTest(DeployHarness, PollerTestCase):
         self.assertEqual(
             slept, list(production_auto_deploy.NETWORK_RETRY_BACKOFF_SECONDS)
         )
-        # Nothing after it ran: an unsynchronised virtualenv must not reach a
-        # collection install, let alone a play.
         self.assertTrue(all(call[0] != "ansible-playbook" for call, _ in calls))
         self.assertEqual(self.timeouts_for(calls, self.GALAXY), [])
 
@@ -1728,9 +1619,7 @@ class DeployBudgetTest(DeployHarness, PollerTestCase):
         self.assertEqual(slept, [])
 
     def test_a_revision_rewritten_off_the_branch_is_neither_retried_nor_transient(self):
-        """merge-base answers a question about this candidate. Retrying it would
-        ask the same question again, and calling it transient would forgive a
-        revision that is permanently ineligible."""
+        """A revision rewritten off main is permanently ineligible, not transient."""
 
         config = self.loaded_config()
         with self.running(fail_on="merge-base") as (calls, slept):
@@ -1747,10 +1636,7 @@ class DeployBudgetTest(DeployHarness, PollerTestCase):
                 production_auto_deploy.deploy(config, MAIN_SHA, None)
 
     def test_the_ladder_spends_one_budget_rather_than_one_per_attempt(self):
-        """The property the whole change turns on, and the one a ladder gets
-        wrong by default: retries=3 over an hour is three hours of held lock.
-        Read against a clock that advances a fixed step per reading, the
-        attempts must be given shrinking budgets that never exceed the first."""
+        """Retries share one deadline: attempts get shrinking budgets, never more than the first."""
 
         budget = 180.0
         for step, expected in ((50.0, 3), (100.0, 1)):
@@ -1870,15 +1756,7 @@ class LogTest(PollerTestCase):
         self.assertTrue(malformed.exists(), "an unparsable stamp is left alone")
 
     def test_the_suffix_is_what_makes_a_run_log_findable(self):
-        """run_log is the byte-identical copy now, and its input is the suffix.
-
-        The two scripts wrote the same context manager under two names with one
-        literal apart, which the identity pin could not see (#658). What that
-        cost this program is the property below: an attempt's output has to be
-        reachable by the revision that produced it, and the suffix is the only
-        thing carrying that. LOG_PATTERN is what rotate_logs then matches, so a
-        suffix the pattern does not admit is a log nothing ever removes.
-        """
+        """The suffix is what ties an attempt's log to its revision (#658); LOG_PATTERN must admit it."""
         config = self.loaded_config()
 
         with production_auto_deploy.run_log(config, MAIN_SHA) as log:
@@ -1889,16 +1767,7 @@ class LogTest(PollerTestCase):
 
 
 class DurationTest(unittest.TestCase):
-    """The split that made format_duration a byte-identical copy (#658).
-
-    format_duration used to take the two recorded timestamps here and seconds
-    in the other script, so its divmod tail was duplicated where nothing could
-    compare it. Parsing is duration_between's now and the tail is shared, which
-    moves a decision across the seam: "unknown" for an unparseable pair belongs
-    to duration_between and "unknown" for a negative span belongs to
-    format_duration. Both are asserted, because a split that dropped either
-    would still render every ordinary deployment correctly.
-    """
+    """The duration_between / format_duration split (#658), both "unknown" cases."""
 
     def test_an_unparsable_pair_is_unknown_rather_than_guessed(self):
         self.assertEqual(production_auto_deploy.duration_between("start", "finish"), "unknown")
@@ -2114,7 +1983,6 @@ class PushoverTransportTest(PollerTestCase):
                 self.assertIsNone(HALF_ENTITY.search(message), message[-20:])
                 self.assertEqual(message.count("<b>"), message.count("</b>"))
                 self.assertNotRegex(message, r"<[^>]*\Z")
-        # Whole lines are still what goes when the first line fits.
         self.assertEqual(fit(["a" * 1000, "b" * 100]), "a" * 1000)
         self.assertEqual(fit([]), "")
 
@@ -2187,13 +2055,7 @@ class PushoverTransportTest(PollerTestCase):
 
 
 class MessageStyleTest(PollerTestCase):
-    """Every message this poller renders: its title form, its shape and its colour.
-
-    The title is all a lock screen shows, and it is plain text, so its form is
-    pinned exactly. The body is pinned by shape -- a lead line, labelled
-    details in order, a closing line -- and by the colour the lead gives its
-    state, rather than by prose.
-    """
+    """Every message this poller renders: its title form, its shape and its colour."""
 
     def rendered(self, action):
         captured = []
@@ -2341,27 +2203,19 @@ class MessageStyleTest(PollerTestCase):
                 self.assertIsNone(HALF_ENTITY.search(message), message[-40:])
                 for tag in ("b", "i", "font", "a"):
                     self.assertEqual(len(re.findall(rf"<{tag}\b", message)), message.count(f"</{tag}>"), tag)
-                # The lead survives the fit: the details give way first.
                 self.assertTrue(message.startswith("<b>"), message[:40])
 
 
 class PollBlindnessTest(PollerTestCase):
-    """A poller that cannot see main is silent today, and exits 0 while doing it.
-
-    Silence is also what a healthy idle poll looks like, so an unreachable
-    GitHub is indistinguishable from nothing to deploy until someone runs
-    --status by hand. That is the failure worth alerting on.
-    """
+    """A poller that cannot see main must say so; silence looks like a healthy idle poll."""
 
     def blind_poll(self, config, reason="GitHub request failed", delivered=True):
         published = []
 
         def fake_notify(_config, app, fields):
             published.append(dict(fields, app=app))
-            # `delivered` is what the real publish() reports when curl cannot
-            # reach Pushover: attempted, not received. The distinction is the whole
-            # point of the alarm path, so it is a parameter of the fake rather
-            # than an always-true stub.
+            # `delivered` is what publish() reports when curl cannot reach Pushover:
+            # attempted, not received.
             return delivered
 
         with mock.patch.object(
@@ -2383,14 +2237,8 @@ class PollBlindnessTest(PollerTestCase):
             return delivered
 
         state = production_auto_deploy.read_state(config)
-        # fetch_ci_runs is stubbed because poll() reaches api.github.com through
-        # it, and a unit test must not. Unstubbed, this helper made a real
-        # request on every call: it passed while the network answered and raised
-        # EligibilityError -- "GitHub request failed" -- the moment a runner's
-        # connection to GitHub timed out, failing `static` on a diff that had
-        # nothing to do with the poller. An empty page of runs is the same
-        # decision the real one produced here anyway, because attempted_shas
-        # already claims the head.
+        # Stubbed: a real api.github.com request here once failed `static` whenever the
+        # runner's connection timed out.
         with mock.patch.object(
             production_auto_deploy, "resolve_main_sha", return_value=MAIN_SHA
         ), mock.patch.object(
@@ -2426,7 +2274,6 @@ class PollBlindnessTest(PollerTestCase):
             str(production_auto_deploy.BLIND_POLL_THRESHOLD), published[0]["message"]
         )
 
-        # Still blind is not news; only the transition is.
         self.assertEqual(self.blind_poll(config), [])
         self.assertEqual(self.blind_poll(config), [])
 
@@ -2441,7 +2288,6 @@ class PollBlindnessTest(PollerTestCase):
         self.assertIn("again", published[0]["message"])
 
         self.assertEqual(self.seeing_poll(config), [])
-        # The count reset, so the next outage needs the full threshold again.
         for _poll in range(production_auto_deploy.BLIND_POLL_THRESHOLD - 1):
             self.assertEqual(self.blind_poll(config), [])
         self.assertEqual(len(self.blind_poll(config)), 1)
@@ -2453,13 +2299,7 @@ class PollBlindnessTest(PollerTestCase):
         self.assertEqual(self.seeing_poll(config), [])
 
     def test_an_undeliverable_alarm_is_retried_until_it_lands(self):
-        """The alarm is the only thing that makes blindness visible at all.
-
-        Attempting it on exactly the poll where the count meets the threshold
-        makes an unreachable publisher permanent silence: the count climbs past
-        the threshold, the poller never says so again, and cron sees a success
-        every five minutes.
-        """
+        """An alarm attempted only at the threshold would make an unreachable publisher silent forever."""
 
         config = self.loaded_config()
         for _poll in range(production_auto_deploy.BLIND_POLL_THRESHOLD - 1):
@@ -2479,18 +2319,11 @@ class PollBlindnessTest(PollerTestCase):
             retried[0]["message"],
         )
 
-        # Delivered once is delivered; the retry must not become a repeat.
         self.assertEqual(self.blind_poll(config), [])
         self.assertEqual(self.blind_poll(config), [])
 
     def test_a_count_already_past_the_threshold_is_not_read_as_announced(self):
-        """State written by the previously installed poller carries no delivery.
-
-        The poller that runs is the one installed by the last deployment, so a
-        count this revision never wrote is exactly what it wakes up to. A count
-        past the threshold is what both a delivered alarm and an undeliverable
-        one leave behind, and inheriting one must not buy silence.
-        """
+        """An inherited count past the threshold must not buy silence."""
 
         config = self.loaded_config()
         (config.state_root / "blind-polls").write_text(
@@ -2514,20 +2347,13 @@ class PollBlindnessTest(PollerTestCase):
         self.assertEqual(len(retried), 1)
         self.assertEqual((retried[0]["app"], retried[0]["priority"]), ("alerts", -1))
 
-        # Delivered, so the count is finally cleared and the all-clear stops.
         self.assertEqual(self.seeing_poll(config), [])
         self.assertEqual(
             (config.state_root / "blind-polls").read_text(encoding="ascii").strip(), "0"
         )
 
     def test_an_inherited_pre_pushover_outage_gets_exactly_one_pushover_recovery(self):
-        """The one message a pre-Pushover state directory may cost (#558).
-
-        An outage the earlier poller announced leaves a count past the threshold
-        and an announced marker. The first Pushover poll that sees main again
-        closes it, once, quietly, on the Alerts app; a still-blind one repeats
-        nothing.
-        """
+        """A pre-Pushover outage gets one quiet recovery on Alerts, once (#558)."""
 
         config = self.loaded_config()
         (config.state_root / "blind-polls").write_text("5\n", encoding="ascii")
@@ -2549,16 +2375,7 @@ class PollBlindnessTest(PollerTestCase):
 
 
     def test_the_count_and_the_marker_cannot_disagree_across_a_crashed_write(self):
-        """#401: two facts that must agree, stored so that they could disagree.
-
-        read_blind_polls reports 0 for a count file it cannot parse, and the
-        blind-alarm marker persists independently of it. An empty count file
-        beside an announced marker is therefore the one combination that
-        silences the rest of an outage: the count climbs back to the threshold
-        and finds the marker already set. The truncating write this poller used
-        to do produced exactly that file, which is what the control below
-        shows; the atomic one cannot.
-        """
+        """#401: an empty count beside an announced marker would silence the rest of an outage."""
 
         config = self.loaded_config()
         for _poll in range(production_auto_deploy.BLIND_POLL_THRESHOLD):
@@ -2569,7 +2386,6 @@ class PollBlindnessTest(PollerTestCase):
         real_fdopen = os.fdopen
 
         def watching_fdopen(descriptor, *arguments, **keywords):
-            # Whatever is on disk here is whatever a crash here would leave.
             seen.append(count_path.read_bytes())
             return real_fdopen(descriptor, *arguments, **keywords)
 
@@ -2581,12 +2397,7 @@ class PollBlindnessTest(PollerTestCase):
         self.assertTrue(production_auto_deploy.read_blind_alarm(config))
 
     def test_the_pre_354_write_could_strand_the_marker(self):
-        """The negative control, carried through to the silence it caused.
-
-        The same instrument against the body #354 replaced yields an empty
-        count file, and the rest of this test is the consequence: three further
-        blind polls, which is the whole threshold again, announce nothing.
-        """
+        """Negative control: the pre-#354 write leaves an empty count and silences three blind polls."""
 
         config = self.loaded_config()
         for _poll in range(production_auto_deploy.BLIND_POLL_THRESHOLD):
@@ -2617,15 +2428,7 @@ class PollBlindnessTest(PollerTestCase):
         self.assertEqual(announced, [])
 
     def test_the_marker_is_cleared_before_the_count_is_zeroed(self):
-        """Recovery writes two files, and only one order of them is safe.
-
-        Zeroing the count first would leave a window whose contents are the
-        #401 pair -- a count of 0 beside an announced marker -- reachable
-        without any torn write at all, just a crash between two writes that
-        each landed whole. Clearing the marker first leaves the opposite pair,
-        which costs a duplicate alarm and never a missing one. The order is
-        load-bearing, so it is pinned rather than left to line order.
-        """
+        """Clear the marker before zeroing the count: the other order reaches the #401 pair."""
 
         config = self.loaded_config()
         for _poll in range(production_auto_deploy.BLIND_POLL_THRESHOLD):
@@ -2646,20 +2449,10 @@ class PollBlindnessTest(PollerTestCase):
 
 
 class PrivateWriteTest(PollerTestCase):
-    """State the poller must not lose, written so a crash cannot lose it.
+    """State the poller must not lose, written so a crash cannot lose it (#354).
 
-    Every fact the poller keeps between polls goes through _write_private: the
-    attempted record, the last successful revision, the CI refusal marker, and
-    the blind-poll pair whose disagreement #401 is about. Before #354 the write
-    truncated the target in place, so the whole window between the truncation
-    and the write was a window in which the record simply was not there.
-
-    The instrument below is the honest one for that claim: what a reader finds
-    on disk at the instant the payload is being written is exactly what a crash
-    at that instant would leave behind. Every assertion here is paired with the
-    same assertion against the pre-#354 body, which is kept in this file for
-    that purpose -- a passing test is only evidence if the same test fails on
-    the code it replaced.
+    A reader at the instant of writing sees what a crash would leave. Each
+    assertion is paired with one against the pre-#354 body kept in this file.
     """
 
     def setUp(self):
@@ -2778,8 +2571,6 @@ class PollCiRefusalTest(PollerTestCase):
         self.assertIn("failure", published[0]["message"])
         self.assertEqual(published[0]["url"], self.RED_RUN["html_url"])
         self.assertIn(f"/commit/{MAIN_SHA}", published[0]["message"])
-        # Nothing was attempted, so the revision stays deployable once it goes
-        # green rather than being quarantined by the report.
         self.assertEqual(production_auto_deploy.attempted_shas(config), set())
 
     def test_the_same_red_revision_is_not_reported_every_five_minutes(self):
@@ -2795,9 +2586,7 @@ class PollCiRefusalTest(PollerTestCase):
         self.assertEqual(self.poll_with(config, ())[0], [])
 
     def test_a_cancelled_run_is_never_announced_as_a_red_main(self):
-        """The alert says "no deployment until this revision passes CI" at
-        priority 4. A run the workflow cancelled to make way for the next merge
-        is not that, and it happens whenever two changes land together."""
+        """A run cancelled to make way for the next merge is not a red main."""
 
         config = self.loaded_config()
 
@@ -2854,8 +2643,6 @@ class PollCiRefusalTest(PollerTestCase):
     def test_a_re_run_that_fails_again_is_reported_again(self):
         config = self.loaded_config()
         self.poll_with(config, (self.RED_RUN,))
-        # A re-running workflow is no longer a completed run, so the poller
-        # sees nothing for the revision until it concludes a second time.
         self.assertEqual(self.poll_with(config, ())[0], [])
 
         self.assertEqual(len(self.poll_with(config, (self.RED_RUN,))[0]), 1)
@@ -2898,9 +2685,7 @@ class PollCiRefusalTest(PollerTestCase):
         self.assertEqual(len(self.poll_with(config, (self.RED_RUN,))[0]), 1)
 
 
-# The history the harness below pretends main has, oldest first, so a poll
-# after a success can ask git about ancestry without a repository (#916).
-# MonotonicSelectionTest asks a real one.
+# The history the harness pretends main has, oldest first (#916).
 LINEAR_HISTORY = (OLDER_SHA, OTHER_SHA, MAIN_SHA)
 
 
@@ -2954,9 +2739,7 @@ class PollHarness:
 
 class PollTest(PollHarness, PollerTestCase):
     def test_poll_deploys_the_green_revision_behind_a_running_head(self):
-        """The bug this replaced: a merge landing during a run left the
-        revision that had just passed undeployed for the length of the next
-        run, which is over half an hour."""
+        """A green revision behind a running head is deployed now, not after the next run."""
 
         config = self.loaded_config()
         with self.seeing(MAIN_SHA, (self.green_run(OTHER_SHA),)), mock.patch.object(
@@ -3193,13 +2976,10 @@ class PollTest(PollHarness, PollerTestCase):
         self.assertIn("notification failed", latest.read_text(encoding="ascii"))
         self.assertIn("production auto-deploy: outcome notification failed",
                       latest.read_text(encoding="ascii").splitlines())
-        # A lost notification must not cast doubt on the recorded state.
         self.assertIsNone(production_auto_deploy.read_state(config)["last_successful"])
 
     def test_a_release_whose_site_yml_wrote_no_summary_sends_nothing(self):
-        """The handshake's #327 row: this poller meeting a site.yml older than the
-        variable. That site.yml published its own plain summary, so a second
-        message here would be the release's second; and nothing may raise."""
+        """An older site.yml published its own summary (#327), so nothing more is sent."""
 
         config = self.loaded_config()
         buffer = io.StringIO()
@@ -3255,12 +3035,7 @@ class PollTest(PollHarness, PollerTestCase):
 
 
 class ReleaseAnnouncementTest(PollHarness, PollerTestCase):
-    """The one Deployments message a verified release gets (#558).
-
-    site.yml writes what shipped; the poller links it and sends it. Driven
-    through poll() where the outcome matters, and through render_release where
-    only the shape of the message does.
-    """
+    """The one Deployments message a verified release gets (#558)."""
 
     RADARR_COMMIT = "d" * 40
     BAZARR_COMMIT = "e" * 40
@@ -3361,7 +3136,6 @@ class ReleaseAnnouncementTest(PollHarness, PollerTestCase):
                          f"https://github.com/yonatankarp/nas-platform/compare/{OTHER_SHA}...{MAIN_SHA}")
         self.assertEqual(form["url_title"], "View changes on GitHub")
         self.assertEqual(set(form), {"title", "message", "priority", "url", "url_title", "html"})
-        # Two image commits, each asked about once; the removed image has none.
         self.assertEqual(sorted(seen), sorted(
             f"https://api.github.com/repos/yonatankarp/nas-platform/commits/{sha}/pulls"
             for sha in (self.RADARR_COMMIT, self.BAZARR_COMMIT)))
@@ -3386,7 +3160,6 @@ class ReleaseAnnouncementTest(PollHarness, PollerTestCase):
             "docs: say what shipped &amp; &lt;why&gt;</a>",
             "",
         ])
-        # An ordinary release fits whole: nothing counted away as "more".
         self.assertNotIn("… and ", form["message"])
         # The duration is the poll's own clock, so only its place is pinned here;
         # test_the_footer_carries_the_duration pins its text.
@@ -3618,13 +3391,7 @@ class ReleaseAnnouncementTest(PollHarness, PollerTestCase):
 
 
 class PollTransientFailureTest(PollHarness, PollerTestCase):
-    """Who retries a deployment that never reached the target.
-
-    Before #351 the answer was always an operator: the revision was recorded as
-    attempted before the run and stayed recorded whatever went wrong, so one
-    blip on github.com or galaxy.ansible.com quarantined it until somebody ran
-    --retry-failed by hand, on a host whose whole premise is that nobody does.
-    """
+    """Who retries a deployment that never reached the target (#351)."""
 
     def transient(self, message="git fetch failed"):
         return production_auto_deploy.TransientDeploymentError(message)
@@ -3649,9 +3416,7 @@ class PollTransientFailureTest(PollHarness, PollerTestCase):
         deploy.assert_called_once()
 
     def test_a_transient_failure_is_still_reported_and_logged(self):
-        """Forgiving the revision must not make the failure invisible: the tick
-        was spent and the operator gets the same notification as any other
-        failure."""
+        """Forgiving the revision must not make the failure invisible."""
 
         config = self.loaded_config()
         with self.eligible(MAIN_SHA), mock.patch.object(
@@ -3661,7 +3426,6 @@ class PollTransientFailureTest(PollHarness, PollerTestCase):
         ) as notify:
             self.assertFalse(production_auto_deploy.poll(config))
         self.assertEqual(notify.call_args.args[1], MAIN_SHA)
-        # Forgiven: the notice and the attempted record agree that it is retried.
         self.assertEqual(notify.call_args.kwargs["failure"], "retrying")
         self.assertEqual(production_auto_deploy.attempted_shas(config), set())
         latest = (config.log_root / "latest").resolve().read_text(encoding="ascii")
@@ -3671,9 +3435,7 @@ class PollTransientFailureTest(PollHarness, PollerTestCase):
                       latest.splitlines())
 
     def test_a_failure_that_is_not_transient_still_quarantines_the_revision(self):
-        """The guard on the classification itself. TransientDeploymentError is a
-        DeploymentError, so a broad except clause ordered ahead of it would
-        forgive every failure -- including a converge that half-ran."""
+        """TransientDeploymentError is a DeploymentError, so except-clause order matters."""
 
         config = self.loaded_config()
         with self.eligible(MAIN_SHA), mock.patch.object(
@@ -3681,13 +3443,10 @@ class PollTransientFailureTest(PollHarness, PollerTestCase):
         ), mock.patch.object(production_auto_deploy, "notify", return_value=True) as notify:
             self.assertFalse(production_auto_deploy.poll(config))
         self.assertEqual(production_auto_deploy.attempted_shas(config), {MAIN_SHA})
-        # Quarantined, so the notice must not promise a retry.
         self.assertEqual(notify.call_args.kwargs["failure"], "failed")
 
     def test_a_transient_failure_past_its_limit_is_reported_as_quarantined(self):
-        """Forgiveness spent: the record keeps the revision, and the notice names
-        --retry-failed rather than a merge, because nothing about the revision
-        is known to be wrong."""
+        """Forgiveness spent: the notice names --retry-failed rather than a merge."""
 
         config = self.loaded_config()
         production_auto_deploy._write_private(
@@ -3702,9 +3461,7 @@ class PollTransientFailureTest(PollHarness, PollerTestCase):
         self.assertEqual(notify.call_args.kwargs["failure"], "quarantined")
 
     def test_forgiveness_is_bounded_and_the_revision_ends_up_quarantined(self):
-        """A cause that only looks transient must not be retried every five
-        minutes forever: each attempt holds the deployment lock, so unbounded
-        forgiveness is worse than the quarantine it replaces."""
+        """Each attempt holds the lock, so forgiveness must be bounded."""
 
         config = self.loaded_config()
         for tick in range(production_auto_deploy.TRANSIENT_FORGIVENESS_LIMIT):
@@ -3730,9 +3487,7 @@ class PollTransientFailureTest(PollHarness, PollerTestCase):
         self.assertEqual(production_auto_deploy.attempted_shas(config), set())
 
     def test_an_operator_retry_starts_the_budget_over_too(self):
-        """--retry-failed is the intervention that clears the quarantine.
-        Inheriting the spent budget would re-quarantine the revision on the
-        first blip after it."""
+        """--retry-failed must not inherit the spent forgiveness budget."""
 
         config = self.loaded_config()
         for _tick in range(production_auto_deploy.TRANSIENT_FORGIVENESS_LIMIT + 1):
@@ -3760,16 +3515,7 @@ class PollTransientFailureTest(PollHarness, PollerTestCase):
             )
 
     def test_a_real_write_failure_forgives_nothing(self):
-        """The same property as above, with both real halves present.
-
-        The test above stubs _write_private out entirely, so it asserts what
-        this function does with an exception rather than that the write it
-        actually calls produces one. That is the seam #413 and #416 each left
-        untested: #413's caller was only ever exercised against the pre-#354
-        write, and #354's rewrite only against a tree without this caller. Here
-        the real write is made to fail by a real filesystem condition and the
-        real caller has to fail closed on it.
-        """
+        """The same property with the real _write_private failing on a real filesystem (#413, #416)."""
 
         config = self.loaded_config()
         absent = config.state_root / "absent" / "transient-failures"
@@ -3785,22 +3531,11 @@ class PollTransientFailureTest(PollHarness, PollerTestCase):
 
     @unittest.skipIf(os.geteuid() == 0, "root ignores the directory mode this needs")
     def test_an_unwritable_state_root_forgives_nothing(self):
-        """The case the atomic write changed, asserted rather than assumed.
-
-        Replacing the target means creating a temporary file beside it, which
-        needs write permission on the directory; the truncating write this
-        replaced needed only write permission on the file, so it would have
-        succeeded here and granted a retry it could not bound. The forgiveness
-        budget is enforced on a lock-holding path, so failing closed is the only
-        safe direction for that difference to run in.
-        """
+        """The atomic write needs a writable directory; failing there must fail closed."""
 
         config = self.loaded_config()
-        # The counter must already exist, and this is the whole discriminating
-        # condition: creating a file in an unwritable directory fails for both
-        # bodies, but *replacing* an existing one fails only for this one. A
-        # first draft of this test omitted the line below and passed against the
-        # pre-#354 write as well, which is a guard that proves nothing.
+        # The counter must already exist: replacing a file (not creating one) is what
+        # fails only for the atomic write.
         counter = config.state_root / "transient-failures"
         counter.write_text(f"{OTHER_SHA} 1\n", encoding="ascii")
         counter.chmod(0o600)
@@ -3823,21 +3558,10 @@ class PollTransientFailureTest(PollHarness, PollerTestCase):
 
 
 class ConvergeTest(PollerTestCase):
-    """The operator entry point that closes issue #326.
+    """--converge: the operator's command under the poller's lock and tooling (#326, #902)."""
 
-    A hand-run ansible-playbook took no lock, so a manual converge outliving the
-    five-minute poll interval overlapped a poll and died 1463 tasks in on a
-    containment guard. --converge is that same command under the poller's own
-    lock, run with the poller's tooling from the poller's checkout (#902): the
-    arguments stay the operator's.
-    """
-
-    # Written once for the class and linked into each test's root, the way
-    # VerifyTest's stubs are (#891, after #888): the first exec of a newly
-    # written executable waits in a host-wide macOS queue. Each finds its test's
-    # files through the path it was invoked by. "ansible-playbook" is linked at
-    # <root>/.local/share/nas-platform/controller/.venv/bin; "decoy" at
-    # <root>/bin/ansible-playbook, first on PATH, is what a bare name would run.
+    # Written once and linked into each test's root: the first exec of a new
+    # executable waits in a host-wide macOS queue (#891, #888).
     RECORD = (
         "import fcntl, json, os, sys\n"
         "lock = os.path.join(root, '.local/share/nas-platform/state/deployment.lock')\n"
@@ -3888,8 +3612,7 @@ class ConvergeTest(PollerTestCase):
             stub = cls.stubs / name
             stub.write_text(f"#!{sys.executable}\n{body}{cls.RECORD}", encoding="utf-8")
             stub.chmod(0o700)
-            # Paid here, untimed; it fails for want of fixtures, and only the
-            # exec itself is the point.
+            # Warm the exec; it fails for want of fixtures, which is fine.
             subprocess.run([str(stub)], input=b"", capture_output=True, check=False)
 
     def setUp(self):
@@ -3915,9 +3638,7 @@ class ConvergeTest(PollerTestCase):
         return self.root / "playbook-invocation.json"
 
     def test_an_operator_converge_never_hands_site_yml_a_summary_path(self):
-        """The handshake's operator row: nothing announces after an operator's
-        command, so site.yml must not be handed a summary path -- even when the
-        shell that ran the launcher carries the variable."""
+        """Nothing announces after an operator's converge, so no summary path, ever."""
 
         record = self.fake_playbook()
         leaked = {production_auto_deploy.SUMMARY_PATH_ENVIRONMENT: str(self.root / "leaked.json")}
@@ -3956,29 +3677,21 @@ class ConvergeTest(PollerTestCase):
             ["-i", "inventory/local.yml", "site.yml", "--ask-vault-pass"],
         )
         self.assertTrue(invocation["held"], "the plays must run under the lock")
-        # The plays refuse a converge somebody else is running, so the converge
-        # that took the lock has to say the holder is its own.
         self.assertEqual(invocation["owner"], str(os.getpid()))
-        # #902: the checkout's own tooling, from the checkout, so the relative
-        # inventory and playbook the docs show resolve -- and never whatever a
-        # bare name finds on the operator's PATH.
+        # #902: the checkout's own tooling, never whatever PATH finds.
         self.assertEqual(invocation["executable"], str(self.venv_playbook))
         self.assertEqual(Path(invocation["cwd"]).resolve(), self.checkout.resolve())
         self.assertFalse(
             self.decoy_record.exists(),
             "converge ran the ansible-playbook on PATH, not the checkout virtualenv's",
         )
-        # Read from inside the child, while the lock is still held: the record is
-        # cleared on release precisely so nothing reads it afterwards.
+        # Read inside the child: the record is cleared on release.
         record = json.loads(invocation["lock_record"])
         self.assertEqual(record["holder"], "operator converge")
         self.assertEqual(record["pid"], os.getpid())
 
     def test_converge_uses_the_poller_collections_unless_the_operator_chose(self):
-        """pip installs ansible-core, not the Galaxy collections: those sit beside
-        the checkout's virtualenv, where the poller points its plays. A converge
-        that found the venv's ansible-playbook and not its collections would fail
-        on the first community.* module. An operator's own export still wins."""
+        """Plays find the venv's Galaxy collections unless the operator exported their own."""
 
         record = self.fake_playbook()
         with mock.patch.dict(os.environ):
@@ -4093,26 +3806,13 @@ class ConvergeTest(PollerTestCase):
 
 
 class VerifyTest(PollerTestCase):
-    """--verify: verify.yml on the hour against what is deployed (#610).
+    """--verify: verify.yml on the hour against what is deployed (#610), via real stubs."""
 
-    Driven through main() with a real Git checkout, an ansible-playbook stub at
-    the virtualenv path the poller really runs, and a curl stub at curl_path, so
-    the lock, the argv, the environment and the publish document are the ones
-    production produces rather than ones a mock agreed with.
-    """
-
-    # The stubs, written once for the class and linked into each test's root
-    # (#891, after #888). On macOS the first exec of a newly written executable
-    # waits in a host-wide queue that the full local gate keeps long, and the
-    # verify ping's curl runs under ping_healthchecks' 20-second ceiling. An
-    # executable that has run once -- through a symlink too -- skips that queue,
-    # so each file is exec'd once here, untimed, and finds its test's files
-    # through the path it was invoked by, never through paths written into it.
+    # Written once and linked into each test's root: the first exec of a new
+    # executable waits in a host-wide macOS queue (#891, #888).
     ROOT_OF_BIN = "root = os.path.dirname(os.path.dirname(sys.argv[0]))\n"
     STUBS = {
-        # Records the form fields and the config each Pushover send names, and
-        # answers the way Pushover does when it takes a message -- unless told
-        # to exit non-zero, which is curl failing to reach it.
+        # Records Pushover sends and answers as Pushover does, unless told to fail.
         "curl": (
             "import json, os, sys\n"
             + ROOT_OF_BIN
@@ -4165,9 +3865,7 @@ class VerifyTest(PollerTestCase):
             "import sys\n"
             "sys.stdout.write('{\"status\":0,\"errors\":[\"user key is invalid\"]}\\n400')\n"
         ),
-        # enable_verify_ping's curl: records the healthchecks ping and whether
-        # the deployment lock was free, and hands every other call to the
-        # Pushover stub linked beside it as bin/curl-pushover.
+        # Records the healthchecks ping and lock state; passes other calls to curl-pushover.
         "curl-ping": (
             "import fcntl, json, os, sys\n"
             + ROOT_OF_BIN
@@ -4194,15 +3892,13 @@ class VerifyTest(PollerTestCase):
         super().setUpClass()
         scratch = Path(tempfile.mkdtemp())
         cls.addClassCleanup(shutil.rmtree, scratch)
-        # A bin/ of its own, so what a warming run records lands in scratch.
         cls.stubs = scratch / "bin"
         cls.stubs.mkdir()
         for name, body in cls.STUBS.items():
             stub = cls.stubs / name
             stub.write_text(f"#!{sys.executable}\n{body}", encoding="utf-8")
             stub.chmod(0o700)
-            # Paid here, with no deadline. None has its fixtures beside this
-            # directory, so most fail, and only the exec itself is the point.
+            # Warm the exec; most fail for want of fixtures, which is fine.
             subprocess.run([str(stub)], input=b"", capture_output=True, check=False)
 
     def setUp(self):
@@ -4242,13 +3938,8 @@ class VerifyTest(PollerTestCase):
         self.published_path = self.root / "published.jsonl"
         self.curl = binary / "curl"
         self.curl_exit = self.root / "curl-exit"
-        # Records the form fields and the config each Pushover send names, and
-        # answers the way Pushover does when it takes a message -- unless told to
-        # exit non-zero, which is curl failing to reach it.
         self.curl.symlink_to(self.stubs / "curl")
-        # The verify-failed page asks GitHub for the releasing run. A unit test
-        # must not reach api.github.com (the seeing_poll comment above records
-        # what that cost once), so GitHub is unreachable unless a test says so.
+        # A unit test must not reach api.github.com.
         ci_runs = mock.patch.object(
             production_auto_deploy, "fetch_ci_runs",
             side_effect=production_auto_deploy.EligibilityError("no network in tests"),
@@ -4260,8 +3951,6 @@ class VerifyTest(PollerTestCase):
         venv.mkdir(parents=True)
         self.invocations = self.root / "playbook-invocations.jsonl"
         self.playbook_exit = self.root / "playbook-exit"
-        # The array check's own exit code, so the two invocations can disagree,
-        # and what its log says: the mismatch marker, or a setup failure.
         self.mdraid_exit = self.root / "mdraid-exit"
         self.mdraid_output = self.root / "mdraid-output"
         (venv / "ansible-playbook").symlink_to(self.stubs / "ansible-playbook")
@@ -4308,7 +3997,6 @@ class VerifyTest(PollerTestCase):
             return []
         pages = [json.loads(line) for line in self.published_path.read_text().splitlines()]
         self.published_path.unlink()
-        # Every verify page is the Alerts app's: a failure at 1, its close at -1.
         for page in pages:
             self.assertEqual(page["config"], str(self.alerts_notifier))
             self.assertEqual(page["html"], "1")
@@ -4336,8 +4024,7 @@ class VerifyTest(PollerTestCase):
             self.assertEqual(log.stat().st_mode & 0o777, 0o600)
 
     def test_verify_under_an_older_configuration_runs_the_deploy_list_once(self):
-        # Before #618, and as #618's template wrote it: neither may run the
-        # services twice or touch the array's record.
+        # Before #618 and as #618's template wrote it.
         for extra in ({}, {"periodic_verify_tags": (
                 "platform_verify_beszel,platform_verify_dozzle,platform_verify_mdraid")}):
             with self.subTest(extra=extra):
@@ -4455,11 +4142,9 @@ class VerifyTest(PollerTestCase):
         self.assertEqual(self.pages(), [])
 
     def hold_the_lock(self, seconds=None):
-        """Another process holding the deployment lock, already acquired on return.
+        """A real second process holding the deployment lock, acquired on return.
 
-        A real second process, because the flock is what --verify waits on and a
-        lock held in this one would be re-entered rather than waited for. It
-        releases after `seconds`, or when the test ends if that is None.
+        Released after `seconds`, or at test end if None.
         """
 
         release = ("    sys.stdin.read()\n" if seconds is None
@@ -4502,17 +4187,13 @@ class VerifyTest(PollerTestCase):
         self.assertIn("poll", output)
         self.assertIn(f"pid {holder.pid}", output)
         self.assertIn("still holds", output)
-        # An operator runs --verify by hand too, so the wait says so rather than
-        # reading as a hang.
         self.assertIn("waiting up to", output)
         self.assertGreaterEqual(elapsed, 0.3)
         self.assertEqual(self.playbook_runs(), [])
         self.assertEqual(self.pages(), [])
 
     def test_a_deployment_that_releases_inside_the_wait_is_verified_and_pings(self):
-        # The hour the collision used to cost. A skipped verify pings nothing and
-        # the check tolerates one missed ping, so abandoning the hour spent the
-        # whole grace period on a deployment doing exactly what it should.
+        # A skipped verify pings nothing and would spend the check's grace period.
         self.enable_verify_ping()
         self.mark_deployed()
         self.hold_the_lock(seconds=0.3)
@@ -4530,8 +4211,6 @@ class VerifyTest(PollerTestCase):
             self.assertEqual(json.loads(run["lock_record"])["holder"], "verify")
 
     def test_the_wait_holds_nothing_so_a_deployment_is_never_queued_behind_it(self):
-        # verify() waits on the flock without taking it, so the deployment it is
-        # waiting for keeps the lock for exactly as long as it needs.
         self.mark_deployed()
         self.hold_the_lock(seconds=0.3)
         with self.waiting_for_the_lock(30):
@@ -4542,13 +4221,7 @@ class VerifyTest(PollerTestCase):
         self.assertFalse(production_auto_deploy.deployment_lock_held(self.config))
 
     def test_the_other_callers_still_refuse_a_held_lock_on_one_attempt(self):
-        # Only --verify waits. A poll tick that waited would deploy a revision
-        # the deployment it waited for had already deployed, and --converge
-        # refused at once is a message rather than a terminal that has stopped.
-        # The default is read first and not merely timed: a default argument is
-        # bound at import, so waiting_for_the_lock cannot shorten one, and a
-        # default that had grown --verify's wait would fail the timing below
-        # fifteen minutes from now rather than at once.
+        # Only --verify waits. The default is read, not timed: it is bound at import.
         self.assertEqual(
             inspect.signature(production_auto_deploy.deployment_lock)
             .parameters["wait_seconds"].default,
@@ -4567,8 +4240,6 @@ class VerifyTest(PollerTestCase):
     def test_a_missing_ansible_playbook_is_an_error_rather_than_a_verdict(self):
         self.mark_deployed()
         (self.checkout / ".venv/bin/ansible-playbook").unlink()
-        # Nothing on the tool path either, so a real ansible-playbook on this
-        # machine cannot stand in for the one that went missing.
         self.config = self.loaded_config(
             git_path=self.git, curl_path=str(self.curl), tool_path=str(self.root / "empty")
         )
@@ -4581,8 +4252,6 @@ class VerifyTest(PollerTestCase):
 
     def test_an_unrecordable_verdict_still_reports_what_verify_found(self):
         self.mark_deployed()
-        # A host that has polled already has its lock file, so only the verdict
-        # write meets the read-only directory.
         with production_auto_deploy.deployment_lock(self.config):
             pass
         self.config.state_root.chmod(0o500)
@@ -4608,13 +4277,10 @@ class VerifyTest(PollerTestCase):
         with mock.patch.object(production_auto_deploy, "_run", side_effect=run):
             code, _output = self.run_verify()
         self.assertEqual(code, 1)
-        # A timed-out array run says nothing about the disks.
         self.assertEqual(
             sorted(page["title"].split(" ·")[0] for page in self.pages()),
             ["\u2754 RAID check could not run", "\U0001f534 Verify failed"],
         )
-        # The whole lock hold stays under the hourly cadence, so a stuck run is a
-        # failure before the next --verify is due.
         self.assertEqual(len(timeouts), 2)
         self.assertLessEqual(timeouts[0], 30 * 60)
         self.assertLess(sum(timeouts), 60 * 60)
@@ -4639,9 +4305,8 @@ class VerifyTest(PollerTestCase):
             ["\U0001f534 Verify failed", "\U0001f7e0 RAID degraded"],
         )
 
-    # The two verdicts are independent (#609): verify.yml drops a failing host
-    # from the rest of its run, so one invocation let a failing service hide a
-    # degraded array, and a paged array hide a service breaking.
+    # The two verdicts are independent (#609): one invocation let a failing
+    # service hide a degraded array, and vice versa.
 
     def titles(self):
         return sorted((page["priority"], page["title"].split(" ·")[0]) for page in self.pages())
@@ -4721,7 +4386,6 @@ class VerifyTest(PollerTestCase):
         self.assertEqual(message_shape(page["message"])["labels"], ["Revision", "CI", "Log"])
         self.assertEqual(self.ci_runs.call_count, 1)
 
-        # An unchanged verdict pages nothing, and so asks GitHub nothing.
         self.run_verify(playbook_exit=2)
         self.assertEqual(self.pages(), [])
         self.assertEqual(self.ci_runs.call_count, 1)
@@ -4801,16 +4465,13 @@ class VerifyTest(PollerTestCase):
         self.assertEqual(self.titles(), [("1", "\u2754 RAID check could not run")])
         self.run_verify(mdraid_exit=2, mismatch=False)
         self.assertEqual(self.pages(), [])
-        # The check runs again and finds a mismatch.
         self.run_verify(mdraid_exit=2)
         self.assertEqual(self.titles(), [("1", "\U0001f7e0 RAID degraded")])
-        # Degraded, then the setup breaks: visibility lost, which pages.
         self.run_verify(mdraid_exit=2, mismatch=False)
         self.assertEqual(self.titles(), [("1", "\u2754 RAID check could not run")])
         # Back from could-not-run to healthy is not a recovery of the disks.
         self.assertEqual(self.run_verify()[0], 0)
         self.assertEqual(self.titles(), [("-1", "\U0001f7e2 RAID check running again")])
-        # A real mismatch recovering is.
         self.run_verify(mdraid_exit=2)
         self.pages()
         self.run_verify()
@@ -4833,8 +4494,6 @@ class VerifyTest(PollerTestCase):
         self.assertIs(
             production_auto_deploy.HOURLY_ONLY_VERIFY_CHECKS[
                 "platform_verify_immich_originals"]["marker"], marker)
-        # Once, in the ceiling assert's fail_msg: anywhere else, a database the
-        # check could not read would page as missing originals.
         self.assertEqual(text.count(marker), 1)
         (block,) = [task for task in yaml.safe_load(text) if "block" in task]
         (assertion,) = [task for task in block["block"]
@@ -4853,17 +4512,13 @@ class VerifyTest(PollerTestCase):
         path = SCRIPTS.parent / "roles/host_prep/tasks/verify_mdraid.yml"
         text = path.read_text(encoding="utf-8")
         marker = production_auto_deploy.MDRAID_MISMATCH_MARKER
-        # Once, in the fail_msg: a success message or a debug carrying it would
-        # make a failing setup read as a degraded array.
         self.assertEqual(text.count(marker), 1)
         (block,) = [task for task in yaml.safe_load(text) if "block" in task]
         (assertion,) = [task for task in block["block"] if "ansible.builtin.assert" in task]
         fail_msg = assertion["ansible.builtin.assert"]["fail_msg"]
         self.assertTrue(fail_msg.startswith(marker + ":"), fail_msg)
         self.assertNotIn(marker, assertion["ansible.builtin.assert"]["success_msg"])
-        # Ansible's error excerpt prints the lines above the failing position, so
-        # a success_msg that failed to template within three lines of the marker
-        # would put the marker in the log of a check that never compared anything.
+        # Ansible's error excerpt prints lines above the failing position.
         lines = text.splitlines()
         (marker_line,) = [n for n, line in enumerate(lines) if marker in line]
         (success_line,) = [n for n, line in enumerate(lines) if "success_msg:" in line]
@@ -4872,11 +4527,7 @@ class VerifyTest(PollerTestCase):
     VERIFY_PING_URL = "https://hc-ping.com/verify-array-sentinel"
 
     def enable_verify_ping(self):
-        """Route the healthchecks ping to a recorder, and Pushover to the stub above.
-
-        The recorder also notes whether the deployment lock was free, so the
-        ping is proved to run after verify() released it.
-        """
+        """Route the ping to a recorder that notes whether the deployment lock was free."""
 
         self.verify_pings_path = self.root / "verify-pings.jsonl"
         (self.root / "bin/curl-pushover").symlink_to(self.stubs / "curl")
@@ -4895,9 +4546,7 @@ class VerifyTest(PollerTestCase):
         return pings
 
     def test_the_verify_ping_follows_the_whole_run_not_the_services_alone(self):
-        # verify() returns all() over the services' run and every hourly-only
-        # run, so the external check hears an array verdict the services' own
-        # pass would otherwise cover (#606 on #622).
+        # verify() is all() over every run (#606 on #622).
         self.enable_verify_ping()
         self.mark_deployed()
         for label, arguments, code, url in (
@@ -4913,8 +4562,6 @@ class VerifyTest(PollerTestCase):
                 actual, _output = self.run_verify(**arguments)
                 self.assertEqual(actual, code)
                 self.assertEqual(self.verify_pings(), [{"url": url, "held": False}])
-        # Both invocations really ran on the failing rows: the ping is the run's
-        # verdict, not a shortcut past the array check.
         self.assertTrue(any("platform_verify_mdraid" in run["argv"][-1]
                             for run in self.playbook_runs()))
 
@@ -5036,7 +4683,6 @@ class CliTest(PollerTestCase):
         text = self.status_text(runs=(self.GREEN_RUN,))
         self.assertIn("already attempted and failed", text)
         self.assertIn(f"--retry-failed {MAIN_SHA}", text)
-        # Read-only: asking about the lock must not create it.
         self.assertFalse(production_auto_deploy.lock_path(config).exists())
 
     def hold_lock(self):
@@ -5071,7 +4717,6 @@ class CliTest(PollerTestCase):
         self.assertIn(f"in progress: {MAIN_SHA[:9]} (holder poll (pid {holder.pid}", text)
         self.assertNotIn("already attempted and failed", text)
         self.assertNotIn("--retry-failed", text)
-        # Read-only: the holder's record is untouched.
         self.assertEqual(production_auto_deploy.lock_path(config).read_bytes(), record)
 
     def test_status_reports_a_finished_attempt_under_a_free_lock_as_failed(self):
@@ -5194,25 +4839,13 @@ class CliTest(PollerTestCase):
 
 
 class HealthchecksPingTest(PollHarness, PollerTestCase):
-    """The dead-man's-switch pings (#606, #610 part 2).
-
-    Driven through main() with a curl stub at curl_path that records its argv,
-    the config it read from stdin and whether the deployment lock was free, so
-    the ping is the command production runs rather than one a mock agreed with.
-    """
+    """The dead-man's-switch pings (#606, #610), via a curl stub that records its argv."""
 
     POLLER_URL = "https://hc-ping.com/poller-sentinel-0f3c"
     VERIFY_URL = "https://hc-ping.com/verify-sentinel-7a1d"
 
-    # The curl stub, written once for the class and linked into each test's
-    # bin/curl (#888). On macOS the first exec of a newly written executable
-    # waits in a host-wide queue that the full local gate, whose checks write
-    # stubs by the hundred, keeps long: a stub written per test sat in it past
-    # ping_healthchecks' own 20-second ceiling, the ping read as failed and
-    # printed a line the test never expected. An executable that has run once
-    # -- through a symlink too -- skips that queue, so the one file is exec'd
-    # here, untimed, and every test reaches its own files through the path it
-    # was invoked by rather than through paths written into it.
+    # Written once and linked into each test's bin/curl: the first exec of a new
+    # executable waits in a host-wide macOS queue (#888).
     CURL_STUB = (
         f"#!{sys.executable}\n"
         "import fcntl, json, os, sys, time\n"
@@ -5231,7 +4864,6 @@ class HealthchecksPingTest(PollHarness, PollerTestCase):
         "with open(os.path.join(root, 'curl-calls.jsonl'), 'a') as sink:\n"
         "    sink.write(json.dumps({'argv': sys.argv[1:], 'stdin': stdin,\n"
         "                           'held': held}) + '\\n')\n"
-        # What real curl does on an error: name what it was asked for.
         "if os.path.exists(os.path.join(root, 'curl-echo')):\n"
         "    print('curl: (22) ' + stdin, file=sys.stderr)\n"
         "    print(stdin)\n"
@@ -5249,7 +4881,6 @@ class HealthchecksPingTest(PollHarness, PollerTestCase):
         super().setUpClass()
         cls.stub_directory = Path(tempfile.mkdtemp())
         cls.addClassCleanup(shutil.rmtree, cls.stub_directory)
-        # Warmed from a bin/ of its own, so its sink is a scratch file here.
         (cls.stub_directory / "bin").mkdir()
         cls.shared_curl = cls.stub_directory / "bin/curl"
         cls.shared_curl.write_text(cls.CURL_STUB, encoding="utf-8")
@@ -5309,8 +4940,6 @@ class HealthchecksPingTest(PollHarness, PollerTestCase):
                 self.assertEqual(self.pinged(), [url])
 
     def test_an_ineligible_tick_pings_plain_and_still_exits_zero(self):
-        # GitHub unreadable is a live poller that could not judge; one blip must
-        # not page off-box, and sustained blindness pages on-box already.
         with mock.patch.object(production_auto_deploy, "poll",
                                side_effect=production_auto_deploy.EligibilityError("x")):
             code, output = self.main("--poll")
@@ -5329,11 +4958,8 @@ class HealthchecksPingTest(PollHarness, PollerTestCase):
         self.assertEqual(self.pinged(), [self.POLLER_URL + "/fail"])
 
     def test_an_unusable_state_directory_is_a_sentence_and_still_pings_fail(self):
-        # Not a mock: deployment_lock opens state_root/deployment.lock before
-        # anything else, so a state_root the installer never created is a real
-        # OSError out of poll(). Cron keeps only the most recent output, and
-        # --verify and the prune already report this class as a sentence; the
-        # branch that runs every five minutes reported it as a traceback (#658).
+        # Not a mock: a missing state_root is a real OSError out of poll(), and must
+        # read as a sentence, not a traceback (#658).
         missing = self.root / ".local/share/nas-platform/absent-state"
         self.configure(state_root=str(missing))
 
@@ -5348,8 +4974,6 @@ class HealthchecksPingTest(PollHarness, PollerTestCase):
         self.assertEqual(self.pinged(), [self.POLLER_URL + "/fail"])
 
     def test_an_unusable_configuration_cannot_ping_and_is_left_to_the_grace_period(self):
-        # The URL lives in the file that could not be trusted, so there is
-        # nothing to ping; the silence is what the check alerts on.
         self.configure(branch=None)
         with mock.patch.object(production_auto_deploy, "poll") as polled:
             code, output = self.main("--poll")
@@ -5374,7 +4998,6 @@ class HealthchecksPingTest(PollHarness, PollerTestCase):
                 self.assertEqual(self.pings(), [])
 
     def test_only_the_scheduled_modes_ping(self):
-        # A retry that succeeds while cron is dead must not report the tick alive.
         with mock.patch.object(production_auto_deploy, "poll", return_value=True):
             self.assertEqual(self.main("--retry-failed", MAIN_SHA)[0], 0)
         with mock.patch.object(production_auto_deploy, "print_status"):
@@ -5394,8 +5017,7 @@ class HealthchecksPingTest(PollHarness, PollerTestCase):
                 self.assertEqual(self.pinged(), pinged)
 
     def test_every_main_sentence_is_exact(self):
-        # main() is split into helpers (#837); cron keeps only the latest
-        # output, so each sentence is pinned whole rather than by a fragment.
+        # Split into helpers (#837); each sentence is pinned whole.
         for target, effect, argv, code, sentence in (
             ("poll", {"return_value": False}, ("--poll",), 1,
              "production auto-deploy: attempt failed"),
@@ -5457,8 +5079,6 @@ class HealthchecksPingTest(PollHarness, PollerTestCase):
         self.assertEqual(self.pings(), [])
 
     def test_the_verify_ping_does_not_wait_for_the_paging_record(self):
-        # Two passes in a row page nobody, and both still ping: the heartbeat is
-        # the absence of a ping, not a change of verdict.
         with mock.patch.object(production_auto_deploy, "verify", return_value=True):
             self.main("--verify")
             self.main("--verify")
@@ -5497,7 +5117,6 @@ class HealthchecksPingTest(PollHarness, PollerTestCase):
                 self.assertEqual(fail_url(url), expected)
 
     def test_a_failed_tick_with_a_query_pings_fail_rather_than_success(self):
-        # `uuid?rid=42/fail` is a success ping with an odd run id.
         self.configure(healthchecks_poller_ping_url=self.POLLER_URL + "?rid=42")
         with mock.patch.object(production_auto_deploy, "poll", return_value=False):
             self.main("--poll")
@@ -5515,7 +5134,6 @@ class HealthchecksPingTest(PollHarness, PollerTestCase):
         (call,) = self.pings()
         self.assertIs(call["held"], False)
         self.assertEqual(call["stdin"], f'url = "{self.POLLER_URL}/fail"\n')
-        # And the attempt it reports is recorded exactly as before.
         self.assertIn(MAIN_SHA, production_auto_deploy.attempted_shas(config))
 
     def test_a_failed_ping_is_one_line_and_changes_no_exit_code(self):
@@ -5555,8 +5173,7 @@ class HealthchecksPingTest(PollHarness, PollerTestCase):
         self.assertNotIn("hc-ping", output)
 
     def test_curl_output_never_reaches_the_process_output(self):
-        # redirect_stdout cannot see a child writing to the inherited descriptor,
-        # so this runs the poller as its own process and reads its real fds.
+        # redirect_stdout cannot see a child's writes, so run the poller as a process.
         self.curl_echo.write_text("1", encoding="ascii")
         self.curl_exit.write_text("22", encoding="ascii")
         program = (

@@ -1,9 +1,7 @@
 ---
-# Run by roles/managed_users between the existing-credential proof and the
-# creation plan (managed_users_before_create_tasks), in preflight and reconcile,
-# --check included. Jellyfin's policy endpoint replaces the whole policy, so the
-# listed policy becomes the repair body: it has to carry both provider ids and
-# no credential-shaped key before anything is created or repaired.
+# Hook run before the creation plan. The policy endpoint replaces the whole
+# policy, so the listed policy becomes the repair body and must carry both
+# provider ids and no credential-shaped key.
 - name: Require complete safe existing Jellyfin managed-user policies
   ansible.builtin.assert:
     that:

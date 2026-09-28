@@ -1,25 +1,7 @@
-# The runtime half of the Jellyfin service contract: the identity, settings,
-# plugin, capability, library, transcode and persistence proofs that need a
-# converged Jellyfin to answer. It was 922 lines inside a <<'RUBY' heredoc in
-# tests/contracts/jellyfin.sh until issue #147 gave it a file, so that sh -n, a
-# linter and tests/jellyfin_contract_test.rb can all reach it.
-#
-# Invoked as `ruby jellyfin-runtime.rb <mode> [args...]` with NO -r preloads,
-# because the heredoc had none: every library it needs is required below.
-# Everything else it reads comes out of the PLATFORM_* environment the wrapper
-# exports.
-#
-# Two readers slice this file rather than run it, and both stop at the first
-# top-level statement past the definitions:
-#
-#   * tests/jellyfin_transcode_contract_test.rb truncates at
-#     `vault_yaml, vault_error, vault_status =` and evals what is above it, so
-#     it can exercise wait_for_complete_library and the transcode proofs in
-#     process. Nothing may move above that line that must not run on load.
-#   * jellyfin-static.rb reads this file as TEXT for six runtime sentinels it
-#     cannot observe statically. Those six were partly vacuous while both halves
-#     shared one file -- the assertion quoted its own subject -- and are
-#     load-bearing for the first time now that this is a separate file.
+# Runtime half of the Jellyfin service contract (#147). Run with NO -r preloads.
+# tests/jellyfin_transcode_contract_test.rb evals everything above `vault_yaml, vault_error,
+# vault_status =`, so nothing that must not run on load may move above it; jellyfin-static.rb
+# reads this file as text for runtime sentinels.
 require "json"
 require "digest"
 require "net/http"
@@ -120,9 +102,8 @@ DRIFT_IMAGE = (
   "AH//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/AH//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/AH//2Q=="
 ).unpack1("m0").freeze
 
-# Four seconds of 64x48 H.264 produced by the pinned image's own ffmpeg with
-# bitexact flags, so regenerating it yields these exact bytes. Small enough to
-# transcode instantly and long enough to split into two HLS segments.
+# Four seconds of 64x48 H.264 from the pinned ffmpeg with bitexact flags, so these bytes
+# are reproducible; long enough for two HLS segments.
 VIDEO_FIXTURE = (
   "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAANLbW9vdgAAAGxtdmhkAAAAAAAAAAAA" \
   "AAAAAAAD6AAAD6AAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAA" \
@@ -155,19 +136,14 @@ VIDEO_FIXTURE = (
   "imBLHABVtW0AAAAIQZoS2IJfGbAAAAAYZYiBAAt//RjvApNvTEcdMPOJ0hWoR9GBAAAACEGaEtiC" \
   "XxmwAAAAGGWIggAt//0Y7wKTb0xHHTDzidIVqEfRgQAAAAhBmhLYgl8ZsQAAABhliIEAC3/9GO8C" \
   "k29MRx0w84nSFahH0YEAAAAIQZoS2IJfGbE="
-# unpack1 rather than the base64 library, which is not a default gem on the
-# Ruby 3.4 the integration lane runs.
+# unpack1: base64 is not a default gem on the lane's Ruby 3.4.
 ).unpack1("m0").freeze
 
 CLIENT = 'MediaBrowser Client="nas-platform-contract", Device="contract", ' \
          'DeviceId="nas-platform-jellyfin-contract", Version="1.0.0"'
 TRANSCODE_PROOF_TIMEOUT_SECONDS = 60
-# How much longer the proof keeps asking for its own session after the segment
-# request has returned. The segment *is* the transcoder's output, so the session
-# exists by the time the request completes -- but the poll that would have seen
-# it can straddle that completion. This window is strictly wider than the single
-# poll gap the proof used to allow, so it can only remove false failures, and it
-# is paid for only when no transcode is ever reported.
+# Extra time to keep polling for the session after the segment request returned,
+# since the last poll can straddle that completion.
 TRANSCODE_OBSERVATION_GRACE_SECONDS = 10
 LIBRARY_RENAME_POLL_INTERVAL_SECONDS = 1
 
@@ -298,9 +274,7 @@ def library_by_path(folders, definition)
 end
 
 def wait_for_complete_library(token, definition, name:, timeout:)
-  # Measured on 10.11, which returns from a virtual-folder rename before its
-  # in-memory CollectionFolder has adopted the new directory and API identity.
-  # Unre-measured on 12.1; this poll costs one request if 12 fixed it.
+  # 10.11 returned from a rename before the CollectionFolder adopted it; unre-measured on 12.1.
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
   loop do
     remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -546,9 +520,7 @@ rescue SystemCallError
   fail_contract("the transcode cache is unavailable or unsafe")
 end
 
-# Forcing a smaller frame size makes the source unusable as-is, so the server
-# must decode and re-encode rather than remux. A tiny source keeps that honest
-# and fast on every platform.
+# A smaller frame size forces a real decode and re-encode rather than a remux.
 def assert_cpu_transcode(token, item_id, source_id)
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + TRANSCODE_PROOF_TIMEOUT_SECONDS
   transcode_root = Pathname.new(
@@ -560,9 +532,7 @@ def assert_cpu_transcode(token, item_id, source_id)
   proof_suffix = SecureRandom.hex(16)
   device_id = "nas-platform-jellyfin-proof-#{proof_suffix}"
   play_session_id = "nas-platform-jellyfin-proof-#{proof_suffix}"
-  # TranscodingInfo is keyed by DeviceId. Jellyfin's only session-end endpoint
-  # logs out the access token, so it cannot safely remove this ephemeral session
-  # without invalidating the administrator token shared by the remaining proof.
+  # The only session-end endpoint logs out the token, which the rest of the proof shares.
   request(
     "post", "/Sessions/Capabilities", token: token, device_id: device_id,
     expected: [204], raw: true, deadline: deadline, timeout_message: "transcode proof timed out"
@@ -635,20 +605,15 @@ def assert_cpu_transcode(token, item_id, source_id)
         "get", "/Sessions?#{session_query}", token: token,
         deadline: deadline, timeout_message: "transcode proof timed out"
       )
-      # The DeviceId was invented by this attempt moments ago, so a session
-      # carrying it -- and any TranscodingInfo on it -- can only have been
-      # produced by this playback. *When* the poll catches it says nothing about
-      # whose it is, which is why the observation is not required to land while
-      # the segment request is still in flight.
+      # The DeviceId is this attempt's own, so any session carrying it is this playback's,
+      # whenever the poll catches it.
       session = sessions.find { |candidate| candidate["DeviceId"] == device_id }
       transcode = session && session["TranscodingInfo"]
       error = segment_state_mutex.synchronize { segment_error }
       raise error if error
       break if transcode
 
-      # Once the segment request is done the window has to end, or a playback
-      # that produced no transcode at all would poll until the whole proof
-      # timed out and blame the clock instead of the server.
+      # End the window after the request, or a missing transcode would blame the clock.
       unless active
         observation_deadline ||= [
           Process.clock_gettime(Process::CLOCK_MONOTONIC) + TRANSCODE_OBSERVATION_GRACE_SECONDS,
@@ -686,8 +651,7 @@ def assert_cpu_transcode(token, item_id, source_id)
       transcode["HardwareAccelerationType"].to_s.casecmp?("none")
   end
 
-  # Durable evidence must belong to this unique proof identity. Old segments
-  # demonstrate historical transcoding but cannot satisfy the current attempt.
+  # Only this attempt's segments count; old ones prove nothing now.
   segments_after = transcode_segment_signatures(transcode_root)
   fail_contract("no current-attempt transcoded segment reached the cache volume") if
     (segments_after.keys - segments_before.keys).empty?
@@ -711,8 +675,7 @@ fail_contract("approved administrator avatar bytes drifted") unless
   AVATAR_PATH.file? && Digest::SHA256.file(AVATAR_PATH).hexdigest == AVATAR_SHA256
 
 wait_for_application
-# Rejected credentials come back as plain text, not JSON, so this asks for the
-# raw response instead of a parsed body.
+# Rejected credentials come back as plain text, so read the raw response.
 request(
   "post", "/Users/AuthenticateByName", raw: true,
   body: { "Username" => username, "Pw" => "contract-wrong-password" }, expected: [401]

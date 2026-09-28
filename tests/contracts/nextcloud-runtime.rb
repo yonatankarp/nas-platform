@@ -1,22 +1,8 @@
 #!/usr/bin/env ruby
-# The runtime half of the Nextcloud service contract: what can only be decided
-# against a deployed four-container stack, its bind mount and the encrypted
-# vault.
-#
-# usage: nextcloud-runtime.rb MODE
-#
-# MODE is `run`, and everything else arrives in the environment, exported by
-# tests/contracts/nextcloud.sh: PLATFORM_NEXTCLOUD_PORT, the four container
-# names, PLATFORM_DOCKER_ROOT, PLATFORM_CONTRACT_VAULT_FILE and
-# PLATFORM_CONTRACT_VAULT_PASSWORD_FILE.
-#
-# `run` is what a registry sweep reaches -- tests/run_contracts.rb spawns every
-# registered contract with no argument at all, under a 60-second cap -- so it
-# restarts nothing, stops nothing and drops nothing. The wrapper beside this file
-# records why there is no second mode.
-#
-# Every claim this program settles was an inference until it ran. This stack
-# ships switched off, so nothing had ever started one of these containers.
+# Runtime half of the Nextcloud contract, against the deployed four-container
+# stack and the encrypted vault. usage: nextcloud-runtime.rb MODE (only `run`,
+# which a registry sweep reaches, so it restarts, stops and drops nothing);
+# inputs come from the environment tests/contracts/nextcloud.sh exports.
 require "json"
 require "net/http"
 require "open3"
@@ -24,28 +10,16 @@ require "timeout"
 require "uri"
 require "yaml"
 
-# Every budget is an environment input, on the first lines of the file, and each
-# one is used at an explicit call site. docs/ci-performance-history.md records the `static`
-# job's time
-# budget being blown four times, and the fourth was exactly this shape: a
-# self-test whose planted regression let an invocation through to a runtime half
-# that then spent its whole readiness budget against a port nothing was
-# listening on. A budget that cannot be shortened by its caller is a wait nobody
-# can remove.
+# Every budget is an environment input so a caller facing a dead port can shorten it.
 READY_TIMEOUT_SECONDS = Integer(ENV.fetch("PLATFORM_NEXTCLOUD_READY_TIMEOUT_SECONDS", "180"), 10)
 DOCKER_TIMEOUT_SECONDS = Integer(ENV.fetch("PLATFORM_NEXTCLOUD_DOCKER_TIMEOUT_SECONDS", "60"), 10)
-# occ boots the whole application before it prints anything, so it is the slowest
-# call this contract makes and it gets a budget of its own rather than sharing
-# the plain docker one.
+# occ boots the whole application first, so it gets its own budget.
 OCC_TIMEOUT_SECONDS = Integer(ENV.fetch("PLATFORM_NEXTCLOUD_OCC_TIMEOUT_SECONDS", "120"), 10)
 HTTP_OPEN_TIMEOUT = Integer(ENV.fetch("PLATFORM_NEXTCLOUD_HTTP_OPEN_TIMEOUT_SECONDS", "10"), 10)
 HTTP_READ_TIMEOUT = Integer(ENV.fetch("PLATFORM_NEXTCLOUD_HTTP_READ_TIMEOUT_SECONDS", "30"), 10)
 POLL_INTERVAL_SECONDS = Integer(ENV.fetch("PLATFORM_NEXTCLOUD_POLL_INTERVAL_SECONDS", "2"), 10)
-# The one budget here that is not a timeout, and nothing waits on it: it is how
-# old an installation may be before "no background job mode has been recorded"
-# stops meaning "the sidecar's schedule has not fired yet" and starts meaning
-# "the sidecar has never run". assert_background_jobs_belong_to_the_sidecar
-# below is the single call site and records the arithmetic behind the default.
+# Not a timeout: the age past which "no background job mode recorded" means the
+# sidecar never ran (see assert_background_jobs_belong_to_the_sidecar).
 CRON_GRACE_SECONDS = Integer(ENV.fetch("PLATFORM_NEXTCLOUD_CRON_GRACE_SECONDS", "900"), 10)
 
 MODE = ARGV.fetch(0, "run")
@@ -54,47 +28,28 @@ APPLICATION = ENV.fetch("PLATFORM_NEXTCLOUD_CONTAINER")
 CRON = ENV.fetch("PLATFORM_NEXTCLOUD_CRON_CONTAINER")
 DATABASE = ENV.fetch("PLATFORM_NEXTCLOUD_DB_CONTAINER")
 CACHE = ENV.fetch("PLATFORM_NEXTCLOUD_CACHE_CONTAINER")
-# Never a real credential: it is the negative control for the administrator
-# exchange, and it has to be a value nothing could have authored.
+# The negative control; a value nothing could have authored.
 WRONG_PASSWORD = "nextcloud-contract-password-that-was-never-authored"
-# Handed to `occ config:app:get` as --default-value so that a key which has
-# never been written arrives as a value this program can recognise rather than
-# as an exit code carrying no output at all. It has to be a string nothing could
-# have stored in oc_appconfig, for the same reason WRONG_PASSWORD does.
+# --default-value for an unwritten key, which otherwise exits 1 with no output.
 UNSET_APP_CONFIG = "nextcloud-contract-app-config-never-written"
-# The crontab busybox crond reads inside the sidecar. It ships in the image
-# rather than in the shared volume, so this is the sidecar's own copy and not
-# the application container's.
+# The sidecar's own crontab, shipped in the image.
 CRON_CRONTAB_PATH = "/var/spool/cron/crontabs/www-data"
 
-# One line, always. tests/nextcloud_contract_test.rb judges a refusal by finding
-# its fragment on a line that starts with this prefix, so a message wrapped onto
-# a second line puts half of itself where no row can ever see it.
+# One line, always: tests/nextcloud_contract_test.rb matches refusals per line.
 def fail_contract(message)
   warn "Nextcloud contract failed: #{message}"
   exit 1
 end
 
-# Reported, never asserted. What the shipped app set currently is depends on the
-# image's own default, which this platform pins but does not choose, so a lane
-# must not fail on it -- #500 leaves the app policy to a later phase and this
-# line is what will inform it.
+# Reported, never asserted: the shipped app set is the image's default (#500).
 def observe(message)
   puts "nextcloud contract observation: #{message}"
 end
 
-# Every docker call is bounded and every failure to *make* the call is a
-# contract diagnostic rather than a backtrace: a lane that cannot run docker at
-# all must say so in the sentence a reader is looking for.
+# Bounded, and a failure to run docker is a diagnostic rather than a backtrace.
 def docker(*argv, label:, budget: DOCKER_TIMEOUT_SECONDS)
-  # Open3.capture3 reads the two pipes on threads of its own, and a Timeout
-  # closes those pipes underneath them: each thread then dies of IOError and Ruby
-  # prints its backtrace on stderr, immediately above the refusal below.
-  # Measured against a docker that sleeps past its budget -- two backtraces and
-  # then the sentence. A diagnostic standing next to a backtrace is what #352 was
-  # about, so the report is switched off for the duration of the call and
-  # restored afterwards; it governs threads created while it is off, which is
-  # exactly capture3's two.
+  # A Timeout closes capture3's pipes under its reader threads, which then print
+  # IOError backtraces beside the refusal (#352); silence them for this call.
   reported = Thread.report_on_exception
   Thread.report_on_exception = false
   begin
@@ -108,8 +63,6 @@ rescue SystemCallError => error
   fail_contract("#{label} could not run docker at all: #{error.class}")
 end
 
-# The first non-empty line of a stream, bounded. A refusal is one line, and a
-# docker error can be a paragraph.
 def first_line(stream)
   line = stream.to_s.lines.map(&:strip).find { |candidate| !candidate.empty? }
   return nil if line.nil?
@@ -117,22 +70,8 @@ def first_line(stream)
   line.length > 160 ? "#{line[0, 160]}..." : line
 end
 
-# Why a failed call needs saying more than its stderr does. The first CI run of
-# this lane refused with `the background job mode census failed: ` -- a sentence
-# that ends at its colon and names nothing -- because the message interpolated
-# the first line of stderr alone and there was no stderr:
-# core/Command/Config/App/GetConfig.php returns 1 from its
-# AppConfigUnknownKeyException branch, printing nothing on either stream, for an
-# app config key that has never been written. Measured against the pinned image:
-# `occ config:app:get core backgroundjobs_mode` on a fresh install answers
-# exit 1 with both streams empty.
-#
-# So every failure mode gets a distinguishable clause: the exit status always,
-# then stderr if there is any, then stdout if the command put its complaint on
-# the wrong stream, and otherwise the fact that it said nothing at all -- which
-# is a diagnosis rather than a hole, because it is what sends a reader to the
-# command's own exit codes. A call that never returned is not routed here: the
-# Timeout rescue in `docker` names the label and the budget it blew.
+# Name exit status, then stderr, then stdout, else "said nothing": occ
+# config:app:get exits 1 with both streams empty for an unwritten key.
 def diagnosis(stdout, stderr, status)
   code = status.exitstatus.nil? ? "signal #{status.termsig}" : "exit #{status.exitstatus}"
   if (line = first_line(stderr))
@@ -144,9 +83,7 @@ def diagnosis(stdout, stderr, status)
   end
 end
 
-# occ, as the account that owns the installation. Running it as root writes
-# root-owned files into /var/www/html that the next request cannot read, which is
-# a way of breaking the stack while asserting things about it.
+# As the installation's owner: root would write files the next request cannot read.
 def occ(*arguments, label:)
   stdout, stderr, status = docker(
     "exec", "--user", "www-data", APPLICATION, "php", "occ", *arguments,
@@ -156,10 +93,6 @@ def occ(*arguments, label:)
   stdout.strip
 end
 
-# An oc_appconfig read whose "this key has never been written" is a value rather
-# than a silent exit 1. Without --default-value that state and a broken occ are
-# the same exit code with the same empty output, and no message can tell a reader
-# which of the two it met.
 def app_config(key, label:)
   value = occ("config:app:get", "core", key, "--default-value=#{UNSET_APP_CONFIG}", label: label)
   value == UNSET_APP_CONFIG ? nil : value
@@ -198,11 +131,8 @@ rescue StandardError => error
   fail_contract("#{label} could not reach Nextcloud at #{BASE}: #{error.class}")
 end
 
-# /status.php is the readiness probe AND the database probe, which is unusual
-# enough to be worth stating: it is not a static file. It requires lib/base.php,
-# and OC::init boots the server, which builds the memcache factory, which calls
-# AppConfig#getAppInstalledVersions -- a query against oc_appconfig. With the
-# cluster gone apache answers and this returns HTTP 500 with a zero-byte body.
+# /status.php boots the server and queries oc_appconfig, so it is also the
+# database probe: with the cluster gone it answers 500 with an empty body.
 def wait_for_server(label)
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + READY_TIMEOUT_SECONDS
   loop do
@@ -252,26 +182,9 @@ def assert_status_endpoint
   document
 end
 
-# --- the landmine, settled against a running installation --------------------
-#
-# THE claim this contract exists for. Nextcloud's installer ignores the database
-# account it is handed whenever that account can create roles -- and the postgres
-# image always grants POSTGRES_USER SUPERUSER, so it always can. Left alone,
-# lib/private/Setup/PostgreSQL.php mints `oc_admin` with a password of its own
-# and writes it into config.php, and the vault's account becomes a thing nothing
-# uses. services/nextcloud/compose.yml sets NC_setup_create_db_user=false to
-# refuse that.
-#
-# Nothing static can prove the refusal WORKED -- the environment variable being
-# present is not the installer having honoured it -- and nothing can prove it
-# afterwards either, because the install branch runs once and never again. This
-# is the only place the claim can be settled, and it has to be settled on a stack
-# whose first converge has already happened.
-#
-# Read through occ rather than off config.php: the README warns that "merely
-# viewing your config.php will not give you an accurate view of your running
-# config", and the NC_ overrides this stack pushes are precisely values that
-# never reach that file.
+# THE LANDMINE: the installer ignores a DB account that can create roles (postgres
+# always grants SUPERUSER) and mints oc_admin, unless NC_setup_create_db_user=false
+# is honoured. Only a running install can prove it; read via occ, not config.php.
 def assert_vault_owns_the_database(credentials)
   live_user = occ("config:system:get", "dbuser", label: "the database account census")
   fail_contract(
@@ -287,12 +200,7 @@ def assert_vault_owns_the_database(credentials)
     live_name == credentials.fetch("db_name")
 end
 
-# The administrator credential, in both directions. The positive half proves the
-# account the vault names exists and authenticates; the negative half is what
-# keeps the positive one from passing against a server that authorises anything.
-# OCS rather than the web login form: it takes basic auth, and it answers 401
-# rather than 200-with-a-login-page for a wrong password, which is the difference
-# an assertion can read.
+# Both directions, over OCS: it answers 401 (not a login page) to a wrong password.
 def assert_administrator(credentials)
   request = Net::HTTP::Get.new(URI.join(BASE, "/ocs/v2.php/cloud/user?format=json"))
   request.basic_auth(credentials.fetch("username"), credentials.fetch("password"))
@@ -312,19 +220,8 @@ def assert_administrator(credentials)
   fail_contract("Nextcloud authorised a password the vault never authored") if refusal.code == "200"
 end
 
-# The trusted domain list, read back from the server the reconciliation wrote to.
-#
-# What this proves is that the list is not empty and that it holds 127.0.0.1. It
-# deliberately does not compare the list against what roles/nextcloud declares,
-# because it cannot: nextcloud_trusted_domains is a Jinja template over
-# platform_public_host and nextcloud_additional_trusted_domains, and rendering it
-# needs an inventory and a variable context this runtime half has neither of --
-# it holds an HTTP port, a container name and a vault, and nothing that would
-# resolve that default. So the one entry asserted is the one whose absence has a
-# consequence right here: without 127.0.0.1 the server answers HTTP 400 to every
-# request, and roles/nextcloud's own verification -- and every assertion above --
-# would have been refused rather than served. That makes this as much a statement
-# about why they could run at all as it is a check.
+# Asserts only a non-empty list containing 127.0.0.1: the declared list is a
+# template this half cannot render, and without 127.0.0.1 every request is a 400.
 def assert_trusted_domains
   live = occ("config:system:get", "trusted_domains", label: "the trusted domain census")
              .lines.map(&:strip).reject(&:empty?)
@@ -336,10 +233,7 @@ def assert_trusted_domains
   live
 end
 
-# The schedule the sidecar will run cron.php from, read out of the container that
-# would run it. crond takes no argument naming a job, so the crontab is the only
-# place this claim exists; the compose file's `entrypoint: /cron.sh` says which
-# program starts, not what it has to do.
+# crond takes no job argument, so the crontab is the only place the schedule exists.
 def cron_sidecar_schedule
   stdout, stderr, status = docker("exec", CRON, "cat", CRON_CRONTAB_PATH,
                                   label: "the cron sidecar schedule census")
@@ -356,9 +250,7 @@ def cron_sidecar_schedule
   schedule
 end
 
-# The installation's own age, from the timestamp Nextcloud writes at install.
-# Read through refusals rather than through Ruby's own exceptions, for the reason
-# #352 recorded: a backtrace is not a diagnostic.
+# Read through refusals, not Ruby exceptions (#352).
 def installation_age_seconds
   recorded = app_config("installedat", label: "the installation age census")
   fail_contract(
@@ -374,55 +266,10 @@ def installation_age_seconds
   (Time.now.to_f - installed).round
 end
 
-# The cron sidecar, proved by what it did rather than by its being up -- as far
-# as a fresh converge permits that to be proved at all, which is the whole
-# subtlety here and the reason this reads longer than the one value it started
-# as.
-#
-# Nextcloud does not record a background job mode until cron.php runs:
-# CronService::runCli writes `cron` into oc_appconfig, and until then the key is
-# absent and every reader falls back to the `ajax` default in code. Measured
-# against the pinned image on a fresh install, `occ config:app:get core
-# backgroundjobs_mode` answers exit 1 with both streams empty, and after one
-# `php -f /var/www/html/cron.php` in the sidecar it answers `cron`.
-#
-# **So "the sidecar has run" is not a property a fresh converge can be asked
-# for.** The sidecar is `*/5 * * * * php -f cron.php` under busybox crond, so the
-# first run lands at the next wall-clock five-minute boundary after the container
-# starts -- and that container starts only once the application reports healthy,
-# which is when the install finished. The failing CI run is exactly that: a stack
-# created at 21:43 and a contract that reached this line at 21:43:48, with the
-# earliest possible fire at 21:45.
-#
-# Waiting for it was considered and rejected. tests/run_contracts.rb spawns this
-# contract with a 60-second default and a 300-second cap, and the wait needed is
-# up to 300 seconds of schedule plus the run itself, measured at 37 seconds cold
-# -- a budget that cannot fit inside the ceiling its own caller enforces. The
-# lane cannot supply the time either: it runs this contract between converge 1
-# and the idempotence reconverge, so what it sees is always a stack about a
-# minute old. Executing cron.php from here instead would settle it, and is
-# refused for a different reason: `run` mode restarts nothing, stops nothing and
-# drops nothing, and running the job queue is a larger action than any of those.
-#
-# What is asserted instead is the true property, in three parts, and only the
-# first is the one this function used to claim:
-#
-#   * a recorded mode of `cron` is the sidecar having run, and passes;
-#   * a recorded mode that is anything else -- `ajax`, `webcron`, `none` -- is a
-#     deliberate setting that ignores the sidecar, and is refused, because
-#     nothing writes those values by accident;
-#   * no recorded mode is the fresh-converge state, and is accepted only while
-#     the installation is younger than CRON_GRACE_SECONDS *and* the sidecar's own
-#     crontab schedules cron.php. Past that age the schedule has had its chance
-#     and the absence is the failure the fourth container exists to prevent.
-#
-# The 900-second default is 300 seconds of worst-case schedule with room for a
-# slow first run and a slow converge; on the NAS, where an installation is days
-# old, every path but the first is a refusal, so the original claim is intact
-# exactly where it can be made. In CI the third bullet is the only branch ever
-# taken, which is what makes the crontab assertion load-bearing there rather than
-# a nicety: it is the whole difference between "a fourth container is up" and
-# "the container that is up will run background jobs".
+# The background job mode is recorded only after cron.php first runs, and the
+# first */5 tick can land after this contract runs on a fresh converge. So:
+# `cron` passes; any other recorded mode is refused; no mode is accepted only while
+# the install is younger than CRON_GRACE_SECONDS and the crontab schedules cron.php.
 def assert_background_jobs_belong_to_the_sidecar
   mode = app_config("backgroundjobs_mode", label: "the background job mode census")
   return "a cron sidecar that has run" if mode == "cron"
@@ -447,19 +294,8 @@ def assert_background_jobs_belong_to_the_sidecar
     "run is still ahead of it"
 end
 
-# What this platform refuses to serve out of Nextcloud, and the service that
-# serves it instead. One entry, and #500's own scope is the derivation: "Photos,
-# documents and media are already covered by Immich, Paperless and
-# Jellyfin/Audiobookshelf/Komga".
-#
-# It is a property of THIS PLATFORM rather than of an inventory, which is the
-# whole reason it is assertable from here at all. roles/nextcloud's own list is a
-# Jinja expression over two role variables, and this program holds an HTTP port,
-# four container names and a vault -- nothing that would render it. Threading the
-# rendered list in through tests/contracts/nextcloud.sh was considered and
-# refused for the reason assert_trusted_domains records: it would make this
-# assert what the role says rather than what the platform requires, and a role
-# that dropped an entry would take the contract with it.
+# A property of this platform, not the inventory (#500): the role's list is a
+# template this program cannot render, and asserting it would echo the role.
 OVERLAPPING_APPS = { "photos" => "Immich" }.freeze
 
 UNPARSEABLE_CENSUS =
@@ -470,10 +306,7 @@ UNPARSEABLE_CENSUS =
 
 def assert_platform_app_policy
   raw = occ("app:list", "--output=json", label: "the application census")
-  # Refused rather than rescued to an empty set, and the difference is the whole
-  # assertion. `[]` contains no photos, so a census this program could not read
-  # would satisfy every check below -- it would pass exactly when it had learned
-  # nothing, which is the vacuous shape this repository keeps closing.
+  # Refused rather than rescued to []: an empty set would satisfy every check below.
   document = begin
     JSON.parse(raw)
   rescue JSON::ParserError
@@ -496,15 +329,8 @@ def assert_platform_app_policy
     "cannot re-enable an app this platform disabled."
   ) unless overlapping.empty?
 
-  # Kept as an observation rather than promoted. This is the ON-side drift
-  # detector the off-set policy deliberately does not cover: re-asserting what
-  # must be off says nothing about `occ upgrade` disabling something that should
-  # have stayed on, and a lane that starts reporting 43 apps where it reported 50
-  # is that. Asserting a count instead would pin a number the image owns.
-  # Nothing is returned. The count is already in the run's output one line above,
-  # and the summary line run_mode prints is a list of properties that HELD --
-  # putting an observation into it would say the same number twice and blur the
-  # difference between the two.
+  # An observation, not an assertion: an app count is the image's to choose, but a
+  # drop after `occ upgrade` shows up here.
   observe("the shipped app set currently enables #{enabled.length} apps: #{enabled.join(' ')}")
   nil
 end
@@ -527,9 +353,7 @@ MODES = %w[run].freeze
 fail_contract("unknown mode: #{MODE}") unless MODES.include?(MODE)
 
 document = vault
-# Fetched through a refusal rather than through Ruby's own KeyError, for the
-# reason #352 recorded: a backtrace is not a diagnostic, and a row asserting
-# "this must be refused" would accept one.
+# Fetched through a refusal, not KeyError (#352).
 credentials = {
   "username" => "vault_nextcloud_admin_username",
   "password" => "vault_nextcloud_admin_password",

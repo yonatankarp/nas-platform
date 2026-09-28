@@ -1,16 +1,6 @@
 ---
-# Audiobookshelf's managed-user reconciliation is roles/managed_users,
-# parameterised, the way roles/komga/tasks/managed_users.yml is. The opening
-# assert stays because it is what makes audiobookshelf_managed_users_phase a
-# gated variable: include_tasks never applies meta/argument_specs.yml, so
-# tests/policy_test.rb holds main.yml's and verify.yml's callers to exactly the
-# phases named here, and the shared role's own argument spec cannot see a caller
-# of THIS file.
-#
-# Every Audiobookshelf-specific value lives in defaults/main.yml as
-# audiobookshelf_managed_users_*, so what follows is a one-to-one map. The two
-# exceptions are the bearer header, which reads the token its caller binds, and
-# the two booleans that say this service is not a basic-auth one.
+# roles/managed_users, parameterised from defaults/main.yml. The opening assert
+# gates the phase because include_tasks never applies meta/argument_specs.yml.
 - name: Validate the Audiobookshelf managed-user phase
   ansible.builtin.assert:
     that:

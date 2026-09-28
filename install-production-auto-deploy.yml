@@ -26,9 +26,6 @@
   roles:
     - role: production_auto_deploy
 
-    # Second, and in this playbook rather than one of its own: the prune runs as
-    # the same account, from the same crond, publishes with the same token, and
-    # serialises on the lock the poller creates. Installing it here also means
-    # the poller's own reinstall replays it, so the schedule reconverges on
-    # every deployment instead of drifting until someone notices.
+    # The prune shares the poller's account, crond, token and lock; installing it
+    # here makes every deployment reconverge its schedule.
     - role: image_prune

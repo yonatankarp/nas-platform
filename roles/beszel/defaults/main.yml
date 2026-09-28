@@ -3,12 +3,9 @@
 # the Dozzle alert relay validates Beszel's links against the same app URL.
 beszel_system_name: ASUSTOR-AS6704T
 
-# Beszel persists one sample per minute. Three samples of freshness tolerance
-# avoids false negatives from scheduling jitter while still rejecting a healthy
-# agent that has stopped writing collection records. A 90-second poll spans the
-# next expected sample without making verification unbounded.
-# Host inventories must select an exact supported policy. Empty defaults fail
-# closed if a new host class does not declare its telemetry capability.
+# Three one-minute samples of freshness tolerance absorbs scheduling jitter but
+# still rejects an agent that stopped writing. Empty defaults fail closed: a host
+# class must declare its telemetry capability.
 beszel_required_telemetry_categories: []
 beszel_require_gpu_telemetry: false
 beszel_telemetry_freshness_seconds: 180
@@ -31,66 +28,18 @@ beszel_alerts:
   - name: Disk
     value: 85
     min: 10
-  # Watches CPU, NVMe and cooling, not the SATA bay disks: the hub's temperature
-  # panel on 2026-09-13 showed coretemp package/cores at ~64°C with spikes to
-  # ~85°C under load, NVMe at ~51-54°C, acpitz at ~28°C, and no sensor for the
-  # bay disks at all (SMART, #607, is what would cover those). In 0.19.0 an alert
-  # with min above 1 fires only when the hottest sensor right now is above value
-  # AND the hottest sensor's own mean over min minutes is above it, strictly
-  # (internal/alerts/alerts_system.go:89-131,325-356). No PRIMARY_SENSOR is set,
-  # so "hottest" is the max across sensors.
-  #
-  # 87, not the 85 #608 chose: 85 turned out to be where ordinary sustained load
-  # sits, not a spike. On 2026-09-14 it fired at 16:38 ("coretemp_core_2 averaged
-  # 85.53°C for the previous 15 minutes") and resolved at 16:41 at 84.47°C, and
-  # 0.19.0 has no hysteresis, so a threshold at the load plateau re-notifies on
-  # every crossing. 87 keeps the alert meaning sustained heat beyond normal load,
-  # still well below the CPU's thermal limit. The Disk alert's 85 above is a
-  # percentage and unrelated.
-  #
-  # Measured 2026-09-19, and what the ceiling on this number is. coretemp reports
-  # temp1..temp5_crit and _max both at 105000, so package and all four cores
-  # throttle at 105°C; nvme temp1_crit is 88850. Because the CPU idles some 35°C
-  # above the drives (86-89 against 49-54 that day), coretemp is always the max,
-  # so this alert is effectively coretemp-only and the NVMe pair can never trip it
-  # at any value -- it would have to pass its own crit first. S.M.A.R.T. (#607) is
-  # what covers the drives. 88 is therefore a coretemp threshold with 17°C still
-  # under the throttle, not a number approaching anything.
-  #
-  # 88, and the paging it was chosen against is a cause rather than a plateau.
-  # That same day loadavg was 3.29 of 4 with ADM's clamscan 14 hours into a
-  # full-volume scan, holding a whole core plus the btrfs I/O behind it, while all
-  # thirty containers together drew about 0.2 of a core: the alert at 87 was
-  # reporting a pegged host correctly. That scan is ADM's own and no play in this
-  # repository starts, stops or scopes it: turning its full-volume schedule off
-  # is an operator action on the host, of the kind CLAUDE.md's AdGuard and ntfy
-  # tidy-ups already describe, and merging anything here does not perform it.
-  # What is meant to replace it is a clamd in the downloaders stack scanning one
-  # completed Usenet job at a time under a 1.0 CPU ceiling, which is a load this
-  # threshold should never see -- but that is a separate change and this comment
-  # does not assume it has landed. 88 is for the interval in between, and buys
-  # one degree against a measured 86-89 band, so it thins the pages rather than
-  # stopping them. **Do not raise it a third time before
-  # reading /proc/loadavg**: every degree spent covering a pegged host is a degree
-  # this alert no longer reports, and the next raise is the one that makes it mean
-  # nothing. If 88 still pages once the scan is scoped, the heat has a second
-  # source and that is the thing to find.
+  # Effectively a coretemp-only alert: the CPU idles far above the NVMe pair, and
+  # the bay disks have no sensor (S.M.A.R.T. covers drives). 0.19.0 has no
+  # hysteresis, so a threshold at the load plateau re-notifies on every crossing.
+  # Do not raise it again before reading /proc/loadavg: a pegged host (ADM's own
+  # clamscan) is what it was paging on, and each degree spent hides that.
   - name: Temperature
     value: 88
     min: 15
 
-# Other systems that report to this hub under the managed application user, each
-# with its own alerts. Their agents are deployed elsewhere, so configure.yml
-# reports one that has not registered yet rather than failing, and reconciles its
-# alerts on the first converge after it does. Adding one is a list entry.
-#
-# golem: Debian, 2 cores / 4 threads, 7.2 GiB RAM, 500 GB SSD; agent deployed by
-# golem-platform with SYSTEM_NAME=golem.
-#   - Memory 85, not the NAS's 90: Beszel's percentage excludes page cache, and
-#     90% of 7.2 GiB leaves about 0.7 GiB before the OOM killer.
-#   - Disk 80: on 500 GB that still leaves 100 GB to act in.
-#   - No Temperature alert: golem's sensors are unmeasured, and the NAS's 88
-#     is a coretemp threshold for a different CPU.
+# Other systems reporting to this hub under the managed application user; their
+# agents are deployed elsewhere, so an unregistered one is reported, not fatal.
+# golem: Memory 85 (7.2 GiB, page cache excluded), no Temperature (unmeasured).
 beszel_remote_systems:
   - name: golem
     alerts:
@@ -107,67 +56,22 @@ beszel_remote_systems:
         value: 80
         min: 10
 
-# Shoutrrr URL. Beszel sends to the Dozzle alert relay's /beszel route, and the
-# relay publishes to Pushover's Alerts application. It used to send to Pushover
-# directly, at priority 1 for everything. Beszel 0.19.0 builds an alert and its
-# recovery ("... below threshold", "... is up") from one stored webhook, so a
-# direct URL gives both the same priority and every recovery rang like the
-# problem it closed. The relay reads the title and sends a problem at 1, which
-# rings through quiet hours, and its recovery at -1, a badge with no sound
-# (services/dozzle/alert_relay.py: render_beszel).
-#
-# What Beszel stores, and shows on its settings page, is now the relay's bearer
-# token instead of the Pushover Alerts token. That is the weaker credential:
-# it can only POST to a relay on a private bridge, under the relay's own daily
-# ceiling. It cannot publish to Pushover or reach any other application. The
-# relay's token is still a secret. Dozzle already keeps it in cleartext (#172),
-# and shoutrrr writes the whole URL into Beszel's log when a send fails, as it
-# did the Pushover token before.
-#
-# The form, read from source at the pins and measured against a real 0.19.0 hub
-# in #697. Beszel 0.19.0 vendors github.com/nicholas-fedor/shoutrrr v0.19.0,
-# whose generic service:
-#   - posts over plain http only with `disabletls=yes`;
-#   - sends exactly {"message","title"} as application/json with
-#     `template=json`, and Beszel adds the title only when a template is set;
-#   - turns every `@` query key into a header.
-# The header value is URL-encoded because it sits in a query string. `urlencode`
-# turns the space into %20 and every reserved character into its escape, and
-# shoutrrr decodes it back. #697 round-tripped `%2B`, `/`, `%3D`, `%26` and `%25`
-# that way. `alert-relay` resolves on the external bridge host_prep creates,
-# which only the hub and the relay join. The port is shared inventory
-# (service_dozzle.yml), because Beszel converges before Dozzle and cannot read
-# Dozzle's role defaults.
-#
-# Priority lives in the relay now, so nothing in this URL sets it, and the
-# emergency priority the shoutrrr fork cannot send is still reachable only
-# through the relay. Revert this value to go back to the direct URL. Nothing
-# else has to be reverted with it: the relay keeps serving /beszel.
-#
-# Broken after `{{` for line length. Folding puts its one space inside the
-# braces, where Jinja ignores it, so the value is the one unbroken string.
+# Shoutrrr URL to the Dozzle alert relay's /beszel route, which sets priority
+# (problem 1, recovery -1) since Beszel sends both from one webhook (#697).
+# The stored credential is the relay's bearer token, still a secret: shoutrrr
+# logs the whole URL on a failed send. Every `@` query key becomes a header, so
+# its value is urlencoded. Folded after `{{` so the value is one unbroken string.
 beszel_notification_url: >-
   generic://alert-relay:{{ dozzle_alert_relay_port }}/beszel?disabletls=yes&template=json&@Authorization={{
   ('Bearer ' ~ vault_dozzle_alert_relay_token) | urlencode }}
 
-# Pushover's own credential check, which is the only thing on this platform that
-# can tell a working notification chain from a stored string. Pushover documents
-# validation requests as exempt from the message quota, so running one on every
-# verification costs nothing and sends nothing to anybody's phone.
-#
-# A variable rather than a literal for the reason
-# production_auto_deploy_github_api_base is one: the endpoint has to be
-# redirectable to prove the task's own branches without involving the real
-# service.
+# Pushover's credential check, exempt from the message quota, so verification
+# sends nothing. A variable so tests can redirect it.
 beszel_pushover_validation_url: https://api.pushover.net/1/users/validate.json
 
-# Beszel's half of roles/managed_users. tasks/managed_users.yml maps these onto
-# that role's parameters one for one, so this block is the whole statement of
-# what Beszel's managed-user contract is; roles/komga/defaults/main.yml and
-# roles/audiobookshelf/defaults/main.yml are the blocks to compare it against.
-#
-# The four relative paths are asserted against config/managed-user-capabilities.yml
-# on the deployed release before any request is sent.
+# Beszel's half of roles/managed_users, mapped one for one in
+# tasks/managed_users.yml; the four paths are asserted against
+# config/managed-user-capabilities.yml before any request.
 beszel_managed_users_identity_attribute: email
 beszel_managed_users_id_attribute: id
 beszel_managed_users_list_path: api/collections/users/records?perPage=500
@@ -176,15 +80,11 @@ beszel_managed_users_create_path: api/collections/users/records
 beszel_managed_users_reconcile_interface: api/collections/users/records/{id}
 beszel_managed_users_create_status: [200]
 beszel_managed_users_repair_status: [200]
-# The PocketBase record-id pattern this role has always put in front of a request
-# path. It is not a subset of platform_safe_api_identifier_pattern in either
-# direction, so it is kept exactly rather than replaced by the platform's.
+# PocketBase record ids; not a subset of platform_safe_api_identifier_pattern.
 beszel_managed_users_id_pattern: '^[A-Za-z0-9_-]{1,64}$'
 
-# The listing is a paginated PocketBase envelope, and a truncated listing reads
-# as an absent identity, which the next step would create a second time.
-# BRACE-FREE and ordered: the envelope is proved a mapping before any key is
-# read out of it.
+# A truncated listing reads as an absent identity and would create a duplicate.
+# Brace-free and ordered: the envelope is proved a mapping before keys are read.
 beszel_managed_users_listing_conditions:
   - managed_users_listing.json is mapping
   - managed_users_listing.json.get('items', []) | type_debug == 'list'
@@ -194,9 +94,7 @@ beszel_managed_users_listing_conditions:
       managed_users_listing.json.get('items', []) | length) | int ==
     managed_users_listing.json.get('items', []) | length
 
-# Evaluated inside the shared role's loops, against its own names: the listing it
-# registered, the single match it bound, `item`, and the declared user it binds
-# as managed_users_authenticating_user for both authenticate requests.
+# Evaluated inside the shared role's loops, against its own names.
 beszel_managed_users_list_json: "{{ managed_users_listing.json.get('items', []) }}"
 beszel_managed_users_authenticate_body:
   identity: "{{ managed_users_authenticating_user.email }}"
@@ -207,27 +105,22 @@ beszel_managed_users_authenticate_identity: "{{ item.json.record.email | default
 beszel_managed_users_authenticated_id: "{{ item.json.record.id | default('') }}"
 beszel_managed_users_reconcile_path: >-
   api/collections/users/records/{{ managed_users_match[managed_users_id_attribute] | urlencode }}
-# Creation grants no privilege: role is left to PocketBase's default, and only
-# repair -- after the new credential is proved -- sets it. verified is the
-# authentication prerequisite, not a privilege.
+# Creation grants no privilege; only repair, after the credential is proved,
+# sets role. verified is an authentication prerequisite.
 beszel_managed_users_create_body:
   email: "{{ item.email }}"
   password: "{{ item.password }}"
   passwordConfirm: "{{ item.password }}"
   verified: true
-# Nothing password-shaped may appear here: the capability register declares an
-# existing identity's password update forbidden, and the shared role refuses a
-# repair body carrying one.
+# Nothing password-shaped: the shared role refuses a repair carrying one.
 beszel_managed_users_repair_body:
   role: "{{ item.role }}"
   verified: "{{ item.verified }}"
 beszel_managed_users_repair_condition: >-
   {{ managed_users_match.role != item.role or
      managed_users_match.verified | bool != item.verified | bool }}
-# Brace-free; the first condition is what makes the rest safe, because
-# managed_users_match is an empty mapping for an identity with no match. The
-# last two compare against the ids this phase's own authentication proved and
-# the first one proved in this play.
+# Brace-free; the first condition guards the rest, since managed_users_match is
+# empty for an identity with no match.
 beszel_managed_users_verify_conditions:
   - managed_users_matches[item.email] | length == 1
   - managed_users_match.email | trim | lower == item.email | trim | lower

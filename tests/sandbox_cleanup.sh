@@ -1,11 +1,8 @@
 #!/bin/sh
 
 cleanup_sandbox_image=docker.io/library/python:3.14-alpine@sha256:9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01
-# Every sandbox resource is namespace-derived, so nothing is deleted by a fixed
-# production name: containers and networks are discovered through exact Compose
-# ownership labels and then matched against the exact namespaced identity
-# Compose gives them. A container that merely shares a production name is
-# therefore never a cleanup target, and is left untouched.
+# Nothing is deleted by a fixed production name: resources are found by exact
+# Compose ownership labels and matched against their exact namespaced identity.
 cleanup_sandbox_projects='beszel dozzle audiobookshelf komga jellyfin immich paperless'
 cleanup_sandbox_projects="$cleanup_sandbox_projects arr downloaders bindery kapowarr pinchflat trailarr"
 cleanup_sandbox_projects="$cleanup_sandbox_projects seerr nextcloud vaultwarden karakeep"
@@ -28,27 +25,10 @@ cleanup_sandbox_nextcloud_services='nextcloud nextcloud-cron nextcloud-db nextcl
 cleanup_sandbox_vaultwarden_services='vaultwarden'
 cleanup_sandbox_karakeep_services='karakeep karakeep-chrome karakeep-meilisearch'
 
-# The sandbox-clearing program is tests/sandbox_cleanup_contents.py, and the
-# container reads it on standard input exactly as it read the heredoc that used
-# to stand here.
-#
-# This file is sourced far more often than it is run, and POSIX sh gives a
-# sourced file no way to find itself -- "$0" is the sourcing script, not this
-# one. So the checkout is named by the caller, the same way tests/mac/lib.sh has
-# its caller set mac_script_dir, and every one of the four source sites sets it
-# on the line above its `.`. tests/policy_integration_test.rb requires that of
-# each of them, because a caller that forgot would find out only when a cleanup
-# it was relying on refused to run.
-#
-# The fallback covers the one caller that runs this file rather than sourcing
-# it, and is deliberately not relied on anywhere else.
-#
-# The name ends in _path because it used to be a shell function that cat-ed the
-# heredoc, and tests/mac/cleanup.sh called it as `cleanup_sandbox_program >
-# file`. A variable of the same name would have left that call site looking
-# fine, running a command that no longer exists and writing an empty program --
-# which is exactly what it did, and what tests/mac/cleanup.sh --self-test
-# caught. The rename makes any surviving call site fail loudly instead.
+# The program is tests/sandbox_cleanup_contents.py, read by the container on stdin.
+# A sourced file cannot find itself, so every source site sets
+# cleanup_sandbox_repo_dir (policy_integration_test holds it); the fallback is
+# only for the one caller that runs this file.
 : "${cleanup_sandbox_repo_dir:=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)}"
 cleanup_sandbox_program_path=$cleanup_sandbox_repo_dir/tests/sandbox_cleanup_contents.py
 
@@ -93,14 +73,8 @@ cleanup_sandbox_project_services() {
   esac
 }
 
-# The Compose network keys each project may create, stated beside the services
-# and for the same reason: a network is owned only under a key declared here.
-# Karakeep is the first stack with named networks, and keeps them because they
-# are the isolation -- chrome reaches web but never Meilisearch. Beszel and
-# Dozzle keep their Docker socket proxies on docker-api for the same reason
-# (#829), and Beszel's proxy carries its loopback port on docker-api-publish. A
-# key added to a compose.yml and not here makes cleanup refuse, which is the
-# failure to want.
+# The Compose network keys each project may create; a network is owned only under
+# a key declared here, so an undeclared key makes cleanup refuse (#829).
 cleanup_sandbox_project_networks() {
   case $1 in
     karakeep) cleanup_project_networks='default browser search' ;;
@@ -147,9 +121,8 @@ cleanup_read_network_identity() {
   cleanup_identity_network=${cleanup_identity_rest#*|}
 }
 
-# The media-control bridge is created by host_prep rather than by Compose, so it
-# carries the platform labels instead of the Compose ones. Its whole label set is
-# read back: an extra label means the network is not the one this run created.
+# host_prep creates this bridge, so it carries platform labels; an extra label
+# means it is not the network this run created.
 cleanup_read_media_control_identity() {
   cleanup_identity=$(docker network inspect "$1" --format \
     '{{.Name}}|{{.Driver}}|{{index .Labels "nas.platform.purpose"}}|{{index .Labels "nas.platform.project"}}|{{len .Labels}}') ||
@@ -202,9 +175,8 @@ cleanup_owns_compose_network() {
   return 1
 }
 
-# A Configarr one-shot is owned only when its generated name, its service label
-# and its one-off label all match. Its run suffix is generated, so the name is
-# matched by prefix and alphabet rather than by an exact string.
+# A Configarr one-shot: name matched by prefix and alphabet (the run suffix is
+# generated), plus its service and one-off labels.
 cleanup_owns_configarr_container() {
   [ "$cleanup_identity_project" = "$cleanup_owner_namespace-arr" ] || return 1
   cleanup_configarr_prefix=$cleanup_owner_namespace-arr-configarr-run-
@@ -231,10 +203,8 @@ cleanup_owns_permanent_container() {
   return 1
 }
 
-# Collects every resource carrying an exact project label for one namespace and
-# refuses the whole sandbox unless each one also carries the exact name and
-# supporting labels its creator gives it. Nothing is deleted here: an ownership
-# mismatch must leave every collected resource in place.
+# Refuses the whole sandbox unless every project-labelled resource also carries
+# its creator's exact name and labels. Nothing is deleted here.
 cleanup_collect_namespace_ownership() {
   cleanup_owner_namespace=$1
 
@@ -299,9 +269,7 @@ cleanup_collect_namespace_ownership() {
       --filter "label=com.docker.compose.project=$cleanup_owner_project") || return 1
     for cleanup_owner_id in $cleanup_owner_ids; do
       cleanup_read_network_identity "$cleanup_owner_id" || return 1
-      # The name probe above already rejected a mislabelled declared name. This
-      # is a second observation of daemon state, so it repeats the label check
-      # rather than trusting the earlier round trip.
+      # A second observation of daemon state, so the label check is repeated.
       if ! cleanup_owns_compose_network; then
         cleanup_refuse_ownership network "$cleanup_identity_name"
         return 1
@@ -310,10 +278,8 @@ cleanup_collect_namespace_ownership() {
     done
   done
 
-  # host_prep, not Compose, creates the media-control and alert-relay bridges, so
-  # each is found by its namespace-derived name and by its platform labels. Both
-  # observations must agree on one network, and its complete identity must match,
-  # or the sandbox is refused with nothing deleted.
+  # host_prep-created bridges: name and platform labels must agree on one
+  # network with a complete identity match, or nothing is deleted.
   for cleanup_owner_purpose in media-control alert-relay; do
     cleanup_owner_media_network=$cleanup_owner_namespace-$cleanup_owner_purpose
     cleanup_owner_ids=$(docker network ls -q --no-trunc \
@@ -345,9 +311,7 @@ cleanup_collect_namespace_ownership() {
   done
 }
 
-# One disposable run owns two project namespaces: the sandbox namespace every
-# service is deployed under, and the scenario namespace the Immich negative
-# restore matrix converges into.
+# Two namespaces per run: the sandbox, and the Immich negative restore matrix's.
 cleanup_sandbox_namespaces() {
   printf '%s %s-negative' "$1" "$1"
 }

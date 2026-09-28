@@ -1,46 +1,10 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#
-# Behaviour of the Paperless service contract's three Ruby programs.
-#
-# Until #147 all three lived in `<<'RUBY'` heredocs inside
-# tests/contracts/paperless.sh -- 1,000 of that file's 1,132 lines. `sh -n` reads
-# a quoted heredoc as opaque text, so nothing but an integration lane with
-# Docker, a converged Paperless stack and a real vault ever executed any of them.
-# tests/contracts/paperless-render.rb, tests/contracts/paperless-static.rb and
-# tests/contracts/paperless-runtime.rb are files now, so all three are reachable
-# here.
-#
-# Four layers, because the contract has four kinds of property:
-#
-#   Render -- the properties that can only be decided on the config Compose
-#   actually merges. The wrapper renders each of the three variants with `docker
-#   compose config` and hands the JSON over in one environment variable, so the
-#   program itself fixtures completely: no Docker, no compose files, one canned
-#   render per row. That is the whole point of the split -- the assertion is
-#   about a merged document, not about an override's source text.
-#
-#   Static -- build a fixture repository out of the files the contract reads,
-#   break exactly one thing in it, and require the program to name that thing.
-#   The rows are chosen so that every one of the eleven arguments the wrapper
-#   passes has a row that breaks only the file it names: an argument nothing
-#   reads is an argument that can be dropped without anything noticing.
-#
-#   Runtime -- `seed-fixture-only` is the one mode that reaches the runtime
-#   half's own code with no vault, no container and no network. It is what
-#   tests/integration.sh runs on the Docker host before the stack starts. This
-#   layer deliberately stops there: everything past the vault read needs a served
-#   Paperless, and fixturing the token, the document index, OCR, the portable
-#   export and the persistence assertions is a separate piece of work.
-#
-#   Wrapper -- tests/contracts/paperless.sh is what turns a mode into three
-#   invocations. Its rows prove all three programs are reached, that each is
-#   resolved from the script's own checkout while the tree to inspect is passed
-#   in, that the three greps which read the runtime program's own text still
-#   bite, and that none of the three can consume the caller's stdin.
-#
-# Run with --self-test to plant a regression in each program and prove the rows
-# above detect it.
+
+# Behaviour of the Paperless contract's render, static and runtime programs and
+# its wrapper, one layer each. Render rows judge a canned `docker compose config`
+# merge; static rows break one file per wrapper argument; runtime reaches only
+# seed-fixture-only. --self-test plants a regression per guard.
 
 require "digest"
 require "fileutils"
@@ -58,29 +22,17 @@ include TestScaffold
 include ContractTestSupport
 
 ROOT = File.expand_path("..", __dir__)
-# The prefix every refusal this file judges has to carry. Matching the
-# fragment alone accepted a backtrace or an echoed argument as a refusal.
 DIAGNOSTIC_PREFIX = "Paperless contract failed: "
 CONTRACT = File.join(ROOT, "tests", "contracts", "paperless.sh")
 RENDER_PROGRAM = File.join(ROOT, "tests", "contracts", "paperless-render.rb")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "paperless-static.rb")
 RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "paperless-runtime.rb")
 
-# The preloads tests/contracts/paperless.sh carries, transcribed rather than
-# re-derived. -rjson and -ryaml are load-bearing: neither program requires the
-# library it uses, so run bare each raises NameError on the first repository it
-# looks at, and every invocation here has to carry the same preload or every row
-# fails identically on an uninitialized constant -- which reads as the extraction
-# having broken everything. -rpathname is carried because the heredoc declared
-# it, and is reported in the pull request as inert rather than quietly dropped.
+# The wrapper's preloads: neither program requires json/yaml itself.
 RENDER_COMMAND = [RbConfig.ruby, "-rjson", "-rpathname"].freeze
 STATIC_COMMAND = [RbConfig.ruby, "-ryaml"].freeze
 
-# Exactly what the contract reads out of the tree it inspects: the eleven
-# arguments the static half receives, the role stages main.yml imports, and
-# tests/policy_support.rb, which the static half requires through
-# PLATFORM_CONTRACT_REPO_DIR. A fixture holding only these is the proof that the
-# list is the list the contract actually needs.
+# Exactly what the contract reads from the inspected tree.
 FIXTURE_FILES = %w[
   services/paperless-ngx/compose.yml
   services/paperless-ngx/compose.mac.yml
@@ -110,18 +62,9 @@ FIXTURE_FILES = %w[
   tests/policy_support.rb
 ].freeze
 
-# Deliberately absent from that list: tests/contracts/paperless.sh and all three
-# of its programs. None of them is read out of the inspected tree -- the three
-# self-read greps read the checkout's copy, which is what "$0" named while the
-# code lived in one file -- and a fixture that carried them would shadow the
-# defect #251 shipped: a program resolved from $repo_dir finds a copy there and
-# nothing looks wrong. The wrapper layer plants an impostor at those paths inside
-# the inspected tree instead, and requires it never to run.
+# Deliberately absent: the wrapper and its programs. Carrying them would shadow
+# #251; the wrapper layer plants an impostor there instead.
 
-# The arguments tests/contracts/paperless.sh passes the static half, in its
-# order. Kept here rather than spelled out at each call site so a row cannot
-# silently drift from the wrapper's own invocation, and asserted against the
-# wrapper's text by the wrapper layer below.
 STATIC_ARGUMENT_VARIABLES = {
   "services/paperless-ngx/compose.yml" => "compose",
   "services/paperless-ngx/compose.mac.yml" => "mac_compose",
@@ -139,10 +82,7 @@ STATIC_ARGUMENT_VARIABLES = {
 STATIC_ARGUMENTS = STATIC_ARGUMENT_VARIABLES.keys.freeze
 
 
-# Substitutes text and asserts its own match count. Two of the literals this file
-# plants occur more than once across the contract, so a plain sub can hit the
-# wrong copy, plant nothing and report a pass -- which is what a mutation row
-# that proves nothing looks like from the outside.
+# Asserts its own match count: some literals occur twice, and a missed sub plants nothing.
 def substitute(text, from, to, count: 1)
   found = text.scan(from).length
   raise "#{from.inspect} matched #{found} times, expected #{count}" unless found == count
@@ -151,10 +91,7 @@ def substitute(text, from, to, count: 1)
 end
 
 # --- render layer ----------------------------------------------------------
-#
-# The canned render. Built as a Hash so a row can break exactly one property of
-# the merged document, which is the thing the program judges -- `docker compose
-# config` output, not a compose file.
+# A Hash so a row can break one property of the merged document.
 
 STATE_ROOT = "/volume1/Docker/paperless-ngx"
 DOCUMENT_ROOT = "/volume2/Documents"
@@ -213,10 +150,8 @@ RENDER_ROWS = [
     expects: "nas effective webserver publication differs"
   },
   {
-    # The failure the render program exists for: Compose appends two `ports:`
-    # lists, so a sandbox override without !override publishes the production
-    # 8000 alongside its own and two sandboxes collide on it again. The
-    # override's source text reads correctly; only the merged list shows it.
+    # Compose appends `ports:` lists, so an override without !override also
+    # publishes 8000; only the merged list shows it.
     name: "a Mac override that publishes its port without replacing the production one",
     variant: "mac",
     break: lambda { |config|
@@ -259,14 +194,8 @@ RENDER_ROWS = [
     },
     expects: "nas document mount /usr/src/paperless/consume is read-only"
   },
-  # Deliberately unpinned, and recorded here rather than left unexplained: the
-  # program's "document sources alias or overlap" and "document source resolves
-  # below volume1" refusals are unreachable while the three document sources are
-  # each compared against a pinned literal a few lines above. Any render that
-  # could reach them fails the per-target source comparison first. They are
-  # defence in depth against a later change to that literal map, not assertions
-  # this file can move -- and a row that expected the earlier diagnostic would
-  # pin the redundancy in place rather than describe it.
+  # Unpinned: these refusals are unreachable behind the per-target literal
+  # comparison above; they are defence in depth.
   {
     name: "a state source escaping its isolated root",
     variant: "nas",
@@ -306,9 +235,7 @@ def build_fixture_repository(root)
     destination = File.join(root, relative)
     FileUtils.mkdir_p(File.dirname(destination))
     FileUtils.cp(File.join(ROOT, relative), destination)
-    # The mode matters, not just the bytes: tests/contracts/paperless.sh refuses
-    # a coordinated snapshot that is not executable, and since #315 that is two
-    # files rather than one, only one of which ends in .sh.
+    # The wrapper refuses a non-executable snapshot (two files since #315).
     File.chmod(File.executable?(File.join(ROOT, relative)) ? 0o755 : 0o644, destination)
   end
 end
@@ -327,10 +254,7 @@ end
 
 ROLE_STAGES = FIXTURE_FILES.grep(%r{\Aroles/paperless_ngx/tasks/}).freeze
 
-# Finds one task by name anywhere in the role -- any stage file, and through the
-# block/rescue/always sections a task list nests into -- and hands it to the
-# caller to edit in place. Locating the task rather than naming its file keeps a
-# row honest when a stage file is split again.
+# Finds a task by name anywhere in the role, so a row survives stage splits.
 def edit_role_task(root, name)
   ROLE_STAGES.each do |relative|
     path = File.join(root, relative)
@@ -360,9 +284,7 @@ def find_task(tasks, name)
   nil
 end
 
-# One row per argument the wrapper passes, each breaking only the file that
-# argument names, plus two family rows. An argument nothing reads is an argument
-# that could be dropped silently, which is what this shape refuses to allow.
+# One row per wrapper argument, each breaking only its file, plus two family rows.
 STATIC_ROWS = [
   { name: "an intact repository", argument: nil, break: ->(_root) {}, expects: nil },
   {
@@ -466,12 +388,7 @@ STATIC_ROWS = [
     },
     expects: "Gmail app password must be a visible sentinel in the new-platform generator"
   },
-  # Deliberately unpinned, for the same reason as the two render refusals above:
-  # "generator must not synthesize a Gmail app password" is unreachable, because
-  # a value containing `{{` is by definition not equal to the sentinel and the
-  # equality check refuses first. It guards against a later change to that
-  # sentinel, and a row expecting the earlier diagnostic would freeze the
-  # redundancy instead of describing it.
+  # Unpinned: unreachable behind the sentinel equality check.
   {
     name: "a secret-bearing environment assignment left open to Compose interpolation",
     argument: "roles/paperless_ngx/templates/env.j2",
@@ -501,13 +418,7 @@ STATIC_ROWS = [
     },
     expects: "Paperless recovery deadline default differs"
   },
-  # The pair that pins the wrapper/program split #315 created. The row above
-  # plants its defect in the shell wrapper and the one below in the Ruby program,
-  # so a static half that read only one of the two files would leave one of them
-  # passing on a planted regression. Before the split both were one file and one
-  # `snapshot_text`; a repoint that moved every assertion to the program would
-  # have made the deadline default above a positive grep that can no longer
-  # match.
+  # The wrapper/program split pair (#315): one plants in the shell, one in Ruby.
   {
     name: "a one-shot flushall that races the valkey socket again",
     argument: "tests/mac/snapshot-paperless.rb",
@@ -557,11 +468,6 @@ def static_failures(program = STATIC_PROGRAM, rows = STATIC_ROWS)
 end
 
 # --- runtime layer ---------------------------------------------------------
-#
-# `seed-fixture-only` writes the three document fixtures the integration lane
-# consumes and returns before the vault read, so it is the whole runtime half
-# this layer can reach without a served Paperless. It is also the mode the
-# launcher runs on the Docker host, which makes it the one worth pinning.
 
 CONSUME_FIXTURES = %w[task-13-contract.pdf task-13-contract.png task-13-contract.docx].freeze
 
@@ -570,8 +476,7 @@ RUNTIME_ROWS = [
     name: "the document fixture pre-seed on an empty inbox",
     mode: "seed-fixture-only", break: ->(_root, _media) {}, expects: nil,
     reports: "Paperless document fixtures prepared before deployment",
-    # The mode the program asks for, masked the way the environment will mask
-    # it. Pinning a literal 0o644 would be pinning this machine's umask.
+    # Masked by the umask, as the environment will.
     fixture_mode: 0o644 & ~File.umask
   },
   {
@@ -659,18 +564,8 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
 end
 
 # --- wrapper layer ---------------------------------------------------------
-#
-# tests/contracts/paperless.sh resolves all three programs from its own checkout
-# rather than from the tree it is inspecting, so a copy of the four files into a
-# throwaway tests/contracts/ is a whole working contract. That is what lets a row
-# point PLATFORM_CONTRACT_REPO_DIR at a broken fixture and still exercise the
-# real wrapper.
-#
-# The wrapper renders each variant with `docker compose config` before it reaches
-# any program, so every row here puts a `docker` stub first on PATH that answers
-# with the same canned render the render layer uses. That keeps these rows
-# hermetic and sub-second; the real render is exercised by the paperless
-# integration lane and by tests/contract_structure_mutation_test.rb.
+# The wrapper resolves programs from its own checkout, so a copy is a working
+# contract; a `docker` stub answers with the canned render.
 
 DOCKER_STUB = <<~STUB
   #!/bin/sh
@@ -729,11 +624,8 @@ def runtime_sandbox(root)
   }
 end
 
-# The three literals the wrapper greps out of the runtime program's own source,
-# with the diagnostic each one owns. Two of them were vacuous while the runtime
-# half shared the wrapper's file: `grep -F` matches a substring and the grep line
-# spells its own pattern, so the assertion was satisfied by itself. The
-# extraction is what makes them bite, so they are pinned here in both directions.
+# The literals the wrapper greps out of the runtime program; vacuous while they
+# shared a file (a grep matched its own pattern), so pinned both ways.
 SELF_READ_ROWS = [
   {
     name: "the document indexing timeout",
@@ -746,10 +638,7 @@ SELF_READ_ROWS = [
     expects: "runtime Gmail probe timeout constant differs"
   },
   {
-    # The literal is the call site, not the def's signature -- `def request`
-    # declares `read_timeout: 60`. A sentinel that quoted a signature would hold
-    # whether or not anything called it, which is the sixth-sentinel weakness
-    # #285 left unpinned in the Jellyfin contract.
+    # The call site, not the def's signature (#285).
     name: "the Gmail probe's use of that constant",
     from: "read_timeout: MAIL_PROBE_READ_TIMEOUT", to: "read_timeout: 180",
     expects: "runtime Gmail probe lacks its explicit bounded timeout"
@@ -759,10 +648,7 @@ SELF_READ_ROWS = [
 def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures = []
 
-  # The wrapper's own invocation must agree with what this file drives directly.
-  # Both directions: every argument is bound to the inspected tree, and the
-  # static invocation passes them in this order. STATIC_ARGUMENTS drifting from
-  # the wrapper would silently move every static row onto the wrong file.
+  # Both directions, so STATIC_ARGUMENTS cannot drift from the wrapper.
   STATIC_ARGUMENT_VARIABLES.each do |relative, variable|
     failures << "wrapper: does not bind #{variable} to #{relative} in the inspected tree" unless
       wrapper_source.include?("#{variable}=$repo_dir/#{relative}")
@@ -774,15 +660,11 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     passed == STATIC_ARGUMENT_VARIABLES.values
 
   with_contract_copy(wrapper: wrapper_source) do |contract, copy_root, stub_env|
-    # Static mode, with the tree to inspect defaulted to the copy the wrapper
-    # lives in. Every program has to be found and every grep has to pass.
     stdout, stderr, status = Open3.capture3(stub_env, contract, "static")
     unless status.success? && stdout.include?("Paperless static contract passed")
       failures << "wrapper: static mode failed against its own checkout: #{(stdout + stderr).strip}"
     end
 
-    # The inspected tree is an argument; the programs are not. A broken fixture
-    # must be judged by the programs in the copy.
     broken_fixture_repository do |broken|
       stdout, stderr, status = Open3.capture3(
         stub_env.merge("PLATFORM_CONTRACT_REPO_DIR" => broken), contract, "static"
@@ -796,10 +678,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
       end
     end
 
-    # An impostor at the sibling paths inside the inspected tree must never run.
-    # Absence cannot decide this: the fixture deliberately carries no
-    # tests/contracts, so a program resolved from $repo_dir would simply be
-    # missing. A different program there is what separates the two roots.
+    # An impostor at the sibling paths must never run; absence cannot decide this.
     Dir.mktmpdir("nas-platform-paperless-impostor.") do |raw|
       impostor_root = File.realpath(raw)
       build_fixture_repository(impostor_root)
@@ -821,9 +700,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
                   "#{output.strip.inspect}" unless status.success?
     end
 
-    # PLATFORM_CONTRACT_REPO_DIR stays bound to the inspected tree, because the
-    # static half requires tests/policy_support from it. Proven by taking that
-    # one file out of the inspected tree and requiring the failure to name it.
+    # PLATFORM_CONTRACT_REPO_DIR stays bound to the inspected tree.
     Dir.mktmpdir("nas-platform-paperless-nosupport.") do |raw|
       stripped = File.realpath(raw)
       build_fixture_repository(stripped)
@@ -840,7 +717,6 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
       end
     end
 
-    # The runtime half is reached, and the mode reaches its own success line.
     sandbox = runtime_sandbox(copy_root)
     stdout, stderr, status = Open3.capture3(
       stub_env.merge(sandbox), contract, "seed-fixture-only"
@@ -851,15 +727,8 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
                   "#{(stdout + stderr).strip}"
     end
 
-    # Two `:?` guards refuse before the runtime program can start against an
-    # empty path. The wording of that refusal belongs to the shell -- bash says
-    # "parameter null or not set" and dash says "parameter not set or null" -- so
-    # only the portable prefix is asserted, and the substantive property is
-    # stated separately: the runtime program must never have run.
-    # Set to the empty string rather than removed: `${VAR:?}` refuses null as
-    # well as unset, and removing the key would leave the row passing silently
-    # for a developer who happens to have the variable exported. Same class as
-    # deriving the fixture mode from the umask instead of pinning a literal.
+    # Only the portable prefix of the shell's `:?` message is asserted. Set to ""
+    # rather than removed, so an exported variable cannot make the row pass.
     %w[PLATFORM_MEDIA_ROOT PLATFORM_REPORT_ROOT].each do |name|
       stdout, stderr, status = Open3.capture3(
         stub_env.merge(sandbox).merge(name => ""), contract, "run"
@@ -875,11 +744,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     end
   end
 
-  # Each of the three greps that read the runtime program's own text, planted one
-  # at a time in the copy the wrapper will actually run. Each literal must also
-  # resolve to exactly one site in that program, and the grep must name the
-  # program rather than the wrapper: a literal with two homes, or a grep pointed
-  # at "$0", is how the second and third of these came to be vacuous.
+  # Each literal must have exactly one site, and the grep must name the program, not "$0".
   SELF_READ_ROWS.each do |row|
     occurrences = File.read(RUNTIME_PROGRAM).scan(row.fetch(:from)).length
     failures << "wrapper: #{row.fetch(:name)} occurs #{occurrences} times in the runtime " \
@@ -905,12 +770,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
 end
 
 # --- stdin -----------------------------------------------------------------
-#
-# A heredoc consumes the caller's stdin by construction; a sibling program does
-# not, so each invocation carries `</dev/null`. None of the three programs reads
-# stdin today, so dropping a redirect changes no outcome -- which is exactly why
-# the rule cannot be proven by the contract passing, and why each row swaps in a
-# probe program that does read.
+# No program reads stdin, so each row swaps in a probe that does.
 
 PROBE = <<~'PROBE'
   payload = $stdin.read
@@ -924,11 +784,8 @@ end
 
 def stdin_failures(wrapper_source: File.read(CONTRACT))
   failures = []
-  # Every probe keeps the real program's bytes below it. The render and static
-  # halves have to finish their run; the runtime probe reports and stops before
-  # the vault read, but its source still has to carry the three constants the
-  # wrapper greps out of it -- a stub there is refused by the contract itself,
-  # which is #285's finding about impostor programs and applies to probes too.
+  # Probes keep the real program's bytes; the runtime one must still carry the
+  # three grepped constants (#285).
   render = probe_program("render", File.read(RENDER_PROGRAM))
   static = probe_program("static", File.read(STATIC_PROGRAM))
   runtime = probe_program(
@@ -955,11 +812,7 @@ def stdin_failures(wrapper_source: File.read(CONTRACT))
 end
 
 # --- planted regressions ---------------------------------------------------
-#
-# Each entry removes one guard from one program and names the rows that must
-# catch it. A row that survives its own guard being deleted is proving nothing.
-# Every plant asserts its own match count, so a substitution that hits nothing
-# aborts instead of reporting a pass.
+# Each entry removes one guard and names the rows that must catch it.
 
 PROGRAM_MUTATIONS = [
   {
@@ -1011,11 +864,7 @@ PROGRAM_MUTATIONS = [
     from: "source.start_with?(expected_state_root + File::SEPARATOR)",
     to: "true",
     rows: ["a state source escaping its isolated root"],
-    # A recorded cascade, not a tolerated mess: a source outside the isolated
-    # root is also absent from the expected list, so with this guard gone the
-    # list comparison two lines below refuses instead. The row still moves --
-    # what changes is which sentence it gets -- and naming the sentence is what
-    # keeps that fact from being rediscovered as a mystery.
+    # Recorded cascade: the list comparison below refuses instead, with a different sentence.
     detects: "refused for the wrong reason"
   },
   {
@@ -1038,10 +887,7 @@ PROGRAM_MUTATIONS = [
     from: "override_services.keys.sort == services.keys.sort",
     to: "true",
     rows: ["a Mac override that stopped covering every service"],
-    # A recorded cascade. This coverage check is what makes the per-service
-    # fetches below it safe, so deleting it does not accept the repository -- it
-    # raises KeyError on the first service the override no longer names. The row
-    # still refuses; the sentence is a stack trace rather than a diagnostic.
+    # Recorded cascade: without this check the fetches below raise KeyError.
     detects: "key not found"
   },
   {
@@ -1134,17 +980,13 @@ PROGRAM_MUTATIONS = [
     from: "fail_contract(\"fixture bytes drifted: \#{path.basename}\") unless path.file? && path.binread == bytes",
     to: "path.file?",
     rows: ["a document fixture whose bytes drifted", "a document fixture replaced by a directory"],
-    # Both rows plant a path whose bytes are wrong rather than absent, so with
-    # the guard gone the mode reaches its own success line instead of refusing.
     detects: "accepted what it must refuse"
   },
   {
     label: "the exclusive fixture creation mode",
     program: :runtime,
     from: "path.open(File::WRONLY | File::CREAT | File::EXCL, 0o644)",
-    # 0o755 rather than a near neighbour on purpose: 0o666 masks to 0o644 under
-    # the common umask 022 and the plant would be invisible, which is the same
-    # class of mistake as pinning the mode literal in the first place.
+    # 0o755 because 0o666 masks to 0o644 under umask 022.
     to: "path.open(File::WRONLY | File::CREAT | File::EXCL, 0o755)",
     rows: ["the document fixture pre-seed on an empty inbox"],
     detects: "is mode"
@@ -1166,31 +1008,14 @@ def with_mutant(mutation)
   end
 end
 
-# tests/fixtures/paperless-ocr.png.base64 is 110KB of base64 and tells a reader
-# nothing. The SVG beside it is the source that image was rendered from and is
-# the only legible record of what the OCR rows below demand out of it -- but
-# nothing loaded the SVG, so it was an orphan any prune would have taken, and #657
-# found it that way. Deleting it was the other option and is the worse one: it
-# would have left the assertions naming strings no file in the tree says the
-# image contains.
-#
-# A comment would have rotted the first time somebody changed a required string
-# without re-rendering the image, so the link is a check instead. The strings are
-# read out of the runtime program rather than restated here, because a copy is
-# the thing that stops matching; what the row then asserts is exactly "the image
-# we ship still says what we assert about it", which is the claim the OCR rows
-# rest on and could not previously make.
+# The SVG is the legible source of paperless-ocr.png.base64 (#657). The strings
+# are read out of the runtime program, so this asserts the shipped image still
+# says what the OCR rows claim.
 OCR_SOURCE = File.join(ROOT, "tests", "fixtures", "paperless-ocr.svg")
-# The image marker plus the German and Hebrew strings. Stated, so that an
-# assertion renamed out of the extraction's reach empties the subject list
-# loudly rather than passing over nothing -- the failure this file exists to
-# refuse, in miniature.
+# Stated, so an extraction that finds nothing fails loudly.
 OCR_REQUIRED_STRINGS = 3
 
-# Both files are read with an explicit encoding. The strings this compares are
-# German and Hebrew, and File.read tags its result with Encoding.default_external
-# -- which is US-ASCII on a runner with no locale set, where scanning those bytes
-# raises rather than failing a row.
+# Explicit encoding: default_external may be US-ASCII on a runner.
 def ocr_fixture_failures(runtime_source: File.read(RUNTIME_PROGRAM, encoding: "UTF-8"))
   return ["ocr fixture: #{OCR_SOURCE} is absent, so nothing in the tree records what " \
           "tests/fixtures/paperless-ocr.png.base64 says"] unless File.exist?(OCR_SOURCE)
@@ -1206,9 +1031,7 @@ def ocr_fixture_failures(runtime_source: File.read(RUNTIME_PROGRAM, encoding: "U
             "assertions moved and this check is now proving nothing"]
   end
 
-  # Comments stripped first. The file carries a header explaining what it is, and
-  # a header that happened to quote one of these strings would satisfy the row
-  # without the image containing anything.
+  # Comments stripped so a header quoting a string cannot satisfy the row.
   rendered = File.read(OCR_SOURCE, encoding: "UTF-8").gsub(/<!--.*?-->/m, "").downcase
   required.reject { |string| rendered.include?(string.downcase) }.map do |missing|
     "ocr fixture: the runtime requires #{missing.inspect} in the OCR text, and the source " \
@@ -1234,8 +1057,6 @@ if ARGV.include?("--self-test")
     []
   end
 
-  # The three stdin redirects, one per invocation. The runtime one is `exec`ed and
-  # cannot be covered by either of the others.
   planted_redirects = 0
   [
     ["\"$render_program\" \"$variant\" </dev/null\n", "\"$render_program\" \"$variant\"\n"],
@@ -1243,8 +1064,6 @@ if ARGV.include?("--self-test")
      "\"$generator\" \"$environment_template\" \"$snapshot\" \"$snapshot_program\"\n"],
     ["exec ruby \"$runtime_program\" \"$mode\" \"$@\" </dev/null\n",
      "exec ruby \"$runtime_program\" \"$mode\" \"$@\"\n"],
-    # Not a dropped redirect but a drained stdin ahead of the exec, which only
-    # the check that the caller's input survived can see.
     ["exec ruby \"$runtime_program\" \"$mode\" \"$@\" </dev/null\n",
      "cat >/dev/null\nexec ruby \"$runtime_program\" \"$mode\" \"$@\" </dev/null\n"]
   ].each do |from, to|
@@ -1255,9 +1074,7 @@ if ARGV.include?("--self-test")
     planted_redirects += 1
   end
 
-  # The defect #251 shipped one version of, at every site paperless has: the
-  # three program paths, which must come from the checkout, and the two things
-  # bound to the inspected tree on purpose. Both directions.
+  # #251, at every paperless site, both directions.
   planted_roots = 0
   [
     ['render_program=$contract_repo_dir/tests/contracts/paperless-render.rb',
@@ -1278,24 +1095,15 @@ if ARGV.include?("--self-test")
     planted_roots += 1
   end
 
-  # The OCR fixture link, both ways it can break: a required string the rendered
-  # source does not contain, and the assertions moving out of the extraction's
-  # reach, which is the failure that would otherwise be silent.
   planted_fixtures = 0
   runtime_text = File.read(RUNTIME_PROGRAM, encoding: "UTF-8")
-  # One row per contributor to the required list, so none of the three is left
-  # proved by the other two, plus the extraction itself. The German and Hebrew
-  # anchors are %{} rather than '': a \u escape in a single-quoted Ruby string is
-  # eight literal characters, so the anchor matches nothing and substitute raises
-  # -- loudly, which is the only reason that slip is cheap here.
+  # The German and Hebrew anchors are %{}: '\u' in single quotes is literal.
   [
     [%{image_document.fetch("content", "").include?("\u05E2\u05D1\u05E8\u05D9\u05EA")},
      %{image_document.fetch("content", "").include?("\u05E9\u05DC\u05D5\u05DD")}, 1],
     [%{.downcase.include?("\u00FCberpr\u00FCfung")}, %{.downcase.include?("kontrolle")}, 1],
     ['IMAGE_MARKER = "paperless contract image ocr"',
      'IMAGE_MARKER = "paperless contract scanned page"', 1],
-    # Both OCR assertions at once: the shape that empties the subject list rather
-    # than failing a row, which is the only one of the four that would be silent.
     ['image_document.fetch("content", "")', 'image_document.fetch("contents", "")', 2]
   ].each do |from, to, occurrences|
     broken = substitute(runtime_text, from, to, count: occurrences)

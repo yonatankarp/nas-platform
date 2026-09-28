@@ -1,10 +1,5 @@
 #!/usr/bin/env ruby
-# Platform and preflight policy.
-#
-# Machine facts stay host-scoped and portable configuration stays shared, every
-# inventory names the same platform hierarchy, preflight refuses empty endpoint
-# coordinates and adjudicates its own write probe before creating it, and declared
-# storage matches what the roles mount. Split out of policy_test.rb.
+# Platform and preflight policy. Split out of policy_test.rb.
 
 require "open3"
 require "rbconfig"
@@ -69,10 +64,8 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
     check(failures, host_vars.key?(policy),
           "#{relative_path} must define #{policy}")
   end
-  # A transport stays false until that host has taken it through its operator
-  # handoff. Usenet on the NAS has been; nothing else has. Pinning the value
-  # rather than requiring false catches a transport switched on before its
-  # handoff, and an accepted one switched off behind the platform's back.
+  # Pinned rather than required false: a transport stays off until its operator
+  # handoff (Usenet on the NAS only), and a switched-off accepted one is caught too.
   { "media_usenet_enabled" => platform_kind == "nas",
     "media_torrent_enabled" => false }.each do |transport, expected|
     check(failures, host_vars[transport] == expected,
@@ -85,9 +78,8 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
   check(failures, host_vars["platform_render_device_path"].is_a?(String) &&
                   !host_vars["platform_render_device_path"].empty?,
         "#{relative_path} platform_render_device_path must be a nonempty path")
-  # The mdraid verification skips on an empty baseline, so an emptied or deleted
-  # NAS declaration would turn it into a green no-op there (#609). The NAS must
-  # declare its arrays; no other host has them.
+  # The mdraid verification skips on an empty baseline, so the NAS must declare
+  # its arrays (#609).
   mdraid_arrays = host_vars["host_prep_mdraid_arrays"]
   if platform_kind == "nas"
     check(failures, mdraid_arrays.is_a?(Hash) && !mdraid_arrays.empty? &&
@@ -97,12 +89,8 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
     check(failures, mdraid_arrays.nil?,
           "#{relative_path} must not declare host_prep_mdraid_arrays; only the NAS has these arrays")
   end
-  # The Mac lane's remaining host vars are facts the lifecycle harness injects, and
-  # they are recognised by that binding rather than by a list of their names. The
-  # check below is about portable *configuration* leaking into a host group, and a
-  # value that is nothing but a PLATFORM_* environment lookup is by construction
-  # not configuration: it has no value at all outside a harness run. The name list
-  # this replaces grew a port per promoted service and was held to nothing.
+  # Harness-injected facts are recognised by being a bare PLATFORM_* env lookup,
+  # which is not configuration, rather than by a list of names.
   mac_runtime_facts = if platform_kind == "mac"
                         host_vars.select do |name, value|
                           (name == "platform_project_name" || name.end_with?("_port")) &&
@@ -117,13 +105,8 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
         "#{relative_path} contains portable configuration: #{unexpected_vars.join(', ')}")
 end
 
-# The NAS render node is one constant with five writers. platform_render_device_path
-# is the source, but three of the writers cannot read it: a Compose device mapping
-# is a literal by construction, Jellyfin's QSV encoding policy is a pinned contract
-# compared against the live API, and the two asserts exist precisely to pin the
-# variable to a value, so substituting the variable into them would assert nothing.
-# Copies that must stay literal are held to the source here instead, so renaming the
-# device is one inventory edit plus a failing test naming every site that lagged.
+# Writers of the NAS render node that must stay literal (Compose device mapping,
+# pinned QSV contract, pinning asserts) are held to platform_render_device_path here.
 nas_render_device = YAML.safe_load_file(
   File.join(ROOT, "inventory", "group_vars", "nas_hosts", "main.yml")
 ).fetch("platform_render_device_path")
@@ -168,9 +151,8 @@ end
 site_play = YAML.safe_load_file(File.join(ROOT, "site.yml")).first
 check(failures, site_play["hosts"] == "platform_hosts",
       "site.yml must target platform_hosts")
-# The location, not one file: the identifier folds every encrypted artifact
-# directly inside it, which is what lets the vault split add files without the
-# reported identity silently narrowing to whichever one this named.
+# The directory, not one file, so the vault split can add files without the
+# reported identity narrowing.
 check(failures, site_play.dig("vars", "platform_vault_file").to_s.match?(
   %r{default\(playbook_dir ~ '/inventory/group_vars/all', true\)}
 ), "site.yml must default platform_vault_file to the inventory/group_vars/all directory, " \
@@ -257,10 +239,7 @@ check(failures,
 # anything that could be real data still refuses.
 preflight_body = File.read(File.join(ROOT, "roles", "preflight", "tasks", "main.yml"))
 preflight_probe_tasks = flatten_tasks(YAML.safe_load(preflight_body))
-# Read from the parsed tasks rather than the file's bytes. The three names below
-# all appear in the role's own explanatory comments, so a whole-file substring
-# check was satisfied by the commentary alone, and it never said that the derived
-# fact came from the capacity the docker info task actually registered.
+# Parsed tasks, not file bytes: these names also appear in the role's comments.
 docker_capacity = preflight_probe_tasks.find do |task|
   Array(task.dig("ansible.builtin.command", "argv")) == %w[docker info --format json]
 end
@@ -272,9 +251,7 @@ check(failures,
         effective_cpuset.include?("platform_container_cpuset") &&
         effective_cpuset.include?(docker_capacity["register"].to_s),
       "preflight must derive the effective container CPU set from Docker capacity")
-# Every task that touches the probe has to touch the same validated path. Read as
-# text this was two substring checks, one of which only ruled out the single
-# wrong path that happened to have been used before.
+# Every task that touches the probe has to touch the same validated path.
 probe_path = "{{ nas_docker_root }}/.nas-platform-preflight-probe"
 probe_targets = task_path_arguments(preflight_probe_tasks).grep(/preflight-probe/)
 check(failures, probe_targets.length >= 4 && probe_targets.uniq == [probe_path],

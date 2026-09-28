@@ -5,11 +5,7 @@ set +x
 mac_test_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 repo_dir=$(CDPATH= cd -- "$mac_test_dir/../.." && pwd -P)
 
-# This test drives run.sh, which refuses to run anywhere but Darwin, so on any
-# other platform it can only ever fail at its first phase. It is the one entry in
-# validate-policy.sh with that property; the other Mac tests exercise their hooks
-# directly and are portable. Skipping keeps the Linux policy run honest instead of
-# reporting a failure that says nothing about the code under test.
+# run.sh refuses anything but Darwin, so skip elsewhere rather than fail meaninglessly.
 if [ "$(uname -s)" != Darwin ]; then
   printf '%s\n' 'Mac phase status: skipped, run.sh requires Darwin'
   exit 0
@@ -167,13 +163,8 @@ preflight_phase_status=$(ruby -rjson -e '
   exit 1
 }
 
-# A ruby older than the lane's Ruby programs must be refused by name before any
-# of them runs (#854): macOS's /usr/bin/ruby lacks YAML.safe_load_file and
-# Enumerable#filter_map, and used to surface as a NoMethodError swallowed by
-# generate_immich_fixture_vars and then an ENOENT on the file it never wrote.
-# The stub stands for any ruby lacking them; /usr/bin/ruby is the real one when
-# this Mac still ships an old one. Each gets its own PATH prefix so everything
-# else in this test keeps the real ruby.
+# An old ruby (macOS /usr/bin/ruby lacks YAML.safe_load_file and filter_map) must be
+# refused by name before any program runs (#854).
 old_ruby_bin=$temporary_parent/old-ruby
 mkdir -m 0700 "$old_ruby_bin"
 printf '%s\n' '#!/bin/sh' 'exit 1' > "$old_ruby_bin/ruby"

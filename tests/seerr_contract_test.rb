@@ -1,36 +1,11 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 #
-# Behaviour of the Seerr service contract's two Ruby programs.
-#
-# Until #147 both lived in `<<'RUBY'` heredocs inside tests/contracts/seerr.sh.
-# `sh -n` reads a quoted heredoc as opaque text, so the static half was only
-# ever executed by `tests/contracts/seerr.sh static` and the runtime half only
-# by an integration lane with Docker, a converged Seerr and a real vault.
-# tests/contracts/seerr-static.rb and tests/contracts/seerr-runtime.rb are files
-# now, so both are reachable here.
-#
-# Three layers, because the contract has three kinds of property:
-#
-#   Static -- build a fixture repository from the files the program reads, break
-#   exactly one thing in it, and require the program to name that thing. The
-#   assertion text is the interface: a guard that fails for the wrong reason has
-#   stopped guarding what it names, so every row pins the exact diagnostic.
-#
-#   Runtime -- serve the Seerr API from an HTTP fixture and put `docker` and
-#   `ansible-vault` stubs on PATH, so each access, permission, sign-in policy
-#   and persistence outcome can be moved one at a time. This half had no test at
-#   all, and it is 164 lines of exactly the assertions a deployment depends on.
-#
-#   Wrapper -- tests/contracts/seerr.sh is what turns a mode into an invocation.
-#   Its rows prove the mode guard, the run-mode environment contract, that both
-#   programs are reached, that they come from the checkout while the tree the
-#   static half inspects does not, and that neither can eat the caller's stdin.
-#
-# Run with --self-test to plant a regression in each program and in the wrapper.
-# It accumulates its mismatches rather than aborting on the first, and every
-# plant is built before the worker pool: `abort` inside a worker raises
-# SystemExit there, and the pool would report a KeyError in place of the message.
+# Behaviour of the Seerr contract's two Ruby programs (split out of seerr.sh in #147)
+# and its wrapper. Static rows break one fixture thing and pin the exact diagnostic;
+# runtime rows serve the Seerr API from a fixture with `docker`/`ansible-vault` stubs.
+# --self-test plants a regression per program and wrapper; plants are built before
+# the pool, because `abort` in a worker surfaces as a KeyError instead of its message.
 
 require "fileutils"
 require "json"
@@ -49,8 +24,7 @@ include TestScaffold
 include ContractTestSupport
 
 ROOT = File.expand_path("..", __dir__)
-# The prefix every refusal this file judges has to carry. Matching the
-# fragment alone accepted a backtrace or an echoed argument as a refusal.
+# The prefix every refusal must carry; the fragment alone accepted a backtrace.
 DIAGNOSTIC_PREFIX = "Seerr contract failed: "
 CONTRACT = File.join(ROOT, "tests", "contracts", "seerr.sh")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "seerr-static.rb")
@@ -61,11 +35,8 @@ MODE_REFUSAL = "seerr contract accepts only static or run"
 RUNTIME_SUCCESS = "seerr contract: bootstrapped owner, permission split, sign-in policy, " \
                   "and persisted state hold"
 
-# Exactly what the static program reads, plus the shared flatten_tasks it
-# requires through PLATFORM_CONTRACT_REPO_DIR. Unlike tranche 1's pair, this
-# list is exactly the program's own `required` list -- it reads no file its
-# existence sweep does not check, which the "an intact repository" row proves by
-# passing against a fixture holding only these.
+# Exactly the static program's own `required` list plus flatten_tasks; the "intact
+# repository" row proves it reads nothing else.
 FIXTURE_FILES = %w[
   roles/seerr/defaults/main.yml
   roles/seerr/meta/argument_specs.yml
@@ -90,10 +61,8 @@ def build_fixture_repository(root)
   end
 end
 
-# Every substitution states how many matches it expects. A replacement that
-# still contains its own pattern plants nothing, and a bare `sub` cannot tell
-# that from a plant that worked: the row then reports a pass, or a failure with
-# the wrong diagnostic.
+# Every substitution states its expected match count: a replacement still holding
+# its pattern plants nothing and would otherwise pass unnoticed.
 def mutate_text(root, relative, pattern, replacement, occurrences: 1)
   path = File.join(root, relative)
   body = File.read(path)
@@ -205,20 +174,16 @@ end
 
 # --- runtime layer ---------------------------------------------------------
 #
-# The runtime half takes NO arguments: every input arrives in the environment.
-# So the sandbox is entirely environment plus PATH stubs plus one HTTP fixture,
-# and each row moves exactly one of them.
+# Every input arrives in the environment; each row moves exactly one of them.
 
 API_KEY = "seerr-contract-api-key-0000000000"
 RADARR_KEY = "radarr-contract-api-key-000000000"
 SONARR_KEY = "sonarr-contract-api-key-000000000"
 PUSHOVER_TOKEN = "seerr-contract-pushover-token-never-valid"
-# Another application's token in the same vault, so an agent holding the wrong
-# one is distinguishable from an agent holding the right one.
+# Another application's token, so an agent holding the wrong one is visible.
 PUSHOVER_ALERTS_TOKEN = "seerr-contract-pushover-alerts-token-never-valid"
 PUSHOVER_USER_KEY = "seerr-contract-pushover-user-key-never-valid"
-# Only what a Seerr converged before #558 still stores; the vault no longer
-# hands it to the role.
+# Only what a Seerr converged before #558 still stores.
 NTFY_TOKEN = "tk_seerr_contract_token"
 HOUSEHOLD = %w[viewer].freeze
 OWNER_ID = 1
@@ -295,11 +260,8 @@ def build_runtime_sandbox(root, options)
   [bin, docker_root]
 end
 
-# Keyed BY KIND, deliberately. An override that answered the same rows for both
-# radarr and sonarr made the sonarr iteration produce the *other* clause's
-# diagnostic once a plant removed the first, so two rows reported "refused for
-# the wrong reason" rather than the sentence they pin. Overriding one kind and
-# leaving the other correct is what keeps each row to one sentence.
+# Keyed BY KIND: answering both kinds alike made one kind report the other clause's
+# diagnostic once a plant removed the first.
 def arr_rows(kind, options)
   override = options.fetch(:arr_rows)
   return override.fetch(kind) if override.is_a?(Hash) && override.key?(kind)
@@ -555,11 +517,8 @@ end
 
 # --- reconciliation layer --------------------------------------------------
 #
-# The runtime rows read a Seerr somebody converged; these run the role's own
-# reconcile_settings.yml against a fixture that answers the way Seerr's
-# notification routes do (server/routes/settings/notifications.ts at the pinned
-# tag): GET returns the stored agent, and POST assigns the body to it verbatim
-# and echoes it. Each run states exactly which agents it may POST, and with what.
+# Runs reconcile_settings.yml against a fixture of Seerr's notification routes: GET
+# returns the stored agent, POST assigns the body verbatim and echoes it.
 
 PUSHOVER_DEFAULT = { "enabled" => false, "embedPoster" => true, "types" => 0,
                      "options" => { "accessToken" => "", "userToken" => "", "sound" => "" } }.freeze
@@ -692,11 +651,8 @@ end
 
 # --- lane layer ------------------------------------------------------------
 #
-# Seerr's Pushover agent posts to an address hardcoded in the application, and
-# the Mac lane converges with the operator's real vault while its manual review
-# raises a request. So that lane blanks the pair, and its contract must expect
-# the blank pair rather than the vault's. Read out of the block each line has to
-# sit in, so a line moved outside it does not satisfy the check.
+# Seerr's Pushover endpoint is hardcoded, and the Mac lane uses the real vault, so
+# that lane blanks the pair and its contract must expect the blank pair.
 MAC_PUSHOVER_BLANKING = {
   "tests/mac/lib.sh" => [
     /^mac_ansible_playbook\(\) \{\n(.*?)^\}/m,
@@ -724,21 +680,15 @@ end
 
 # --- wrapper layer ---------------------------------------------------------
 #
-# tests/contracts/seerr.sh resolves both programs from its own checkout rather
-# than from the tree it inspects, so a copy of the three files into a throwaway
-# tests/contracts/ is a whole working contract. That is what lets a row point
-# PLATFORM_CONTRACT_REPO_DIR at a broken fixture and still exercise the real
-# wrapper.
+# seerr.sh resolves both programs from its own checkout, so a throwaway copy is a
+# working contract that can be pointed at a broken fixture.
 
 def with_contract_copy(static: File.read(STATIC_PROGRAM), runtime: File.read(RUNTIME_PROGRAM),
                        wrapper: File.read(CONTRACT), &block)
   with_contract_sandbox("seerr", wrapper, { "static" => static, "runtime" => runtime }, &block)
 end
 
-# Reports what each program saw on stdin and what the caller still has, which is
-# the only way the redirect is observable: neither real program reads stdin, so
-# the redirect is what keeps that true rather than something that changes an
-# outcome today.
+# The real programs never read stdin, so the redirect is observable only via this probe.
 def stdin_failures(wrapper_source: File.read(CONTRACT))
   with_contract_copy(static: STDIN_PROBE, wrapper: wrapper_source) do |contract|
     stdin_probe_failures(contract, %w[static], { "PLATFORM_CONTRACT_REPO_DIR" => ROOT },
@@ -746,8 +696,7 @@ def stdin_failures(wrapper_source: File.read(CONTRACT))
   end
 end
 
-# The runtime half is reached by `exec`, so its redirect needs its own probe:
-# the static half must succeed first for the exec to happen at all.
+# The runtime half is reached by `exec`, so its redirect needs its own probe.
 def runtime_stdin_failures(wrapper_source: File.read(CONTRACT))
   with_contract_copy(runtime: STDIN_PROBE, wrapper: wrapper_source) do |contract, copy_root|
     environment = {
@@ -756,10 +705,7 @@ def runtime_stdin_failures(wrapper_source: File.read(CONTRACT))
       "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(copy_root, "vault-password"),
       "PLATFORM_DOCKER_ROOT" => File.join(copy_root, "docker")
     }
-    # The probing shell's own status is `cat`'s, not the probe's, so it says
-    # nothing here. The probe's marker appearing IS the proof that the exec was
-    # reached; and run mode must not have printed the static success line, which
-    # is what exiting at the mode gate would look like.
+    # The probe's marker proves the exec was reached; the shell's status is `cat`'s.
     stdin_probe_failures(contract, %w[run], environment, prefix: "runtime stdin",
                          subject: "the runtime program", status: false) do |output|
       if output.include?(SUCCESS_LINE)
@@ -769,37 +715,17 @@ def runtime_stdin_failures(wrapper_source: File.read(CONTRACT))
   end
 end
 
-# The run-mode environment contract. Each name is refused with the WRAPPER'S OWN
-# message, and that is what is asserted -- never the shell's own wording, which
-# differs between bash ("parameter null or not set") and dash ("parameter not
-# set or null"), and never the line number, which any edit to this file moves.
+# Each name is refused with the wrapper's own message, never the shell's (bash and
+# dash word it differently) or a line number.
 REQUIRED_RUN_ENV = %w[
   PLATFORM_CONTRACT_VAULT_FILE
   PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
   PLATFORM_DOCKER_ROOT
 ].freeze
 
-# Stands in for the runtime half throughout this helper, because every
-# invocation here must end in a refusal by the wrapper *before* the exec that
-# would reach it. Against an intact wrapper the stub is therefore never run, and
-# substituting it changes nothing this helper observes: the wrapper's `:?` checks
-# sit between the static program and the exec, so the real static half still runs
-# unchanged on every row.
-#
-# A planted regression that drops one of the `:?` requirements is what makes the
-# exec reachable, and against the shipped runtime program that meant a wait: no
-# Seerr is listening on the port, so it spent its whole readiness budget --
-# 180 seconds, twice over -- proving what the row already knew. That was the
-# entire floor of this file's self-test, 368s of it unmoved by pools of 1, 4, 8
-# or 16 workers, because concurrency overlaps waits without shortening them.
-# #328 cut the budget to ten seconds for these rows; the stub deletes the wait
-# instead, which is what the row is entitled to: reaching the runtime half at
-# all is already the regression.
-#
-# It exits 0 deliberately, so a mutant that reaches it trips BOTH assertions
-# below -- the wrapper accepted an environment it must refuse, and it did so
-# without its own message -- and warns first, so the failure text says which
-# happened rather than showing an empty capture.
+# Stands in for the runtime half: every row here must be refused before the exec.
+# A mutant that reaches it would otherwise wait out the readiness budget (#328); it
+# exits 0 and warns, so such a mutant trips both assertions with a clear message.
 RUNTIME_REFUSAL_STUB = <<~'STUB'
   warn "runtime stub reached: the wrapper did not refuse this environment"
   exit 0
@@ -817,8 +743,7 @@ def run_env_failures(wrapper_source: File.read(CONTRACT))
       "PLATFORM_MAC_VAULT_PASSWORD_FILE" => nil
     }
     REQUIRED_RUN_ENV.each do |name|
-      # Set to "" rather than deleted: ${VAR:?} refuses null as well as unset,
-      # and a deleted key would pass silently for a developer who exports it.
+      # "" rather than deleted: ${VAR:?} refuses null too, and a developer may export it.
       stdout, stderr, status = Open3.capture3(full.merge(name => ""), contract, "run")
       output = stdout + stderr
       failures << "run env: #{name} unset was accepted" if status.success?
@@ -826,9 +751,7 @@ def run_env_failures(wrapper_source: File.read(CONTRACT))
                   "#{output.strip.inspect}" unless output.include?("#{name} is required")
     end
 
-    # The Mac fallback branch, which nothing else in the suite reaches:
-    # tests/mac/run.sh exports PLATFORM_MAC_VAULT_FILE, and the `:=` pair above
-    # the `:?` pair is what lets it stand in for the contract names.
+    # The Mac fallback: tests/mac/run.sh exports PLATFORM_MAC_VAULT_FILE for the `:=` pair.
     stdout, stderr, status = Open3.capture3(
       full.merge("PLATFORM_CONTRACT_VAULT_FILE" => nil,
                  "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => nil,
@@ -867,8 +790,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     failures << "wrapper: static mode did not report the property it proved" unless
       stdout.include?(SUCCESS_LINE)
 
-    # The static half runs unconditionally, so run mode must be refused by it
-    # before the runtime half is reached at all.
+    # The static half runs first, so it must refuse run mode before the runtime half.
     FileUtils.rm(File.join(copy_root, "services/seerr/compose.mac.yml"))
     stdout, stderr, status = Open3.capture3(
       {
@@ -884,9 +806,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
       (stdout + stderr).include?("missing services/seerr/compose.mac.yml")
   end
 
-  # The branch every deployment actually takes: PLATFORM_CONTRACT_REPO_DIR unset,
-  # so the programs and the inspected tree both come from the script's own
-  # checkout. That is the only path in production.
+  # The production path: PLATFORM_CONTRACT_REPO_DIR unset, one checkout for everything.
   with_contract_copy do |contract, copy_root|
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => nil }, contract, "static"
@@ -908,10 +828,8 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures
 end
 
-# The two-roots property, stated as an OUTCOME rather than as the wrapper's
-# text. These are the invariant rows: a before/after capture diff can only show
-# differences, so the property that must stay identical is invisible in it. They
-# are asserted here instead, and they are what would have caught #251's defect.
+# The two-roots property as an outcome: a capture diff cannot show what must stay
+# identical. These rows would have caught #251.
 def two_roots_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   with_contract_copy(wrapper: wrapper_source) do |contract|
@@ -928,10 +846,7 @@ def two_roots_failures(wrapper_source: File.read(CONTRACT))
         stdout.include?(SUCCESS_LINE)
     end
 
-    # The other direction. The inspected tree's own flatten_tasks is what the
-    # static program must use, so a tree whose policy_support.rb refuses to load
-    # has to take the contract down with it. Reading the checkout's copy instead
-    # would pass here, silently.
+    # The other direction: the inspected tree's policy_support.rb must be the one loaded.
     Dir.mktmpdir("nas-platform-seerr-support.") do |raw|
       inspected = File.realpath(raw)
       build_fixture_repository(inspected)
@@ -985,9 +900,8 @@ PROGRAM_MUTATIONS = [
   {
     label: "the shared control network check",
     program: :static,
-    # The whole condition, not one clause: the network is named `media-control`
-    # with a hyphen and the assertion also requires the top-level network to be
-    # declared external, so a plant on either half alone leaves the other live.
+    # The whole condition: the hyphenated network name and the external declaration
+    # are separate halves, so a plant on one leaves the other live.
     from: 'Array(service["networks"]).include?("media-control") &&
     compose.dig("networks", "media-control", "external") == true',
     to: "true",
@@ -1010,8 +924,7 @@ PROGRAM_MUTATIONS = [
   {
     label: "the exactly-once CPU set read",
     program: :static,
-    # Restores the substring search the line-oriented read replaced, which is
-    # the form a second live assignment satisfies while only one may exist.
+    # Restores the substring search, which a second live assignment satisfies.
     from: 'env_assignments.select { |name, _value| name == "PLATFORM_CONTAINER_CPUSET" } ==
       [["PLATFORM_CONTAINER_CPUSET", "{{ platform_effective_container_cpuset }}"]]',
     to: 'File.read(File.join(root, "roles/seerr/templates/env.j2"))
@@ -1191,8 +1104,7 @@ PROGRAM_MUTATIONS = [
   }
 ].freeze
 
-# The wrapper's own regressions. Each is a line that changes no outcome today,
-# which is exactly why it needs a plant rather than a passing contract.
+# The wrapper's own regressions: lines that change no outcome today, so they need plants.
 WRAPPER_MUTATIONS = [
   {
     label: "a dropped stdin redirect on the static half",
@@ -1241,11 +1153,8 @@ WRAPPER_MUTATIONS = [
 if ARGV.include?("--self-test")
   mismatches = []
 
-  # Every plant is prepared on the main thread, before the pool. `plant` and
-  # `rows_named` abort with a sentence naming what they could not find, and an
-  # abort inside a worker raises SystemExit there: the thread dies without
-  # recording its result and the pool's own `collected.fetch` then reports a
-  # KeyError instead of that sentence.
+  # Plants are prepared on the main thread: `plant`/`rows_named` abort, and SystemExit
+  # in a worker would surface as the pool's KeyError instead of the sentence.
   program_cases = PROGRAM_MUTATIONS.map do |mutation|
     canonical = mutation.fetch(:program) == :static ? STATIC_PROGRAM : RUNTIME_PROGRAM
     rows = mutation.fetch(:program) == :static ? STATIC_ROWS : RUNTIME_ROWS

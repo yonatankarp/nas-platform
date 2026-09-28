@@ -1,31 +1,8 @@
 ---
-# Paperless, one stage per file, in the order they run. This file is the index:
-# what the role does, and nothing about how.
-#
-# The stages are imported statically. verify.yml lists this role with
-# tags: [never], and a role-level tag reaches a statically imported task exactly
-# as it reaches an inline one, so each verification task still carries
-# [never, platform_verify_paperless] and --tags platform_verify_paperless selects
-# the same thirty-six tasks it selected when they lived here. A dynamic include
-# is skipped under never before its file is ever read, which is why roles/arr
-# pairs include_tasks with apply: tags: -- and why this role does not need to.
-# Static imports are also expanded by --list-tasks, so the transcript an operator
-# reads before touching the NAS is unchanged. Every import below carries a name
-# and nothing else: a when:, vars: or tags: on a static import would apply to
-# every task in the file, which is a behaviour change rather than a move.
-#
-# The dynamic includes that stay here are the phase-gated ones --
-# managed_users.yml, called twice with a different paperless_managed_users_phase.
-# That sequence is the thing an index is for, vars: on a static import would leak
-# into the rest of the role, and the second call carries apply: tags: because a
-# dynamic include is the one form a role-level tag does not reach.
-#
-# There is no verify.yml stage, unlike roles/jellyfin and roles/audiobookshelf.
-# This role's platform_verify_paperless tasks are interleaved with the mutations
-# they check rather than trailing them -- the administrator is verified before
-# the mail account exists, and the reconciled account is read between the two
-# mail mutations -- so no contiguous segment holds them and only them. Splitting
-# one out would mean reordering tasks, which this change does not do.
+# Paperless, one stage per file, in run order. Stages are static imports so the
+# verify.yml `never` tag reaches their tasks; a when:/vars:/tags: on one would
+# apply to every task in it. managed_users.yml is a dynamic include, needing
+# apply: tags: because a role-level tag does not reach a dynamic include.
 - name: Resolve and validate the Paperless storage layout
   ansible.builtin.import_tasks: storage.yml
 

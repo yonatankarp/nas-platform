@@ -1,27 +1,8 @@
 #!/usr/bin/env ruby
 # Coordinated snapshot, restore and rollback drill for Paperless-ngx.
-#
 # usage: snapshot-paperless.rb snapshot|restore|drill SNAPSHOT_DIR
-#
-# Paperless keeps one application state in four places that must move together:
-# PostgreSQL rows, the archive and inbox trees under the media root, and the
-# application tree under the Docker root. Every operation here takes all of them
-# or none, with the webserver and redis stopped across the whole of it. The
-# valkey queue is discarded on restore rather than captured, because it holds
-# work queued against a database state the restore has just replaced.
-#
-# tests/mac/snapshot-paperless.sh is the shell wrapper: it validates the mode,
-# refuses `drill` anywhere that is not a disposable Mac or integration sandbox,
-# and exports the PLATFORM_* environment this program reads. It ran this program
-# from a `<<'RUBY'` heredoc until #315 -- nothing syntax-checked it and no linter
-# could reach it, and both tests/contracts/paperless.sh and
-# tests/contracts/paperless-static.rb had to grep the wrapper for text that was
-# really this program's. They now read this file, and the wrapper only for the
-# one setting that is genuinely the wrapper's.
-#
-# The body below is byte-identical to what that heredoc rendered, its own
-# requires included, and tests/mac/snapshot-paperless-test.rb covers the manifest
-# logic it duplicates offline.
+# Database, media trees and app tree move together with webserver and redis stopped;
+# the valkey queue is discarded on restore. Run via snapshot-paperless.sh (#315).
 require "digest"
 require "fileutils"
 require "json"
@@ -42,10 +23,8 @@ REDIS = ENV.fetch("PLATFORM_PAPERLESS_REDIS_CONTAINER")
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_PAPERLESS_PORT'), 10)}")
 MEMBERS = %w[archive.tar application.tar database.sql inbox.tar].freeze
 MANIFEST = "manifest.json"
-# Floored at one second so a zero or negative setting still leaves a retry in
-# place: the wait it guards is the only thing standing between recovery and the
-# start race, and a knob that can switch it off is a knob that can restore the
-# defect while every check still reports a pass.
+# Floored at one second: a knob that could switch the wait off would restore the
+# start race while every check still passes.
 RECOVERY_DEADLINE = [
   Integer(ENV.fetch("PLATFORM_PAPERLESS_RECOVERY_DEADLINE"), 10), 1
 ].max
@@ -132,25 +111,9 @@ def wait_healthy(*containers)
   end
 end
 
-# Retries one command until it succeeds or the deadline passes, and hands the
-# caller the last attempt's result instead of raising.
-#
-# docker start returns once the container process has been launched, not once the
-# server inside it has bound its port, so a command aimed at that port straight
-# after a start can lose the race and fail with a connection refusal. Waiting on
-# the command itself is what closes the window, and it is strictly better here
-# than waiting on {{.State.Health.Status}}: health only refreshes at the
-# container's healthcheck interval, so it can still report the pre-restart state
-# long after the socket is live, and it answers "did the healthcheck pass" rather
-# than "can this exec reach the port".
-#
-# The sleep is this loop's poll interval, in the same shape as wait_healthy's,
-# not a fixed wait standing in for a readiness signal: a redis that is already
-# up costs one attempt and no sleep at all.
-#
-# Returning rather than calling die matters. The only caller is an ensure block
-# unwinding a restore that may have already failed, and it has to record a
-# recovery failure rather than raise one over the failure it is unwinding.
+# Retry a command until it succeeds or the deadline passes, returning the last result.
+# docker start returns before the server binds its port, and health status lags, so
+# retry the command itself. Returns rather than dies: the caller is an ensure block.
 def capture_until_ready(*argv, deadline: RECOVERY_DEADLINE)
   limit = Time.now + deadline
   loop do
@@ -246,23 +209,8 @@ if MODE == "drill"
   drill_before.each do |document|
     request("delete", "/api/documents/#{document.fetch('id')}/", token: drill_token, expected: [204])
   end
-  # The poll reuses the token the deletion was authorized with instead of logging
-  # in again on every pass. Paperless throttles /api/token/ at five requests a
-  # minute by default (PAPERLESS_TOKEN_THROTTLE_RATE), and a pass every two
-  # seconds is thirty a minute, so a login per pass exhausted the allowance about
-  # ten seconds into the loop and request died on "POST /api/token/ returned HTTP
-  # 429" before the drill could prove anything about the restore. The phases
-  # before the drill have already spent part of that window, which is why it
-  # failed sooner on a warm sandbox than the arithmetic alone suggests.
-  #
-  # Reusing that token is correct whatever /api/token/ does with existing ones:
-  # it was issued at the top of this block, and nothing between there and here
-  # restarts a container or restores the database, so it is the freshest
-  # credential the drill holds.
-  #
-  # The timing is unchanged on purpose. The wait is what proves the asynchronous
-  # deletion settles, so a longer sleep or a shorter deadline would weaken what
-  # the drill demonstrates rather than fix the login budget.
+  # Reuse the deletion's token: /api/token/ is throttled at 5/min, and a login per
+  # two-second pass hit HTTP 429 mid-drill. The timing itself stays as it is.
   deadline = Time.now + 120
   loop do
     break if catalogue(drill_token).empty?
@@ -286,13 +234,8 @@ if MODE == "restore" || MODE == "drill"
   ensure
     restore_failure = $!
     recovery_failures = []
-    # The flushall is the only step that has to wait, and it must: it reaches
-    # valkey over 127.0.0.1:6379 immediately after the start above, so as a
-    # one-shot exec it raced the socket and intermittently reported a connection
-    # refusal on a restore that had in fact succeeded. Repeating it is free
-    # because discarding an already-discarded queue discards the same queue.
-    # The two starts speak to the docker daemon rather than to a service port, so
-    # they cannot lose that race and retrying them would only delay the report.
+    # Only the flushall retries: it raced valkey's socket right after start. The two
+    # starts talk to the daemon, not a service port, so they cannot lose that race.
     [
       [["docker", "start", REDIS], :once],
       [["docker", "exec", REDIS, "valkey-cli", "flushall"], :until_ready],

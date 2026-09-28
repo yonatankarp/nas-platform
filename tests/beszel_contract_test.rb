@@ -1,59 +1,9 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 #
-# Behaviour of the Beszel service contract's three Ruby programs.
-#
-# Until #147 all three lived in `<<'RUBY'` heredocs inside
-# tests/contracts/beszel.sh. `sh -n` reads a quoted heredoc as opaque text, so
-# the only thing that ever executed the static half was
-# `tests/contracts/beszel.sh static`; the only thing that ever executed the
-# 314-line runtime half was the beszel integration lane or the Mac proof, both
-# of which need Docker, a converged PocketBase hub and a real vault; and the fixture half was reachable only through
-# tests/beszel_telemetry_probe_test.rb. A contract that passes says nothing
-# about which of its assertions still bite. All three are files now, so each
-# assertion can be moved on its own.
-#
-# Seven layers, because the contract has seven kinds of property:
-#
-#   Static -- build a fixture repository from the twenty files the static
-#   program reads, break exactly one thing in it, and require the program to
-#   name that thing. The assertion text is the interface: a guard that fails for
-#   the wrong reason has stopped guarding what it names, so every row pins the
-#   exact diagnostic.
-#
-#   Fixtures -- the telemetry-fixtures program, driven with recorded
-#   system/system_stats/container_stats triples. Its own semantics already have
-#   tests/beszel_telemetry_probe_test.rb; what is new here is the program's
-#   argument contract and the fact that it needs no vault environment at all.
-#
-#   Runtime -- Beszel's own PocketBase API served from an HTTP fixture that also
-#   delivers the test notification to the program's recorder, with
-#   `ansible-vault` stubbed on PATH, driving every mode the program dispatches. None of this had any test at all before the cut.
-#
-#   Wrapper -- tests/contracts/beszel.sh is what turns a mode into an
-#   invocation. Its rows prove the mode guard, the three-argument requirement of
-#   telemetry-fixtures, and the three ${VAR:?} requirements the runtime half
-#   depends on.
-#
-#   Self-read -- the static half reads the wrapper's own text for one sentinel.
-#   Its subject did NOT move (it is the export pair, which stayed in the
-#   wrapper), so the guard is not repointed -- but it is planted, because
-#   "unchanged" and "still biting" are different claims.
-#
-#   Stdin -- three probes, one per invocation, because two of the three are
-#   reached through `exec` and no single row can cover them.
-#
-#   Two roots, and runtime program root -- beszel has THREE sites where the
-#   inspected tree is read, one of them past an `exec` and one of them a `-r`
-#   preload path, which is a site class no earlier extraction in #147 has had.
-#   The runtime_program_root layer exists because #310 found that pointing the
-#   inspected tree at the contract copy makes both roots one directory *inside
-#   the test built to catch that hazard*, which reported a rerooted-program
-#   plant as ACCEPTED.
-#
-# Run with --self-test to plant a regression in each program and in the wrapper
-# and prove the rows above detect it. It accumulates its mismatches rather than
-# aborting on the first.
+# Behaviour of the Beszel service contract's three Ruby programs (static, telemetry
+# fixtures, runtime) and of tests/contracts/beszel.sh, layer by layer. Each row pins the
+# exact diagnostic. --self-test plants a regression per guard and proves a row detects it.
 
 require "fileutils"
 require "json"
@@ -86,22 +36,8 @@ RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "beszel-runtime.rb")
 
 STATIC_SUCCESS = "Beszel static contract passed"
 
-# Exactly what the static program reads. tests/contracts/beszel.sh is on the
-# list and has to be: the static half reads its own wrapper's text
-# UNCONDITIONALLY, unlike library/beszel_telemetry_probe.py and
-# module_utils/beszel_telemetry.py, which sit behind File.file? ternaries. So
-# komga's "an inspected tree with no tests/contracts at all" row is impossible
-# here, and the two-roots layer states the beszel-shaped version instead: a tree
-# that has the wrapper but none of the three programs.
-#
-# The role's stage files are all listed because roles/beszel/tasks/main.yml is
-# an index of static imports and PolicySupport.static_role_tasks splices them in
-# where they stand.
-#
-# tests/http_fixture_support.rb is on the list for the same reason
-# tests/policy_support.rb is: since #450 the static half requires it from the
-# inspected tree for TASK_REFUSAL_PREFIX, the prefix half of the drift hook's
-# refusal anchor.
+# Exactly what the static program reads. The wrapper is listed because the static
+# half reads its own text unconditionally.
 FIXTURE_FILES = %w[
   roles/beszel/defaults/main.yml
   roles/beszel/vars/main.yml
@@ -129,7 +65,6 @@ FIXTURE_FILES = %w[
   tests/contracts/beszel.sh
 ].freeze
 
-
 def build_fixture_repository(root, omit: [])
   FIXTURE_FILES.each do |relative|
     next if omit.include?(relative)
@@ -141,11 +76,8 @@ def build_fixture_repository(root, omit: [])
   root
 end
 
-# Every substitution states how many matches it expects. A replacement that
-# still contains its own pattern plants nothing, and a bare `sub` cannot tell
-# that from a plant that worked: the row then reports a pass, or a failure with
-# the wrong diagnostic. Three of the counts below are not 1 and were wrong on
-# the first guess.
+# Every substitution states its expected match count: a bare `sub` cannot tell a
+# replacement that planted nothing from one that worked.
 def mutate_text(root, relative, pattern, replacement, occurrences: 1)
   path = File.join(root, relative)
   body = File.read(path)
@@ -167,13 +99,8 @@ end
 # Static layer
 # ---------------------------------------------------------------------------
 
-# The drift hook's refusal anchor, as the rows below have to spell it to plant
-# against it. The diagnostic is written out because it is the sentence whose
-# agreement is under test and there is nowhere else to read it from that the
-# static half does not read too; the prefix comes from the constant that states
-# it, so an ansible-core release that rephrases it moves one literal rather than
-# three. mutate_text raises when a pattern stops matching, so a reworded guard
-# fails these rows loudly instead of planting nothing.
+# The drift hook's refusal anchor; the prefix comes from TASK_REFUSAL_PREFIX so an
+# ansible-core rewording moves one literal.
 GUARD_DIAGNOSTIC = "Managed application user is absent or differs from the verified admin contract."
 DRIFT_ANCHOR = "#{HttpFixtureSupport::TASK_REFUSAL_PREFIX}#{GUARD_DIAGNOSTIC}".freeze
 DRIFT_ANCHOR_DIAGNOSTIC =
@@ -190,11 +117,7 @@ STATIC_ROWS = [
     },
     expects: "hub must join default and the external alert-relay bridge"
   },
-  # The resolved-root sentinel is NOT a row here. It reads the wrapper's own
-  # text, so it belongs to the self-read layer below, where the plant is made in
-  # the wrapper and the judge is the static program -- the only arrangement that
-  # can tell "the guard still bites" from "the wrapper still happens to satisfy
-  # it".
+  # The resolved-root sentinel lives in the self-read layer: its plant is in the wrapper.
   {
     name: "defaults that infer platform telemetry instead of requiring it",
     break: lambda { |root|
@@ -300,10 +223,7 @@ STATIC_ROWS = [
     expects: "Beszel's APP_URL and the relay's BESZEL_LINK_BASE are not both beszel_app_url"
   },
   {
-    # Scoped to the one variable rather than to the whole file, which is what
-    # the program's own comment says it is doing: the inference is planted with
-    # different spacing from the retired original, so a literal-expression
-    # comparison would miss it.
+    # Planted with different spacing, so a literal-expression comparison would miss it.
     name: "effective categories inferred from the GPU input again",
     break: lambda { |root|
       mutate_text(root, "roles/beszel/vars/main.yml",
@@ -343,9 +263,7 @@ STATIC_ROWS = [
     expects: "telemetry polling must not use derived retry arithmetic"
   }
 ].concat(
-  # Every one of the five typed telemetry inputs, because the loop that checks
-  # them names each by its own variable and a single row would leave four
-  # unproven.
+  # All five typed inputs: the check loop names each by its own variable.
   {
     "beszel_required_telemetry_categories" => %w[list str],
     "beszel_require_gpu_telemetry" => %w[bool str],
@@ -364,9 +282,7 @@ STATIC_ROWS = [
     }
   end
 ).concat(
-  # The five required task names, each planted by renaming the task rather than
-  # deleting it: a name that survives only in a comment is exactly the case the
-  # program's own comment says the parsed read exists to catch.
+  # Renamed rather than deleted: a name surviving only in a comment must not count.
   {
     "Require the selected Beszel telemetry capability" => "roles/beszel/tasks/deploy.yml",
     "Poll persisted Beszel telemetry collections" => "roles/beszel/tasks/configure.yml",
@@ -448,17 +364,12 @@ STATIC_ROWS = [
     expects: "role treats live health as persisted telemetry"
   },
   {
-    # The other half of that guard: the probe still registers its result, but
-    # nothing consumes the evidence. Naming the variable somewhere in the file
-    # proved nothing about whether a later task read it.
+    # The probe registers its result but nothing consumes it.
     name: "probe evidence that no task consumes",
     break: lambda { |root|
       mutate_text(root, "roles/beszel/tasks/configure.yml",
                   "beszel_telemetry_probe_result.evidence.", "beszel_unread_evidence.",
-                  # Five since #658 gave the evidence a transient_failures count
-                  # and the role a fact for it. Stated rather than derived, so
-                  # a reading that stops landing is an edit here rather than a
-                  # mutation that plants less than it says it does.
+                  # Stated count: a reading that stops landing is an edit here.
                   occurrences: 5)
     },
     expects: "role treats live health as persisted telemetry"
@@ -473,12 +384,8 @@ STATIC_ROWS = [
     expects: "NAS Intel agent image differs"
   },
   {
-    # A device that is present but not the platform's, rather than an absent
-    # one. Deleting the key raises Errno-free but diagnostic-free: the program's
-    # `intel.fetch("devices")` has no default, so an agent with no devices at
-    # all arrives as a bare KeyError instead of the sentence. That is
-    # pre-existing and stays unpinned -- there is no sentence to assert -- and
-    # this row proves the comparison itself.
+    # Present but not the platform's device. Deleting the key instead is a bare
+    # KeyError with no sentence to assert, so it stays unpinned.
     name: "an Intel agent bound to some other render device",
     break: lambda { |root|
       mutate_yaml(root, "services/beszel/compose.yml") do |document|
@@ -500,10 +407,8 @@ STATIC_ROWS = [
     expects: "NAS Intel render device differs"
   },
   {
-    # A disk declared on the host with no Compose slot is the silent drop the
-    # slot design exists to refuse. Deleted from Compose rather than added to
-    # inventory: a longer inventory list also trips the slot guard check below,
-    # which would leave this row unable to prove the slot check on its own.
+    # Deleted from Compose rather than added to inventory: a longer inventory list
+    # would also trip the slot guard and hide this check.
     name: "an inventory SATA disk with no Compose slot",
     break: lambda { |root|
       mutate_yaml(root, "services/beszel/compose.yml") do |document|
@@ -655,12 +560,8 @@ STATIC_ROWS = [
     },
     expects: "Mac drift hook does not execute category rejection semantics"
   },
-  # The drift hook's refusal anchor, from both ends. The static half derives it
-  # rather than transcribing it -- the guard's fail_msg out of the role, the
-  # prefix out of HttpFixtureSupport -- so the rows have to break each end
-  # separately: a row that only deletes the grep would be satisfied by a check
-  # that hardcoded the sentence, and a row that only rewords the fail_msg would
-  # be satisfied by a check that read the role and ignored the hook.
+  # The static half derives the anchor from the role's fail_msg and the prefix, so
+  # each end is broken separately.
   {
     name: "a Mac drift hook with no refusal anchor",
     break: lambda { |root|
@@ -758,23 +659,9 @@ def static_failures(program = STATIC_PROGRAM, rows = STATIC_ROWS)
   failures
 end
 
-# The existence sweep is not a sweep: the static program reads its twenty-one
-# files with no [ -f ] preflight and no File.file? guard on nineteen of them, so
-# a missing file arrives as an Errno::ENOENT or a LoadError rather than as a
-# named diagnostic. That is pre-existing and stays unpinned -- there is no
-# sentence to assert -- but which files are load-bearing at all is worth
-# asserting, so this layer states only that removing each of them is noticed.
-#
-# The four that are NOT noticed are named rather than hidden: three role stage
-# files whose absence static_role_tasks tolerates (superuser, managed_users,
-# alert) and tests/contracts/support/beszel_telemetry.rb, which the static half
-# never reads. Measured, not reasoned about.
-#
-# application_user.yml left this list in #450: the static half now reads the
-# fail_msg of "Verify the managed application user contract" out of that stage
-# to check the drift hook anchors on it, so removing the stage takes the
-# diagnostic with it and the contract refuses by name rather than tolerating the
-# absence.
+# The static program reads these with no File.file? guard, so a missing one is an
+# ENOENT/LoadError, not a diagnostic; this layer only asserts removal is noticed.
+# Measured exceptions: three stage files static_role_tasks tolerates, and the support lib.
 UNREAD_BY_STATIC = %w[
   roles/beszel/tasks/superuser.yml
   roles/beszel/tasks/managed_users.yml
@@ -829,9 +716,7 @@ def telemetry_fixture
   }
 end
 
-# The fixture program is its own diagnostic family: it aborts under "Beszel
-# telemetry fixture failed: ", not under the contract's prefix, so its rows are
-# judged against that rather than against DIAGNOSTIC_PREFIX.
+# The fixture program aborts under its own prefix, not DIAGNOSTIC_PREFIX.
 FIXTURES_DIAGNOSTIC_PREFIX = "Beszel telemetry fixture failed: "
 
 FIXTURES_ROWS = [
@@ -867,9 +752,7 @@ FIXTURES_ROWS = [
     expects: "categories=core,disk,containers",
     refuses_to_leak: "beszel-contract-sensitive-token"
   },
-  # The one refusal the fixture program does not author: a missing clock reaches
-  # Hash#fetch and raises. It is asked for as a crash rather than as a
-  # diagnostic, because a diagnostic prefix is exactly what it does not carry.
+  # A missing clock raises from Hash#fetch, so it is asked for as a crash.
   { name: "a fixture with no recorded clock", platform: "mac",
     mutate: ->(data) { data.delete("now") },
     expects: nil, expects_crash: 'key not found: "now"' }
@@ -885,9 +768,8 @@ def fixtures_failures(program = FIXTURES_PROGRAM, rows = FIXTURES_ROWS)
       row.fetch(:mutate).call(payload)
       path = File.join(sandbox, "fixture.json")
       File.write(path, JSON.generate(payload), mode: "w", perm: 0o600)
-      # No vault environment, deliberately: tests/contracts/beszel.sh reaches
-      # this program before its three ${VAR:?} requirements, and the whole of
-      # tests/beszel_telemetry_probe_test.rb depends on that staying true.
+      # No vault environment: the wrapper reaches this program before its ${VAR:?}
+      # checks, and tests/beszel_telemetry_probe_test.rb depends on that.
       stdout, stderr, status = Open3.capture3(
         { "PATH" => ENV.fetch("PATH") },
         RbConfig.ruby, "-rjson",
@@ -914,19 +796,9 @@ end
 # Runtime layer
 # ---------------------------------------------------------------------------
 #
-# Beszel's own PocketBase API, modelled closely enough that every mode the
-# runtime program dispatches reaches its own sentence. One HTTP fixture: the
-# notification proof's other end is a recorder inside the program itself, and
-# this hub delivers to it the way the real one does.
-#
-# Two webhook shapes, and they are not the same value. The *managed* webhook --
-# the one roles/beszel converges and the verify and drift modes compare against
-# -- is Pushover, built from the vault pair and never delivered through here.
-# The *notification proof* sends a shoutrrr generic URL of its own, because a
-# proof that ended at a real Pushover account cannot run in a test lane; what it
-# demonstrates is the hub's shoutrrr dispatch working end to end, not that the
-# stored Pushover URL is deliverable. The runtime program says the same thing
-# beside each of the two.
+# Beszel's PocketBase API as one HTTP fixture. The *managed* webhook (Pushover via the
+# relay) is compared, never delivered; the notification proof sends its own shoutrrr
+# generic URL, proving hub dispatch, not that the stored URL is deliverable.
 
 SUPER_EMAIL = "beszel-super@example.invalid"
 SUPER_PASSWORD = "beszel-contract-superuser-password"
@@ -934,9 +806,8 @@ APP_EMAIL = "beszel-app@example.invalid"
 APP_PASSWORD = "beszel-contract-app-password"
 UNIVERSAL_TOKEN = "33333333-3333-4333-a333-333333333333"
 PUSHOVER_TOKEN = "beszel-contract-pushover-token"
-# Not the 64-hex shape a real relay token has, on purpose: the space, `+`, `=`,
-# `&` and `%` are what the URL encoding has to get right, and the literal below
-# is what Ansible's urlencode rendered for them, not what this file computes.
+# Deliberately not hex: exercises URL encoding; the literal below is what Ansible's
+# urlencode rendered for it.
 RELAY_TOKEN = "relay+tok/en=a&b%c"
 PUSHOVER_USER_KEY = "beszel-contract-pushover-user-key"
 ADMIN_TOKEN = "beszel-contract-admin-token"
@@ -948,18 +819,13 @@ CALLBACK_HOST = "beszel-callback.example.invalid"
 DRIFT_TOKEN = "11111111-1111-4111-a111-111111111111"
 DRIFT_WEBHOOK =
   "https://sentinel-user:sentinel-password@example.invalid/hook?api_key=sentinel-query-key"
-# A pin, not a derivation, and on purpose. The runtime half reads beszel_alerts
-# out of the inspected tree, so if this fixture read it too, a threshold moved in
-# the defaults would move both sides at once and every row would still pass.
-# alert_pin_failures holds this literal against the defaults instead.
+# Pinned, not derived: reading beszel_alerts here too would move both sides at once.
+# alert_pin_failures holds this literal against the defaults.
 MANAGED_ALERTS = { "Status" => [0, 0], "CPU" => [90, 10],
                    "Memory" => [90, 10], "Disk" => [85, 10],
                    "Temperature" => [88, 15] }.freeze
 
-# Compared over the union of both sides' names rather than by walking the pin.
-# If an alert is deleted from the defaults, the runtime half checks one alert
-# fewer, and the extra one this fixture still serves is never looked at. Walking
-# the pin would report no failure there either, so the deletion would pass.
+# Compared over the union of names: walking the pin would miss a deleted alert.
 def alert_pin_failures(root = ROOT)
   declared = YAML.safe_load_file(File.join(root, "roles/beszel/defaults/main.yml"))
                  .fetch("beszel_alerts")
@@ -985,26 +851,15 @@ VAULT = {
   "vault_dozzle_alert_relay_token" => RELAY_TOKEN
 }.freeze
 
-# What roles/beszel stores, and what the verify and drift modes compare the
-# stored value against. The port is inventory/group_vars/all/service_dozzle.yml's.
-# The header is the bytes Ansible rendered for RELAY_TOKEN, measured rather than
-# derived, so the runtime program's encoder is judged against Jinja, not itself.
+# The header is the bytes Ansible rendered for RELAY_TOKEN, so the program's encoder
+# is judged against Jinja, not itself.
 def expected_webhook(header = "Bearer%20relay%2Btok/en%3Da%26b%25c")
   "generic://alert-relay:8081/beszel?disabletls=yes&template=json&@Authorization=#{header}"
 end
 
-# What the hub does with the URL the notification proof sends instead, which is
-# a different question -- see the two-shapes paragraph above. Modelled on Beszel
-# 0.19.0's SendShoutrrrAlert and the generic service of the shoutrrr v0.19.0 it
-# vendors, as far as a program can get the URL wrong: any scheme but `generic`
-# is not this service, a missing `disabletls` sends https to a plain listener,
-# and only CALLBACK_HOST resolves -- standing in for the address a container
-# reaches the Docker host on -- so a URL naming loopback or any other host
-# fails the dial rather than reaching the recorder by accident. The port and
-# path are used as given. Each failure comes back as the string a real hub puts
-# in `err`; nil is a delivery. It runs on the fixture's one serving thread, which
-# is what a real hub does too (it sends before it answers); the two-second
-# timeouts are what bound a recorder that never answers.
+# Modelled on Beszel 0.19.0's SendShoutrrrAlert / shoutrrr generic: only `generic`,
+# `disabletls` and CALLBACK_HOST reach the recorder; failures return the hub's `err`
+# string, nil is a delivery. Two-second timeouts bound a recorder that never answers.
 def deliver_test_notification(url, state)
   uri = URI(url.to_s)
   return "unknown service" unless uri.scheme == "generic"
@@ -1012,11 +867,8 @@ def deliver_test_notification(url, state)
     %w[true 1 yes y].include?(URI.decode_www_form(uri.query.to_s).to_h["disabletls"].to_s.downcase)
   return "dial tcp: lookup #{uri.host}: no such host" unless uri.host == CALLBACK_HOST
 
-  # Measured against a real 0.19.0 hub: with template=json the body is exactly
-  # {"message","title"} as application/json, the message being Beszel's text
-  # with its app URL appended, and every @key query parameter becomes a header
-  # with its percent-encoding undone. Without a template the title is prepended
-  # to a text/plain body instead.
+  # Measured on a real 0.19.0 hub: template=json sends {message,title} as JSON and
+  # @key query params become decoded headers; without a template, text/plain.
   params = URI.decode_www_form(uri.query.to_s)
   headers = params.select { |key, _value| key.start_with?("@") }
                   .to_h { |key, value| [key.delete_prefix("@"), value] }
@@ -1072,10 +924,8 @@ def telemetry_records(state, collection)
   end
 end
 
-# The filter language PocketBase is handed here is exactly what the runtime
-# program builds: `field = <json>` clauses joined with " && ". Evaluated rather
-# than pattern-matched, so a row cannot pass by accident on a filter the program
-# never sent.
+# Evaluates the `field = <json>` && filter the program sends, so a row cannot pass on
+# a filter it never sent.
 def matches_filter?(record, filter)
   return true if filter.nil? || filter.empty?
 
@@ -1272,9 +1122,7 @@ RUNTIME_ROWS = [
     state: { webhooks: [expected_webhook("Bearer relay+tok/en=a&b%c")] },
     expects: "managed relay webhook differs" },
   {
-    # PocketBase returns a relation's JSON column as a string on some routes and
-    # as an object on others. The program handles both; this row is the string
-    # branch, and the default rows are the object branch.
+    # PocketBase returns a JSON column as a string on some routes; this is that branch.
     name: "settings served as a JSON string rather than an object", mode: "verify",
     settings_as_string: true, expects: nil
   },
@@ -1288,10 +1136,8 @@ RUNTIME_ROWS = [
   { name: "a managed alert that is absent", mode: "verify",
     alerts: -> { converged_state.fetch(:alerts).reject { |a| a.fetch("name") == "Memory" } },
     expects: "managed Memory alert is absent" },
-  # The hub still serves the pin; only the inspected tree's defaults declare one
-  # alert more. A runtime half with its own hand copy of the alerts accepts this.
-  # It appends rather than editing a named entry so that a defaults edit deleting
-  # that entry cannot crash this row ahead of the alert pin's own diagnostic.
+  # Defaults declare one alert more than the hub serves; appended so a deleted entry
+  # cannot crash this row ahead of the pin's own diagnostic.
   { name: "an alert the inspected defaults added", mode: "verify",
     inspected_defaults: lambda { |document|
       document.fetch("beszel_alerts") << { "name" => "Bandwidth", "value" => 100, "min" => 10 }
@@ -1314,16 +1160,8 @@ RUNTIME_ROWS = [
     state: { telemetry_status: 404 },
     expects: "telemetry request returned HTTP 404" },
   {
-    # The only place the persisted-telemetry deadline is reached from the
-    # runtime half: a fixture that serves no system_stats record can never
-    # satisfy the poll, so the poll runs to its budget and then refuses.
-    #
-    # What this row asserts is that it terminates and names the categories --
-    # never the budget's value, which it would pass just as happily at thirty
-    # seconds. At the program's default of ninety, and delay_seconds of three,
-    # that was thirty sleeps and about ninety seconds of pure wait, and it was
-    # the floor of BOTH gate checks that run this file (#485). Six seconds is
-    # two passes through the same sleep path and the same refusal.
+    # Never-ready telemetry: asserts termination and the sentence, not the budget, which
+    # is shortened via env so this row stops being the gate's floor (#485).
     name: "persisted telemetry that never becomes ready", mode: "verify",
     state: { system_stats: [] },
     env: { "PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS" => "6" },
@@ -1331,10 +1169,7 @@ RUNTIME_ROWS = [
   },
   { name: "a converged Mac platform, whose policy requires no GPU sample",
     mode: "verify", state: { platform_kind: "mac" }, expects: nil },
-  # The integration lane asks the socket proxy's loopback port for a Docker API
-  # ping (#829). The first row is the answer a published proxy gives; the other
-  # two are a port nothing listens on -- what an unpublished proxy leaves -- and
-  # a listener that is not the Docker API.
+  # Socket proxy loopback ping (#829): answering, nothing listening, and not Docker.
   { name: "a converged integration platform whose socket proxy answers on loopback",
     mode: "verify", state: { platform_kind: "integration" }, expects: nil },
   { name: "an integration platform whose socket proxy port is not published",
@@ -1468,9 +1303,7 @@ RUNTIME_ROWS = [
         state.fetch(:systems).length == 1
     } },
   # --- notify ------------------------------------------------------------
-  # The delivering hub is what judges the URL: deliver_test_notification refuses
-  # a wrong scheme, a missing plain-http selection or a host other than the
-  # callback, and a wrong port refuses the connection. Each lands in `err`.
+  # The delivering hub judges the URL; each refusal lands in `err`.
   { name: "the notification proof against a delivering hub", mode: "notify",
     expects: nil },
   { name: "an application identity the vault does not hold", mode: "notify",
@@ -1483,13 +1316,8 @@ RUNTIME_ROWS = [
     state: { notification_body: "not json at all" },
     expects: "returned malformed JSON" },
   {
-    # The recorder poll itself: the hub reports success but nothing arrives, so
-    # the loop runs to its deadline and refuses. Like the telemetry row above,
-    # what is asserted is termination and the sentence, not the number: the
-    # program's default of fifteen seconds is the deployment's delivery budget
-    # and stays the default. Four seconds is four passes through the same
-    # one-second sleep and the same refusal, and it keeps this row from becoming
-    # the floor the telemetry row stopped being (#485).
+    # Hub reports success but nothing arrives: asserts termination, with a shortened
+    # deadline so this row does not become the gate's floor (#485).
     name: "a notification that never reaches the recorder", mode: "notify",
     state: { notification_never_delivers: true },
     env: { "PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS" => "4" },
@@ -1512,8 +1340,7 @@ RUNTIME_ROWS = [
     expects: "Beszel test notification did not reach the contract's recorder"
   },
   {
-    # And one that is not exactly the two-key envelope, which the relay refuses
-    # with 400.
+    # Not the exact two-key envelope: the relay refuses it with 400.
     name: "a delivery that is not the relay's two-key JSON envelope", mode: "notify",
     state: { delivered_extra_key: true },
     env: { "PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS" => "4" },
@@ -1530,9 +1357,7 @@ def prepare_state(row)
   state
 end
 
-# Fills in everything that cannot be known until the hub's loopback port is
-# bound: the managed webhook URL, and the telemetry status override the
-# responder reads.
+# Fills in what needs the hub's bound port.
 def finalize_state(state)
   row = state.fetch(:row)
   webhooks = state.fetch(:webhooks, nil) || [expected_webhook]
@@ -1567,19 +1392,12 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
           collected << "#{label}: the wrong-owner install this row builds on failed: " \
                        "#{err.strip}" unless seeded.success?
         end
-        # Only the judged invocation takes the row's environment. The two
-        # pre-runs above install a fixture rather than being measured, and
-        # neither reaches a deadline, so widening the override to them would
-        # claim a property no row asserts.
+        # Only the judged run takes the row's env; the pre-runs just install a fixture.
         stdout, stderr, status = run_runtime(program, row.fetch(:mode), state, paths,
                                              extra_env: row.fetch(:env, {}))
         collected.concat(judge(label, row.fetch(:expects), stdout, stderr, status,
                                prefix: DIAGNOSTIC_PREFIX))
-        # Every credential this fixture holds, checked against every byte the
-        # program printed. Beszel's data directory is secret-bearing and the
-        # program decrypts a vault in memory; a diagnostic that echoed one
-        # would be a leak, and the program's own scrub of the decrypted YAML
-        # is what keeps that from happening.
+        # No credential may reach any output: the program decrypts a vault in memory.
         output = stdout + stderr
         [SUPER_PASSWORD, APP_PASSWORD, UNIVERSAL_TOKEN,
          PUSHOVER_TOKEN, PUSHOVER_USER_KEY, RELAY_TOKEN].each do |secret|
@@ -1597,36 +1415,9 @@ end
 # Budget layer
 # ---------------------------------------------------------------------------
 #
-# The two waits the runtime program can spend are environment inputs defaulted
-# to the deployment's own numbers, and the two rows above that must reach a
-# deadline's refusal override them. Ninety of those seconds used to be the floor
-# of BOTH gate checks that run this file -- 86s and 85s of pure wait by
-# tests/validate-policy.sh's own measurement -- so what this layer protects is
-# 170-odd seconds of the static gate (#485).
-#
-# It exists because that arrangement reverts silently in four directions and no
-# row above can notice any of them: a row loses its `env:`, a name is misspelt
-# on one side, a deadline stops reading its constant, or a default is "cleaned
-# up" to a shorter number. All four leave every assertion in this file passing,
-# because none of them ever asserted a budget's VALUE -- both rows assert that
-# the loop terminates and names its refusal, which they would do just as
-# happily at thirty seconds. The only thing that moves is the gate's wall time,
-# and nothing in the repository watches that. So the pair is pinned from both
-# ends at once, the program's text and the rows' overrides, and each budget's
-# whole clause is pinned rather than its constant's name: a pin matching
-# TELEMETRY_POLL_TIMEOUT_SECONDS alone passes on a line that no longer defaults
-# to ninety.
-#
-# The retired literal is a negated conjunct for the reason tests/policy_test.rb
-# gives for its own: folding the constant back into the deadline site leaves the
-# constant defined above it, so the positive half alone stays satisfied.
-#
-# `ceiling` is what makes the row half a pin on the WAIT rather than on the
-# spelling. Requiring only that some row names the budget leaves the cheapest
-# revert of all still silent -- someone chasing a row that looked flaky under
-# load edits the 6 back to 90, the name is still overridden, both sweeps below
-# stay empty and ninety seconds returns. A ceiling makes needing a longer budget
-# a deliberate edit to this hash instead.
+# The runtime program's two waits default to deployment values; the deadline rows
+# override them, saving ~170s of gate wall time (#485). No other row asserts a budget
+# value, so this pins both ends, and `ceiling` catches an override edited back to 90.
 BUDGETS = {
   "PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS" => {
     default: "90",
@@ -1644,8 +1435,7 @@ BUDGETS = {
 
 def budget_failures(runtime_source: File.read(RUNTIME_PROGRAM), rows: RUNTIME_ROWS)
   failures = []
-  # A floor rather than non-emptiness. Everything below is a sweep of this hash
-  # against that list, and both sweeps are satisfied vacuously by an empty hash.
+  # A floor: both sweeps below pass vacuously on an empty hash.
   failures << "budgets: the budget set has shrunk to #{BUDGETS.length}; a wait was " \
               "dropped from the pin rather than from the program" if BUDGETS.length < 2
   BUDGETS.each do |name, budget|
@@ -1690,9 +1480,8 @@ end
 # Wrapper layer
 # ---------------------------------------------------------------------------
 #
-# tests/contracts/beszel.sh resolves all three programs from its own checkout
-# rather than from the tree it inspects, so a copy of the four files into a
-# throwaway tests/contracts/ is a whole working contract.
+# The wrapper resolves all three programs from its own checkout, so copying the four
+# files into a throwaway tests/contracts/ is a whole working contract.
 
 def with_contract_copy(static: File.read(STATIC_PROGRAM),
                        fixtures: File.read(FIXTURES_PROGRAM),
@@ -1725,20 +1514,8 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
       failures << "wrapper: static mode passed against a broken repository" if status.success?
     end
 
-    # Every mode the guard rejects, and every mode it accepts. `verify` is the
-    # default, so a bare invocation is a run-mode invocation and must reach the
-    # runtime half's environment requirements rather than the static success
-    # line.
-    #
-    # The two halves are told apart by EFFECT, not by exit code, and that is a
-    # correction rather than a preference. The mode guard's `exit 2` belongs to
-    # the script, but a ${VAR:?} refusal's status belongs to the shell: bash
-    # exits 1 and **dash exits 2**. An exit-code test therefore reports all
-    # seven dispatched modes as guard-rejected the moment beszel.sh runs under
-    # /bin/dash -- which is exactly what happened the first time this file was
-    # run that way, seven rows red against a wrapper that was fine. The guard is
-    # recognised by its silence instead, and reaching the runtime half by the
-    # variable name in the shell's own refusal, whose wording is never asserted.
+    # Told apart by effect, not exit code: a ${VAR:?} refusal exits 1 under bash but
+    # 2 under dash, the same as the guard. The guard is recognised by its silence.
     %w[bogus --help static-x telemetry_fixtures].each do |mode|
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => copy_root }, contract, mode
@@ -1760,11 +1537,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
         output.include?("PLATFORM_CONTRACT_VAULT_FILE: parameter")
     end
 
-    # telemetry-fixtures takes exactly two arguments after the mode. Its guard
-    # is `[ "$#" -eq 3 ] || exit 2`, and that 2 is the SCRIPT's own status, not
-    # a shell's, so it is safe to assert -- unlike the ${VAR:?} statuses above.
-    # Silence is asserted alongside it, because a nonzero exit that printed
-    # something reached the program.
+    # That 2 is the script's own status, so it is safe to assert; silence too.
     [[], %w[mac], %w[mac a b]].each do |extra|
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => copy_root },
@@ -1777,9 +1550,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
         (stdout + stderr).strip.empty?
     end
 
-    # The three run-mode environment names. The wording of a ${VAR:?} refusal
-    # belongs to the shell -- bash says "parameter null or not set", dash says
-    # "parameter not set or null" -- so only the portable prefix is asserted.
+    # ${VAR:?} wording differs between bash and dash; only the prefix is asserted.
     complete = {
       "PLATFORM_CONTRACT_VAULT_FILE" => File.join(copy_root, "vault.yml"),
       "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(copy_root, "password"),
@@ -1801,9 +1572,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
       end
     end
 
-    # Static mode must not reach the runtime environment contract at all: it
-    # exits 0 before line 46, which is why the Mac verify hook can run it with
-    # no vault.
+    # Static exits before the runtime env checks, so the Mac hook runs it with no vault.
     stdout, _err, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => copy_root,
         "PLATFORM_CONTRACT_VAULT_FILE" => nil, "PLATFORM_REPORT_ROOT" => nil },
@@ -1812,15 +1581,8 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     failures << "wrapper: static mode required the runtime environment" unless
       status.success? && stdout.include?(STATIC_SUCCESS)
 
-    # telemetry-fixtures end to end THROUGH the wrapper, and the only place the
-    # fixtures invocation's own shape is exercised: both -r preloads, "$2" "$3"
-    # rather than "$@", and the `exec` sitting ahead of the three ${VAR:?}
-    # guards. The fixtures layer above builds its own invocation, so it is blind
-    # to a wrapper that dropped a preload -- which is how a load-bearing
-    # -ryaml sat unplanted until the wrapper was measured rather than read.
-    # Every vault name is explicitly unset here: reaching this mode with none of
-    # them is the property tests/beszel_telemetry_probe_test.rb's sixty-odd
-    # cases rest on.
+    # The only place the wrapper's own fixtures invocation (-r preloads, "$2" "$3", exec
+    # ahead of ${VAR:?}) is exercised. Every vault name is unset on purpose.
     fixture_path = File.join(copy_root, "beszel-contract-fixture.json")
     File.write(fixture_path, JSON.generate(telemetry_fixture), mode: "w", perm: 0o600)
     stdout, stderr, status = Open3.capture3(
@@ -1836,11 +1598,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
       stdout.include?("Beszel telemetry fixture passed (mac)")
   end
 
-  # The branch every deployment actually takes. Neither tests/integration.sh nor
-  # run_contracts.rb --execute sets PLATFORM_CONTRACT_REPO_DIR, so the default
-  # is the only path in production -- and it is the one where resolving all
-  # three programs from the script's own checkout is load-bearing rather than
-  # shadowed.
+  # The production path: nothing sets PLATFORM_CONTRACT_REPO_DIR there.
   with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => nil }, contract, "static"
@@ -1862,13 +1620,8 @@ end
 
 # --- the one self-read guard -----------------------------------------------
 #
-# beszel's static half reads tests/contracts/beszel.sh for one sentinel: the
-# resolved-root export. Unlike komga's three and jellyfin's, its subject did NOT
-# move -- the export pair stayed in the wrapper, so the guard needed no repoint.
-# It still gets a plant, because "not repointed" and "still biting" are
-# different claims, and because the literal occurs TWICE (the second export pair
-# is redundant and transcribed verbatim), which is exactly the shape an unscoped
-# substitution mis-plants.
+# The static half greps the wrapper for the resolved-root export. The literal occurs
+# twice, which is the shape an unscoped substitution mis-plants.
 SELF_READ_ROWS = [
   {
     name: "a wrapper that stopped exporting its resolved repository root",
@@ -1878,11 +1631,7 @@ SELF_READ_ROWS = [
     expects: "runtime contract does not export its resolved repository root"
   },
   {
-    # The half a whole-pair deletion cannot reach: one pair survives, so the
-    # variable is still exported and the program still runs -- but the adjacent
-    # literal the sentinel matches is broken. This is the row that says the
-    # guard matches an assignment IMMEDIATELY followed by its export rather than
-    # the two tokens anywhere in the file.
+    # One pair survives: proves the guard matches assignment immediately followed by export.
     name: "an export separated from the assignment it exports",
     from: "PLATFORM_CONTRACT_REPO_DIR=$repo_dir\nexport PLATFORM_CONTRACT_REPO_DIR\n" \
           "PLATFORM_CONTRACT_REPO_DIR=$repo_dir\nexport PLATFORM_CONTRACT_REPO_DIR\n",
@@ -1896,9 +1645,7 @@ SELF_READ_ROWS = [
 def self_read_failures(wrapper_source: File.read(CONTRACT),
                        static_source: File.read(STATIC_PROGRAM))
   failures = []
-  # A floor rather than non-emptiness. The summary line derives its count from
-  # this list, so a list that shrank to nothing would report "all 0 self-read
-  # guards bite" and pass.
+  # A floor: an empty list would report "all 0 guards bite" and pass.
   failures << "self-read: the guard set has shrunk to #{SELF_READ_ROWS.length} row(s); " \
               "a guard was deleted without its property moving somewhere that can fail" if
     SELF_READ_ROWS.length < 2
@@ -1913,10 +1660,7 @@ def self_read_failures(wrapper_source: File.read(CONTRACT),
     planted = occurrences == 1 ? wrapper_source.sub(row.fetch(:from), row.fetch(:to))
                                : wrapper_source.gsub(row.fetch(:from), row.fetch(:to))
     with_contract_copy(wrapper: planted, static: static_source) do |contract, copy_root|
-      # PLATFORM_CONTRACT_REPO_DIR is set in the environment here, so the
-      # program still resolves the inspected tree even when the wrapper no
-      # longer exports it: the row measures the sentinel, not the export's
-      # side effect.
+      # PLATFORM_CONTRACT_REPO_DIR is set here, so the row measures the sentinel alone.
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => copy_root }, contract, "static"
       )
@@ -1929,16 +1673,10 @@ end
 
 # --- stdin -----------------------------------------------------------------
 #
-# Reports what the program saw on stdin and what the caller still has, which is
-# the only way the redirect is observable: no program reads stdin, so the
-# redirect is what keeps that true rather than something that changes an outcome
-# today. Three probes, because two of the three invocations are reached through
-# `exec` and no single row can cover them.
+# No program reads stdin, so the probes report what each saw. Three probes, because
+# two invocations are reached through `exec`.
 
-# The static probe must satisfy the wrapper's one self-read grep, or the
-# substituted program never runs -- except that the grep lives in the program
-# itself here, so a probe that replaces the program removes the grep with it.
-# Stated rather than assumed: this probe needs nothing.
+# The self-read grep lives in the program here, so a replacing probe needs nothing.
 def stdin_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   [[:static, %w[static], { static: STDIN_PROBE }],
@@ -1958,26 +1696,13 @@ end
 
 # --- two roots -------------------------------------------------------------
 #
-# Stated as outcomes rather than as the wrapper's text. Beszel has three sites
-# where the INSPECTED tree is read and one where the checkout must be:
-#
-#   1. all three program paths       -> the checkout
-#   2. beszel-static.rb's require of tests/policy_support.rb -> inspected tree
-#   3. the telemetry-fixtures -r preload path                -> inspected tree
-#   4. beszel-runtime.rb's require, past the exec             -> inspected tree
-#
-# Site 3 is a class no earlier extraction in #147 has had, and site 4 is the one
-# #310 found on kapowarr. Both rows are promoted from the before/after capture,
-# where they sit among the byte-identical scenarios and are therefore invisible
-# in a diff.
+# Program paths resolve from the checkout; beszel-static.rb's require, the fixtures -r
+# preload and beszel-runtime.rb's require (past the exec) resolve from the inspected tree.
 
 def two_roots_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   with_contract_copy(wrapper: wrapper_source) do |contract|
-    # Site 1, in the shape beszel can state it. komga's version -- an inspected
-    # tree with no tests/contracts at all -- is impossible here, because the
-    # static half reads its own wrapper's text unconditionally. So the tree keeps
-    # the wrapper and loses the three programs.
+    # The tree keeps the wrapper (read unconditionally) and loses the three programs.
     Dir.mktmpdir("nas-platform-beszel-tworoots.") do |raw|
       inspected = File.realpath(raw)
       build_fixture_repository(inspected)
@@ -2031,17 +1756,8 @@ end
 
 # --- runtime program root --------------------------------------------------
 #
-# Site 4, and the layer #310 had to invent. Its harness pointed
-# PLATFORM_CONTRACT_REPO_DIR at the contract copy, so both roots were one
-# directory *inside the test built to catch the two-roots hazard*, and a
-# rerooted-program plant was reported ACCEPTED. Here the inspected tree is a
-# separate fixture that keeps the wrapper but has no sibling programs at all,
-# so a rerooted program path cannot resolve and the plant fires.
-#
-# It asserts both directions at once: beszel-runtime.rb must require the shared
-# telemetry evaluator out of the inspected tree (which the raising copy proves),
-# and it must itself have come from the checkout (which the tree's lack of
-# programs proves).
+# The inspected tree is a separate fixture with no sibling programs, so a rerooted
+# program path cannot resolve (#310: a shared root once reported the plant ACCEPTED).
 
 def runtime_program_root_failures(wrapper_source: File.read(CONTRACT))
   failures = []
@@ -2080,10 +1796,7 @@ end
 # Planted regressions
 # ---------------------------------------------------------------------------
 
-# The self-read guard's own plant. It lives apart from STATIC_MUTATIONS because
-# its judge is self_read_failures, not static_failures: the plant is in the
-# static program, the fixture's break is in the wrapper, and only that pairing
-# distinguishes "the guard bites" from "the wrapper happens to satisfy it".
+# Judged by self_read_failures: the plant is in the program, the break in the wrapper.
 SELF_READ_MUTATIONS = [
   { label: "the resolved-root export sentinel",
     from: 'refuse("runtime contract does not export its resolved repository root") unless',
@@ -2138,10 +1851,7 @@ STATIC_MUTATIONS = [
     from: 'refuse("persisted telemetry poll must use one deadline-aware probe") unless probe_args.is_a?(Hash)',
     to: "nil unless probe_args.is_a?(Hash)",
     rows: ["a telemetry poll that is not one deadline-aware probe"],
-    # Cascade, recorded rather than tolerated: with the shape check gone the
-    # next two lines call probe_args&.key? on nil, so the authentication
-    # sentence refuses instead. Both sentences name a real property; this note
-    # is what records that the narrower one fires first today.
+    # Cascade: the authentication sentence fires first once the shape check is gone.
     detects: "refused for the wrong reason" },
   { label: "the probe authentication check",
     from: 'refuse("persisted telemetry probe is not authenticated") unless probe_args&.key?("auth_token")',
@@ -2222,18 +1932,12 @@ STATIC_MUTATIONS = [
     from: 'refuse("the managed application user guard is absent or ambiguous") unless app_user_guards.length == 1',
     to: "nil unless app_user_guards.length == 1",
     rows: ["a renamed managed application user guard"],
-    # Cascade, recorded rather than tolerated: with the existence sentence gone
-    # a renamed guard resolves to no task, the safe navigation in the next line
-    # leaves the diagnostic empty, and the empty-diagnostic sentence refuses
-    # instead. Both name a real property; this is what records which one fires.
+    # Cascade: the empty-diagnostic sentence fires first once this one is gone.
     detects: "refused for the wrong reason" },
   { label: "the guard diagnostic requirement",
     from: 'refuse("the managed application user guard states no diagnostic to anchor on") if guard_diagnostic.empty?',
     to: "nil if guard_diagnostic.empty?",
-    # Removing it is not a cascade into the anchor check below: an empty
-    # diagnostic leaves that check searching the hook for the bare refusal
-    # prefix, which the hook still carries, so the run passes and the row
-    # catches the acceptance.
+    # Not a cascade: the anchor check still finds the bare prefix, so the run passes.
     rows: ["a role guard that refuses without saying why"] },
   { label: "the guard censorship check",
     from: 'refuse("the managed application user guard censors the diagnostic the hook reads") if',
@@ -2250,9 +1954,7 @@ STATIC_MUTATIONS = [
            "a Mac drift hook whose refusal anchor survives only in a comment",
            "a role guard reworded without its hook"] },
   {
-    # Not a refusal but the read that makes every parsed assertion meaningful.
-    # A bare read of the role index selects none of the imported stages, so the
-    # five required-task rows would report a role the program never looked at.
+    # A bare read of the role index would select none of the imported stages.
     label: "the static import splice",
     from: "role_tasks = flatten_tasks(PolicySupport.static_role_tasks(role_path))",
     to: "role_tasks = flatten_tasks(YAML.safe_load_file(role_path))",
@@ -2266,10 +1968,7 @@ FIXTURES_MUTATIONS = [
     from: 'abort "Beszel telemetry fixture failed: unknown platform" unless %w[mac nas].include?(platform)',
     to: "nil unless %w[mac nas].include?(platform)",
     rows: ["a platform the contract does not support", "the empty platform"],
-    # Cascade: with the guard gone an unknown platform still fails, because
-    # required_categories("linux") is the base three and the fixture satisfies
-    # them -- so it PASSES for "linux" and the row catches it as accepted. The
-    # empty platform behaves the same way.
+    # Cascade: "linux" gets the base three and passes, so the row sees an acceptance.
     detects: "accepted what it must refuse" },
   { label: "the readiness refusal",
     from: 'abort "Beszel telemetry fixture failed: #{evidence.safe_failure}" unless evidence.ready?',
@@ -2301,9 +2000,6 @@ RUNTIME_MUTATIONS = [
     rows: ["an identity read that is not JSON"],
     detects: "refused for the wrong reason" },
   {
-    # Scoped by the line below it. It was one of two live copies of the same
-    # sentence until the text helper went with the topic readback it served, and
-    # the scope still costs nothing if a second copy ever returns.
     label: "the expected status check in the JSON helper",
     from: "fail_contract(\"\#{method.upcase} \#{uri.path} returned HTTP \#{response.code}\") unless expected.include?(response.code.to_i)\n" \
           "  response.body.to_s.empty?",
@@ -2432,10 +2128,7 @@ RUNTIME_MUTATIONS = [
     from: %(fail_contract("Beszel test notification did not reach the contract's recorder") if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline),
     to: "nil if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline",
     rows: [],
-    # Deliberately unplanted. Removing the deadline turns the recorder loop
-    # into an unbounded poll, so the row would hang rather than report -- which
-    # is #310's ${VAR:?}-to-:= lesson in a different shape. The deadline is
-    # asserted by the two rows that reach this sentence instead.
+    # Removing the deadline makes an unbounded poll; the two rows reaching it assert it.
     skip: "removing the deadline makes the row hang rather than fail"
   },
   { label: "the recorder requirement",
@@ -2454,9 +2147,7 @@ RUNTIME_MUTATIONS = [
     from: %(record["body"].include?("This is a notification from Beszel.")),
     to: "true",
     rows: ["a delivery that does not carry Beszel's test message"] },
-  # The URL's parts, each planted where the delivering hub must refuse it. Each
-  # must land on the `err` refusal by name: "expected success" alone would also
-  # count a plant that broke the program before it ever sent the URL.
+  # Each plant must land on the `err` refusal by name, not just fail.
   { label: "the notification URL the proof sends",
     from: "body: { url: notification_url })",
     to: 'body: { url: "generic://elsewhere.invalid/beszel-contract?disabletls=yes" })',
@@ -2479,20 +2170,8 @@ RUNTIME_MUTATIONS = [
     detects: "Beszel test notification reported delivery failure" }
 ].freeze
 
-# One plant per direction the budget arrangement can revert in, because the
-# budget layer's whole reason to exist is that all four reverts leave the rest
-# of this file green. Four plant against the program's text and two against the
-# rows, so `from:`/`to:` and `rows:` are alternatives here rather than the
-# companions they are in every list above.
-#
-# `detects:` is a list, and this is the one layer that needs it to be: a
-# misspelt override name breaks the pin from both ends at once and the layer
-# reports both sentences, so a single required substring would be reported as
-# the wrong assertion for a plant it caught correctly.
-#
-# These cases run no subprocess and serve no fixture -- they are string and
-# array work over sources already in memory -- so all six together cost less
-# than one runtime row.
+# One plant per revert direction. Text plants use from:/to:, row plants use rows:.
+# `detects:` is a list because a misspelt name trips both ends of the pin at once.
 BUDGET_MUTATIONS = [
   { label: "the telemetry budget's production default",
     from: %(ENV.fetch("PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS", "90")),
@@ -2515,17 +2194,13 @@ BUDGET_MUTATIONS = [
     detects: "the deadline PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS sets is not " \
              "spent through it" },
   {
-    # The revert that costs the gate its ~170s back, and the only one of the
-    # four with no trace in any file's text.
     label: "every row's budget override",
     rows: ->(rows) { rows.map { |row| row.reject { |key, _value| key == :env } } },
     detects: ["no row overrides PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS",
               "no row overrides PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS"]
   },
   {
-    # A name misspelt on the row's side only. The program still reads its own
-    # name, so its half of the pin holds and the override silently does nothing
-    # -- which is why the pin has to sweep both directions of the difference.
+    # Row side only: the override silently does nothing.
     label: "a budget override's name",
     rows: lambda { |rows|
       rows.map do |row|
@@ -2539,10 +2214,7 @@ BUDGET_MUTATIONS = [
               "which the program never reads"]
   },
   {
-    # The cheapest revert and the one with no trace anywhere: the overrides stay
-    # spelt correctly and every other assertion in this file passes, but each
-    # row is handed the deployment's own budget back and the gate sleeps out its
-    # ~170s again. Only the ceiling catches it.
+    # Only the ceiling catches this one.
     label: "a budget override's short value",
     rows: lambda { |rows|
       rows.map do |row|
@@ -2572,27 +2244,15 @@ WRAPPER_MUTATIONS = [
     to: %(exec ruby "$runtime_program" "$mode"\n),
     layer: :stdin },
   {
-    # The static half's preload, carried verbatim from the heredoc and
-    # load-bearing: beszel-static.rb calls YAML.safe_load_file on its first line
-    # and requires tests/policy_support.rb -- which does require yaml -- eight
-    # lines LATER, so dropping this is `uninitialized constant YAML (NameError)`.
-    # Measured through the wrapper, not inferred from the program's requires.
+    # Load-bearing: beszel-static.rb uses YAML before it requires policy_support.rb.
     label: "the static invocation's -ryaml preload",
     from: %(  ruby -ryaml "$static_program" "$repo_dir" </dev/null\n),
     to: %(  ruby "$static_program" "$repo_dir" </dev/null\n),
     layer: :wrapper
   },
   {
-    # And the one that is INERT, declared rather than planted. Dropping -rjson
-    # alone leaves telemetry-fixtures passing, because the second preload --
-    # the inspected tree's own beszel_telemetry.rb -- does `require "json"` on
-    # its line 4, before the program body runs. Dropping BOTH is
-    # `uninitialized constant JSON (NameError)`, which is how this was
-    # established. So -rjson is #291's `-rpathname`: transcribed verbatim
-    # because a quoted heredoc interpolates nothing and the invocation is the
-    # thing being preserved, and left unplanted because there is no outcome to
-    # assert. It is not removed: nothing guarantees the support library keeps
-    # requiring json, and the day it stops, this preload is what holds.
+    # Declared inert: the second preload already requires json. Kept because nothing
+    # guarantees that stays true.
     label: "the telemetry-fixtures -rjson preload",
     from: %(  exec ruby -rjson -r"$repo_dir/tests/contracts/support/beszel_telemetry" \\\n),
     to: %(  exec ruby -r"$repo_dir/tests/contracts/support/beszel_telemetry" \\\n),
@@ -2616,10 +2276,7 @@ WRAPPER_MUTATIONS = [
     to: %(  exec ruby -rjson -r"$contract_repo_dir/tests/contracts/support/beszel_telemetry" \\\n),
     layer: :two_roots },
   {
-    # The export both halves read, planted in the direction that breaks site 2
-    # and site 4 at once. The literal occurs TWICE, so the count is stated:
-    # an unscoped sub would reroot one pair and leave the other, which changes
-    # nothing because the second assignment wins.
+    # The literal occurs twice; an unscoped sub would leave the winning second pair.
     label: "the inspected-tree export rerooted to the checkout",
     from: "PLATFORM_CONTRACT_REPO_DIR=$repo_dir\n",
     to: "PLATFORM_CONTRACT_REPO_DIR=$contract_repo_dir\n",
@@ -2652,11 +2309,8 @@ WRAPPER_MUTATIONS = [
     layer: :wrapper }
 ].freeze
 
-# The budget layer's own reporter. It cannot use report_mutation because a
-# correct catch there is every failure carrying one substring, and two of the
-# six budget plants are caught by two different sentences at once. Required
-# rather than exhaustive: each named sentence must appear somewhere in the
-# catch, and nothing else in the catch is held against the plant.
+# report_mutation cannot be used: two budget plants are caught by two sentences.
+# Each named sentence must appear; nothing else is held against the plant.
 def report_budget_mutation(collected, mutation, caught)
   if caught.empty?
     collected << "removing #{mutation.fetch(:label)} was accepted"
@@ -2685,12 +2339,8 @@ if ARGV.include?("--self-test")
   planted = 0
   skipped = []
 
-  # Every plant is prepared on the main thread, before the pool, and through
-  # plant_or_error and rows_named_or_error rather than the aborting forms: every
-  # count assertion here is a claim about a literal in a file, and one run of
-  # --self-test reports every wrong count at once rather than the first. An abort
-  # inside a worker would be worse still -- it raises SystemExit there, the thread
-  # dies without recording its result, and the pool reports a KeyError instead.
+  # Plants are prepared on the main thread via the *_or_error forms, so every wrong
+  # count is reported at once; an abort in a worker surfaces as a KeyError.
   preparation_errors = []
   prepare = lambda do |mutations, source_path, rows|
     mutations.reject { |mutation| mutation[:skip] }.filter_map do |mutation|
@@ -2713,11 +2363,7 @@ if ARGV.include?("--self-test")
   self_read_cases = prepare.call(SELF_READ_MUTATIONS, STATIC_PROGRAM, SELF_READ_ROWS)
   fixtures_cases = prepare.call(FIXTURES_MUTATIONS, FIXTURES_PROGRAM, FIXTURES_ROWS)
   runtime_cases = prepare.call(RUNTIME_MUTATIONS, RUNTIME_PROGRAM, RUNTIME_ROWS)
-  # Two shapes in one list, so prepare cannot be reused: a text plant carries
-  # `from:`, a row plant carries a `rows:` transform. Both are proved to have
-  # changed something, for the reason `plant_or_error` proves it -- a transform that
-  # returned the rows unchanged plants nothing and the case reports the layer as
-  # accepting what it must refuse.
+  # Two plant shapes (text `from:`, row `rows:`); both must change something.
   budget_cases = BUDGET_MUTATIONS.reject { |mutation| mutation[:skip] }.filter_map do |mutation|
     if mutation.key?(:from)
       source, error = plant_or_error(File.read(RUNTIME_PROGRAM), mutation)
@@ -2797,9 +2443,7 @@ if ARGV.include?("--self-test")
   end
   planted += wrapper_cases.length
 
-  # The two edits #608's adversarial check made to the real defaults. This file
-  # accepted both with rc=0 before the pin was checked against the defaults.
-  # Planted in a fixture copy, because `ROOT` is the checkout.
+  # The two edits #608's adversarial check made to the real defaults.
   [["moving the Temperature threshold from 88 to 87",
     "    value: 88\n    min: 15\n", "    value: 87\n    min: 15\n"],
    ["deleting the Temperature alert",

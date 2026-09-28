@@ -1,44 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#
-# Behaviour of the Kapowarr service contract's two Ruby programs.
-#
-# Until #147 both lived in `<<'RUBY'` heredocs inside tests/contracts/kapowarr.sh.
-# `sh -n` reads a quoted heredoc as opaque text, so the static half was only ever
-# executed by `tests/contracts/kapowarr.sh static` and the runtime half only by
-# an integration lane with Docker, a converged Kapowarr and a real vault.
-# tests/contracts/kapowarr-static.rb and tests/contracts/kapowarr-runtime.rb are
-# files now, so both are reachable here.
-#
-# Three layers, because the contract has three kinds of property:
-#
-#   Static -- build a fixture repository from the files the program reads, break
-#   exactly one thing in it, and require the program to name that thing. The
-#   assertion text is the interface: a guard that fails for the wrong reason has
-#   stopped guarding what it names, so every row pins the exact diagnostic. The
-#   volume folder confinement properties are the reason this layer is worth its
-#   length: the migration is the only mutation in this repository that moves a
-#   directory inside a media library.
-#
-#   Runtime -- serve the Kapowarr API from an HTTP fixture and put `docker` and
-#   `ansible-vault` stubs on PATH, so each access, ownership, settings and
-#   persistence outcome can be moved one at a time. This half had no test at all.
-#
-#   Wrapper -- tests/contracts/kapowarr.sh is what turns a mode into an
-#   invocation. Its rows prove the mode guard, the run-mode environment contract,
-#   that both programs are reached, that they come from the checkout while the
-#   tree they inspect does not, and that neither can eat the caller's stdin.
-#
-# BOTH halves read the inspected tree through PLATFORM_CONTRACT_REPO_DIR -- the
-# static half requires its flatten_tasks out of tests/policy_support.rb, and the
-# runtime half reads roles/kapowarr/defaults/main.yml to compare the deployed
-# settings against the declared ones. So the two-roots layer has a runtime
-# direction as well as a static one, which no other contract in this series has.
-#
-# Run with --self-test to plant a regression in each program and in the wrapper.
-# It accumulates its mismatches rather than aborting on the first, and every
-# plant is built before the worker pool: `abort` inside a worker raises
-# SystemExit there, and the pool would report a KeyError in place of the message.
+# Behaviour of the Kapowarr contract's static and runtime programs and its wrapper.
+# Both programs read the inspected tree through PLATFORM_CONTRACT_REPO_DIR.
+# --self-test plants a regression in each; plants are built before the worker pool.
 
 require "fileutils"
 require "json"
@@ -67,8 +31,6 @@ RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "kapowarr-runtime.rb")
 SUCCESS_LINE = "kapowarr static contract: authenticated comics writer ownership holds"
 MODE_REFUSAL = "kapowarr contract accepts only static, run, seed or verify"
 
-# Exactly what the static program reads: its own `required` list plus the shared
-# flatten_tasks it requires through PLATFORM_CONTRACT_REPO_DIR.
 FIXTURE_FILES = %w[
   services/kapowarr/tasks.py
   roles/kapowarr/defaults/main.yml
@@ -96,20 +58,9 @@ def build_fixture_repository(root)
   end
 end
 
-# Every substitution states how many matches it expects. A replacement that still
-# contains its own pattern plants nothing, and a bare `sub` cannot tell that from
-# a plant that worked: the row then reports a pass, or a failure with the wrong
-# diagnostic.
-#
-# FIVE of the counts below are against roles/kapowarr/tasks/main.yml's migration
-# and verification region: `item.folder is match` (2), `item.target is match`
-# (2), `kapowarr_verify_volume_folder_drift` (5),
-# `kapowarr_verify_rename_plans.results` (2) and `kapowarr_verify_volume_list`
-# (3). Issue #268 is open against exactly that region's volume folder layout, so
-# a change there makes this raise rather than mis-plant -- which is the point,
-# but it surfaces as a RuntimeError from a worker thread rather than as a named
-# row failure. Whoever lands #268 updates the counts here; that is a one-line
-# fix, and this comment is what turns a mystery stack trace into it.
+# Every substitution states its expected match count: a replacement containing its own
+# pattern plants nothing. Counts in the tasks/main.yml migration region raise (not
+# mis-plant) when that region changes (#268).
 def mutate_text(root, relative, pattern, replacement, occurrences: 1)
   path = File.join(root, relative)
   body = File.read(path)
@@ -139,8 +90,6 @@ def role_tasks(root)
   edit_yaml(root, "roles/kapowarr/tasks/main.yml") { |document| yield document }
 end
 
-# The flattened task list the program itself computes, so a row can find the task
-# it means to break the same way the assertion finds it.
 def flatten_tasks(tasks)
   Array(tasks).flat_map do |task|
     next [] unless task.is_a?(Hash)
@@ -188,10 +137,7 @@ STATIC_ROWS = [
     expects: "missing services/kapowarr/compose.mac.yml"
   },
   {
-    # Kapowarr is declared self-contained in this slice: no Prowlarr indexer and
-    # no download client are configured for it, so a seat on the shared control
-    # network would make it reachable by every acquisition project for no
-    # purpose.
+    # Kapowarr is self-contained: no indexer or download client needs the control network.
     name: "a seat on the shared control network it has no use for",
     break: lambda { |root|
       compose_service(root) { |service, _| service["networks"] = %w[default media-control] }
@@ -211,10 +157,7 @@ STATIC_ROWS = [
     expects: "Kapowarr must take the platform identity as PUID"
   },
   {
-    # The leaf-per-directory layout this replaced, and the defect it carried:
-    # rename(2) refuses to cross a mount boundary even when both sides are the
-    # same filesystem, so a library and its staging directory in separate mounts
-    # made every import a full byte copy plus unlink.
+    # rename(2) refuses to cross a mount boundary, so separate mounts made every import a byte copy.
     name: "a mount per directory rather than one parent of the library and its staging",
     break: lambda { |root|
       compose_service(root) do |service, _|
@@ -228,10 +171,7 @@ STATIC_ROWS = [
     expects: "Kapowarr must mount its database and one parent of its library and staging"
   },
   {
-    # The carried task handler patch (#696) mounts upstream code over the image's
-    # own. A pin that moves while the patch stays would put v1.3.2's file over
-    # whatever the new image ships, which is the whole reason the patch records
-    # the image it was derived from.
+    # The carried patch (#696) records the image it was derived from.
     name: "a Compose pin the carried task handler patch was not derived from",
     break: lambda { |root|
       mutate_text(root, "services/kapowarr/compose.yml",
@@ -343,15 +283,11 @@ STATIC_ROWS = [
     expects: "Kapowarr must keep its database in the declared config root"
   },
   {
-    # The library moved out of the bind mount while the staging root stayed
-    # inside it, which is the two-mount defect restated in container paths.
     name: "a library root outside the one bind mount the pair share",
     break: ->(root) { role_defaults(root) { |d| d["kapowarr_library_root"] = "/comics" } },
     expects: "the comics library must sit at /Comics inside the bind mount"
   },
   {
-    # rename(2) refuses to cross a mount boundary, so staging outside the mount
-    # the library is in turns every import back into a byte copy.
     name: "downloads staged outside the bind mount they import into",
     break: lambda { |root|
       role_defaults(root) { |d| d["kapowarr_staging_root"] = "/app/temp_downloads" }
@@ -359,10 +295,7 @@ STATIC_ROWS = [
     expects: "the download staging root must sit at /.acquisition/usenet/comics inside the bind mount"
   },
   {
-    # The container offset is only a real path if host_prep creates what it
-    # resolves to. Kapowarr answers a download folder that is not a directory
-    # with FolderNotFound, so an undeclared staging directory fails the converge
-    # in a redacted request rather than here.
+    # Kapowarr answers a download folder that is not a directory with FolderNotFound, redacted.
     name: "a staging offset resolving to a directory nas_storage does not declare",
     break: lambda { |root|
       edit_yaml(root, "inventory/group_vars/all/media_acquisition.yml") do |document|
@@ -376,8 +309,6 @@ STATIC_ROWS = [
              "which nas_storage does not declare"
   },
   {
-    # Kapowarr's own default is /app/temp_downloads, a directory inside the image
-    # that the mount this replaced used to cover.
     name: "a download folder left at the application default the mount no longer covers",
     break: lambda { |root|
       role_defaults(root) { |d| d["kapowarr_settings"].delete("download_folder") }
@@ -396,10 +327,8 @@ STATIC_ROWS = [
     expects: "Kapowarr must declare the download folder the parent mount moved"
   },
   {
-    # The defect that reached CI: Ansible renders the reference and the role
-    # converges, while the runtime half of this contract reads the same mapping
-    # with a YAML parser and compares template text to a path. Correct on the
-    # target, unequal in the check that proves the target holds it.
+    # Ansible renders the reference, but the runtime half reads the mapping with a YAML
+    # parser and compares template text to a path.
     name: "a declared setting written as a template the runtime comparison cannot render",
     break: lambda { |root|
       role_defaults(root) do |d|
@@ -419,8 +348,6 @@ STATIC_ROWS = [
     expects: "Kapowarr env must export the host share as the single media bind source"
   },
   {
-    # Restores the substring search the line-oriented read replaced, which is the
-    # form a second live assignment satisfies while only one may exist.
     name: "a CPU set rendered twice",
     break: lambda { |root|
       mutate_text(root, "roles/kapowarr/templates/env.j2",
@@ -431,8 +358,7 @@ STATIC_ROWS = [
     expects: "Kapowarr env must render the CPU set exactly once"
   },
   {
-    # Kapowarr reads no credential from its environment: every one lives in its
-    # own database, so a credential here is a copy nothing consumes.
+    # Kapowarr reads every credential from its own database, never from its environment.
     name: "a vault credential copied into an environment nothing reads it from",
     break: lambda { |root|
       mutate_text(root, "roles/kapowarr/templates/env.j2",
@@ -463,8 +389,6 @@ STATIC_ROWS = [
     expects: "Kapowarr must verify its effective project CPU policy"
   },
   {
-    # The pair is submitted as a request body, which a module result renders in
-    # full.
     name: "an administrator-bearing task rendered in full",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -478,9 +402,7 @@ STATIC_ROWS = [
     expects: "every Kapowarr task naming the administrator must use no_log"
   },
   {
-    # Kapowarr validates a ComicVine key against comicvine.gamespot.com before it
-    # will store one, so submitting it would make every converge depend on a
-    # third party.
+    # Kapowarr validates a ComicVine key against comicvine.gamespot.com before storing it.
     name: "a request submitting the ComicVine credential to a third party",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -521,8 +443,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr environment render must be private"
   },
   {
-    # The settings interface accepts anything, so an ungated identity write would
-    # rewrite the login on every converge and never report a converged state.
     name: "an identity write that rewrites the login on every converge",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -543,10 +463,7 @@ STATIC_ROWS = [
     expects: "the Kapowarr credential key list must name every masked credential"
   },
   {
-    # Kapowarr masks every stored credential on read -- both halves of the
-    # administrator identity answer as literal asterisks -- so a declaration
-    # naming one could never match what comes back, and the write would run on
-    # every converge.
+    # Kapowarr masks stored credentials on read (asterisks), so such a declaration never matches.
     name: "a settings declaration naming a credential the service masks on read",
     break: lambda { |root|
       role_defaults(root) { |d| d["kapowarr_settings"]["api_key"] = "0" * 32 }
@@ -554,9 +471,8 @@ STATIC_ROWS = [
     expects: "the declared Kapowarr settings must name no credential: api_key"
   },
   {
-    # The application validates the order as a permutation of its own service
-    # list, so it is declared as a partial ordering and merged over the deployed
-    # order instead of being written into the settings declaration.
+    # The application validates the order as a permutation of its own service list, so it is
+    # declared as a partial ordering merged over the deployed one.
     name: "a settings declaration carrying the download service order",
     break: lambda { |root|
       role_defaults(root) { |d| d["kapowarr_settings"]["service_preference"] = %w[GetComics] }
@@ -564,8 +480,6 @@ STATIC_ROWS = [
     expects: "the declared Kapowarr settings must not carry the service order"
   },
   {
-    # Komga indexes the directory these name, so a change that drops them hands a
-    # second service's view of the library back to the web interface.
     name: "a settings declaration that stops owning the library naming templates",
     break: ->(root) { role_defaults(root) { |d| d["kapowarr_settings"].delete("volume_folder_naming") } },
     expects: "the declared Kapowarr settings must own the library naming templates"
@@ -598,7 +512,6 @@ STATIC_ROWS = [
     expects: "Kapowarr must refuse an image older than the store already on disk"
   },
   {
-    # A guard pointed at another project reads another stack's containers and passes.
     name: "a downgrade guard pointed at another Compose project",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -609,8 +522,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr downgrade guard must judge Kapowarr's own containers"
   },
   {
-    # Neither image takes a copy before its one-way migration, so without this
-    # nothing makes going back possible.
     name: "no pre-upgrade copy of the store a pinned upgrade migrates",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -631,8 +542,6 @@ STATIC_ROWS = [
     expects: "Kapowarr must copy its store aside between the downgrade guard and the deployment"
   },
   {
-    # The shared copy takes whatever store its caller names; naming another
-    # service's copies nothing Kapowarr migrates.
     name: "a pre-upgrade copy pointed at another service's store",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -654,8 +563,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr pre-upgrade copy must key on the image the container was created from"
   },
   {
-    # The verdict moved to tasks/pending.yml (#826); a main.yml that stopped
-    # including it would read no verdict at all.
     name: "a pre-upgrade copy that no longer includes its pending-upgrade verdict",
     break: lambda { |root|
       edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
@@ -665,7 +572,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr pre-upgrade copy must decide its upgrade in tasks/pending.yml"
   },
   {
-    # A copy on every converge never reports a converged run.
     name: "a pre-upgrade copy that runs on every converge",
     break: lambda { |root|
       edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
@@ -684,8 +590,7 @@ STATIC_ROWS = [
     expects: "the Kapowarr pre-upgrade copy must be reported under --check"
   },
   {
-    # Measured on roles/vaultwarden: without recreate: never the stop replaces the
-    # container with one on the new pin before anything is copied.
+    # Without recreate: never, the stop replaces the container with one on the new pin.
     name: "a pre-upgrade stop that recreates the container onto the new pin",
     break: lambda { |root|
       edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
@@ -696,7 +601,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr pre-upgrade stop must stop the old container rather than recreate it"
   },
   {
-    # The copy carries the ComicVine key the store holds.
     name: "a world-readable pre-upgrade copy",
     break: lambda { |root|
       edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
@@ -706,9 +610,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr pre-upgrade copy must be private"
   },
   {
-    # Measured before the rescue existed: a file planted where pre-upgrade-backup/
-    # belongs failed the copy after the stop, and Kapowarr stayed exited through
-    # every later converge.
     name: "a pre-upgrade copy whose failure leaves Kapowarr stopped",
     break: lambda { |root|
       edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
@@ -719,8 +620,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr pre-upgrade copy must start the old container again when it fails"
   },
   {
-    # Without recreate: never the start replaces the stopped container with one on
-    # the new pin, which migrates the store nothing copied.
     name: "a pre-upgrade rescue that starts Kapowarr on the new pin",
     break: lambda { |root|
       edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
@@ -732,8 +631,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr pre-upgrade copy must start the old container again when it fails"
   },
   {
-    # A rescue that only restarts turns a failed copy into a green run, and the
-    # deployment after it upgrades a store nothing copied.
     name: "a pre-upgrade rescue that lets the upgrade proceed",
     break: lambda { |root|
       edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
@@ -744,7 +641,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr pre-upgrade copy must still fail the run after starting the old container"
   },
   {
-    # A fail ahead of the start ends the rescue before anything starts.
     name: "a pre-upgrade rescue that fails before it starts Kapowarr",
     break: lambda { |root|
       edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
@@ -755,7 +651,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr pre-upgrade copy must start the old container again when it fails"
   },
   {
-    # A second Compose task that recreates brings the new pin up after all.
     name: "a pre-upgrade rescue with a second start that recreates onto the new pin",
     break: lambda { |root|
       edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
@@ -769,8 +664,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr pre-upgrade copy must start the old container again when it fails"
   },
   {
-    # Measured: a store deleted as the container exited, the old image started
-    # over it, and the next converge upgraded over the empty store it created.
     name: "a pre-upgrade rescue that starts Kapowarr over a missing store",
     break: lambda { |root|
       edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
@@ -781,7 +674,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr pre-upgrade copy must not start the old container over a missing store"
   },
   {
-    # The verdict the pre-stop read gave is the one the rescue exists to re-take.
     name: "a pre-upgrade rescue start gated on the read taken before the stop",
     break: lambda { |root|
       edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
@@ -804,8 +696,7 @@ STATIC_ROWS = [
     expects: "the Kapowarr pre-upgrade copy must not start the old container over a missing store"
   },
   {
-    # Measured: a dangling symlink and a directory both report exists, and the old
-    # image started over either runs on a store it creates elsewhere.
+    # A dangling symlink and a directory both report exists.
     name: "a pre-upgrade rescue start that accepts a directory or a dangling symlink",
     break: lambda { |root|
       edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
@@ -828,8 +719,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr pre-upgrade copy must not start the old container over a missing store"
   },
   {
-    # Measured: stat fails outright on a permission error, which ended the rescue
-    # before its verdict and left the service stopped behind "Permission denied".
     name: "a pre-upgrade rescue store read that aborts the rescue on a permission error",
     break: lambda { |root|
       edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
@@ -846,8 +735,6 @@ STATIC_ROWS = [
         unit = find_task(document) { |task| task.key?("rescue") }
         start = unit["rescue"].find { |task| task.key?("community.docker.docker_compose_v2") }
         second = Marshal.load(Marshal.dump(start))
-        # Gated like every other task of the copy, so only the always check can
-        # name it.
         second["when"] = ["not ansible_check_mode", "pre_upgrade_backup_upgrade_pending | bool"]
         unit["always"] = [second]
       end
@@ -879,8 +766,7 @@ STATIC_ROWS = [
     expects: "the Kapowarr indexer read must be a redacted, real, changeless read"
   },
   {
-    # A live run has deployed the pinned image, so a 404 there is a Kapowarr
-    # that is not the pinned one, and accepting it would skip the reconciliation.
+    # A live run has deployed the pinned image, so a 404 there is not the pinned Kapowarr.
     name: "an indexer read that accepts a 404 on a live run",
     break: lambda { |root|
       mutate_text(root, "roles/kapowarr/tasks/main.yml",
@@ -890,7 +776,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr indexer read may accept a 404 only under --check"
   },
   {
-    # A redacted read that fails reports only "censored": no status, no body.
     name: "an indexer read whose failure says only censored",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -905,8 +790,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr indexer read must fail with its status rather than redacted"
   },
   {
-    # A 200 with a body that is not a list of records counts as zero GetComics
-    # indexers and blames the operator for deleting one.
     name: "an indexer read that accepts a 200 whose body is not a list",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -921,13 +804,11 @@ STATIC_ROWS = [
     expects: "the Kapowarr indexer read must refuse a 200 whose body is not a list of indexers"
   },
   {
-    # Without a bound the converge waits out whatever getcomics.org does.
     name: "a service order write with no bound on the call to getcomics.org",
     break: ->(root) { role_tasks(root) { |document| indexer_write(document)["ansible.builtin.uri"].delete("timeout") } },
     expects: "the Kapowarr service order write must bound the call Kapowarr makes to getcomics.org"
   },
   {
-    # The one failure an operator most needs named is the one a redacted task hides.
     name: "a service order write whose failure says only censored",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -941,8 +822,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr service order write must fail with its status and the getcomics.org cause"
   },
   {
-    # An API that refused the connection instantly was reported as a 75-second
-    # wait on getcomics.org.
     name: "a service order write that reads every -1 as its own timeout",
     break: lambda { |root|
       mutate_text(root, "roles/kapowarr/tasks/main.yml",
@@ -951,15 +830,12 @@ STATIC_ROWS = [
     expects: "the Kapowarr service order write must tell a refused connection from its own timeout"
   },
   {
-    # The write reaches getcomics.org, so an ungated one would make every
-    # converge depend on a third party and report a change it never needed.
     name: "a service order write that runs on every converge",
     break: ->(root) { role_tasks(root) { |document| indexer_write(document)["when"] = ["not ansible_check_mode"] } },
     expects: "the Kapowarr service order write must be gated on the resolved order"
   },
   {
-    # The indexer interface is not a partial merge, so a body built from
-    # constants would revert the title, URL and enabled flag nothing declares.
+    # The indexer interface is not a partial merge; constants would revert undeclared fields.
     name: "a service order write that owns indexer fields nothing declares",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -978,8 +854,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr service order write must stay redacted"
   },
   {
-    # None means it was deleted in the web interface, two means a database edited
-    # outside the application; indexing the first would guess.
     name: "a service order written without refusing a missing or duplicate GetComics indexer",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -991,9 +865,6 @@ STATIC_ROWS = [
     expects: "Kapowarr must refuse anything but exactly one GetComics indexer"
   },
   {
-    # The read carries the API key in its query string and is a read: it must be
-    # redacted, must not claim a change, and must really run under --check, or
-    # the write decides from nothing.
     name: "a settings read that does not really run under --check",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1022,9 +893,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr settings write must stay redacted"
   },
   {
-    # The volume folder migration is the only mutation in this repository that
-    # moves a directory inside a media library, and the one the operator reviews
-    # with --check --diff before it runs.
     name: "a volume folder migration pinned open",
     break: lambda { |root|
       role_defaults(root) { |d| d["kapowarr_volume_folder_migration_allowed"] = true }
@@ -1032,9 +900,7 @@ STATIC_ROWS = [
     expects: "the Kapowarr volume folder migration must be pinned closed"
   },
   {
-    # And pinned closed at the layer that decides the run: group_vars/all
-    # outranks the role defaults the row above breaks, so a true left behind
-    # here would move directories on every converge (#343).
+    # group_vars/all outranks the role defaults the row above breaks (#343).
     name: "a volume folder migration pinned open in the inventory",
     break: lambda { |root|
       mutate_text(root, "inventory/group_vars/all/service_kapowarr.yml",
@@ -1061,8 +927,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr volume folder move must be gated on the one-convergence input"
   },
   {
-    # A volume marked as carrying an operator-chosen folder is one Kapowarr stops
-    # re-deriving, so the next template change would converge silently wrong.
     name: "a volume folder move that names the folder rather than deriving it",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1072,8 +936,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr volume folder move must take the derived folder"
   },
   {
-    # The plan is read from the application's own rename preview, and that read
-    # must really run under --check, or the review reports nothing.
     name: "a rename plan read that does not really run under --check",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1086,10 +948,8 @@ STATIC_ROWS = [
     expects: "must be a redacted, real, changeless read"
   },
   {
-    # Naming the comics library among the paths the role touches is what runs
-    # deployment_bundle's containment check against it -- a symlink between the
-    # media root and the library would otherwise let a rename follow the link out
-    # of the tree.
+    # Naming the library runs deployment_bundle's containment check against it, so a
+    # symlink cannot lead a rename out of the tree.
     name: "a comics library the role does not name among the paths it touches",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1102,10 +962,7 @@ STATIC_ROWS = [
     expects: "Kapowarr must name the comics library among the paths it touches"
   },
   {
-    # Two occurrences, both replaced: the migration plan's own `when` and the
-    # negated copy in the unconfined-volume resolution. An unscoped `sub` would
-    # have hit whichever came first and reported a pass either way, which is why
-    # every substitution here states its count.
+    # Two occurrences: the plan's own `when` and the negated copy in the unconfined resolution.
     name: "a migration plan that does not confine the folder it moves from",
     break: lambda { |root|
       mutate_text(root, "roles/kapowarr/tasks/main.yml", "item.folder is match",
@@ -1122,7 +979,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr migration plan must confine the folder it moves to"
   },
   {
-    # A silent exclusion is indistinguishable from a converged library.
     name: "unconfined volume folders dropped rather than named",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1136,9 +992,7 @@ STATIC_ROWS = [
     expects: "Kapowarr must report each volume folder it refuses as unconfined"
   },
   {
-    # The request names no path, so the folder it installs is the one Kapowarr
-    # derives from the root folder that *volume* is attached to. That is the
-    # declared root only while Kapowarr owns exactly the declared one.
+    # The request names no path, so Kapowarr derives the folder from the volume's root folder.
     name: "a second library root that does not refuse the migration",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1185,9 +1039,7 @@ STATIC_ROWS = [
     expects: "Kapowarr must report each volume folder it would move"
   },
   {
-    # Kapowarr v1.3.1 can relabel no stored prefix whose files no longer resolve,
-    # so a deployment holding the superseded one has to fail the run. Without the
-    # plan there is nothing for the refusal to read.
+    # Kapowarr v1.3.1 cannot relabel a stored prefix whose files no longer resolve.
     name: "no reading of the library roots the declared one supersedes",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1201,9 +1053,6 @@ STATIC_ROWS = [
     expects: "Kapowarr must resolve the library roots the declared one supersedes"
   },
   {
-    # The mutation the refusal exists to prevent: without it the role declares
-    # the new root beside the superseded one and reports success over a library
-    # no volume is attached to.
     name: "a superseded library root the run converges around",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1217,8 +1066,6 @@ STATIC_ROWS = [
     expects: "a superseded Kapowarr library root must refuse the run"
   },
   {
-    # A one-convergence input here would authorize a migration Kapowarr cannot
-    # perform, and would end in a second root folder and a failed verification.
     name: "a superseded library root refusal a one-convergence input can open",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1233,9 +1080,7 @@ STATIC_ROWS = [
     expects: "the superseded library root refusal must take no one-convergence input"
   },
   {
-    # The empty library the web interface shows is the directory Kapowarr itself
-    # created on read, so an operator not told the comics are intact reaches for
-    # a restore.
+    # The empty library the UI shows is a directory Kapowarr created on read; the comics are intact.
     name: "a refusal that does not say the comics on the host are intact",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1250,7 +1095,6 @@ STATIC_ROWS = [
     expects: "the superseded library root refusal must say the host library is intact"
   },
   {
-    # Worthless after the fact: the create is the mutation it prevents.
     name: "a superseded library root refusal that runs after the root folder create",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1269,9 +1113,7 @@ STATIC_ROWS = [
     expects: "the superseded library root refusal must precede the root folder create"
   },
   {
-    # Kapowarr records a credential-free auth POST as a failed login, so an
-    # ungated probe writes a WARNING into the application's own security log on
-    # every converge and buries a real attempt among its own.
+    # Kapowarr logs a credential-free auth POST as a failed login in its security log.
     name: "an anonymous login probe not gated on the mode already read",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1324,8 +1166,6 @@ STATIC_ROWS = [
     expects: "Kapowarr verification must read the library roots it owns"
   },
   {
-    # Since v1.3.2 the settings no longer hold the order, so a verification that
-    # reads only them has nothing to assert the order against.
     name: "verification that never reads the GetComics indexer",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1399,10 +1239,6 @@ STATIC_ROWS = [
     expects: "the Kapowarr outcome assertion must stay readable"
   },
   {
-    # A volume added while a hand-edited template was in force, or a folder
-    # renamed in the web interface, puts a series back under a name Komga titles
-    # wrongly, and nothing in Kapowarr reports it. The migration alone would fix
-    # the library once and go quiet.
     name: "verification that never asserts every volume folder is the derived one",
     break: lambda { |root|
       mutate_text(root, "roles/kapowarr/tasks/main.yml",
@@ -1412,9 +1248,7 @@ STATIC_ROWS = [
     expects: "Kapowarr verification must assert every volume folder is the derived one"
   },
   {
-    # The drift list is resolved from a loop over what the application reported,
-    # so an empty list is a real verdict only when both reads answered for every
-    # volume. Without that floor a 401 verifies a library of nothing.
+    # An empty drift list is a verdict only when both reads answered for every volume.
     name: "a drift assertion with no floor under the reads it derives from",
     break: lambda { |root|
       mutate_text(root, "roles/kapowarr/tasks/main.yml",
@@ -1424,9 +1258,7 @@ STATIC_ROWS = [
     expects: "the Kapowarr volume folder assertion must require both reads to have answered"
   },
   {
-    # An unauthorized Kapowarr answers `result: {}` where the library was, and a
-    # loop over that mapping dies with a type error instead of with the
-    # assertion's diagnosis.
+    # An unauthorized Kapowarr answers `result: {}`, which a loop dies on with a type error.
     name: "a per-volume verification read looping the raw response",
     break: lambda { |root|
       mutate_text(root, "roles/kapowarr/tasks/main.yml",
@@ -1468,19 +1300,7 @@ def static_failures(program, rows = STATIC_ROWS)
 end
 
 # --- runtime layer ---------------------------------------------------------
-#
-# The runtime half takes NO arguments: every input arrives in the environment,
-# and one of those inputs is the INSPECTED tree, from which it reads
-# roles/kapowarr/defaults/main.yml. So the sandbox is a fixture repository as
-# well as an HTTP fixture and two PATH stubs.
-#
-# One pre-existing weakness, deliberately NOT pinned: the runtime half reads that
-# defaults file with YAML.safe_load_file and no existence check of its own. The
-# static half's `required` list covers it on any invocation that goes through the
-# wrapper, but the program run bare against a tree lacking the file dies with
-# Errno::ENOENT rather than with a diagnostic. A row expecting that stack trace
-# would freeze it, and this change moves code. Where the row would go: beside "a
-# declaration the INSPECTED tree makes and the deployment does not hold".
+# Every input arrives in the environment, including the inspected tree it reads defaults from.
 
 ADMIN = "nasadmin"
 PASSWORD = "kapowarr-contract-admin-password"
@@ -1514,9 +1334,7 @@ RUNTIME_DEFAULTS = {
   indexers: nil,
   service_preference: nil,
   database: true,
-  # The inspected tree's own declaration, which is what the program must read.
-  # A row that changes this and leaves the served settings alone is the only
-  # signal that separates the two roots at the `exec` site.
+  # The inspected tree's declaration: the only signal separating the two roots at `exec`.
   declared_overrides: {}
 }.freeze
 
@@ -1555,8 +1373,6 @@ def build_runtime_sandbox(root, options)
   [bin, docker_root]
 end
 
-# The record GET /api/indexers returns for the GetComics indexer, shaped as a
-# fresh v1.3.2 answered it.
 def getcomics_indexer(options, order: nil)
   {
     "id" => 1, "enabled" => true, "download_type" => 1, "client_type" => "GetComics",
@@ -1608,9 +1424,7 @@ end
 RUNTIME_ROWS = [
   { name: "a converged Kapowarr", given: {}, expects: nil },
   {
-    # A service the deployed version knows and the declaration does not is free
-    # to sit anywhere: filtering both lists by the other is what makes this a
-    # statement about order rather than about membership.
+    # Filtering both lists by the other makes this about order rather than membership.
     name: "a deployed order carrying a service the declaration does not name",
     given: { service_preference: ["Mega", "MediaFire", "Torbox", "WeTransfer", "Pixeldrain",
                                  "GetComics", "GetComics (torrent)"] },
@@ -1649,8 +1463,6 @@ RUNTIME_ROWS = [
     expects: "encrypted vault could not be read"
   },
   {
-    # A successful login is what hands out the API key that authorizes every
-    # route that renames or deletes comics.
     name: "a login accepted with no credential at all",
     given: { anonymous_code: 200 },
     expects: "Kapowarr logged in a caller with no credential"
@@ -1681,8 +1493,6 @@ RUNTIME_ROWS = [
     expects: "Kapowarr refused to list its library roots"
   },
   {
-    # The migration installs the folder Kapowarr derives from the root folder the
-    # volume is attached to, so a second root makes that derivation ambiguous.
     name: "a second library root beside the declared one",
     given: { root_folders: [LIBRARY_ROOT, "/data/books/Comics-archive"] },
     expects: "Kapowarr does not own exactly the declared comics library root"
@@ -1703,9 +1513,6 @@ RUNTIME_ROWS = [
     expects: "Kapowarr refused to report its settings"
   },
   {
-    # Komga indexes the directory this names, so a template the application does
-    # not hold hands a second service's view of the library back to whoever
-    # edited it in the web interface.
     name: "a naming template the application does not hold",
     given: { settings_overrides: { "volume_folder_naming" => "{series_name}/Volume {volume_number}" } },
     expects: "Kapowarr does not hold the declared application settings: volume_folder_naming"
@@ -1728,14 +1535,11 @@ RUNTIME_ROWS = [
     expects: "Kapowarr refused to list its indexers"
   },
   {
-    # Deleted in the web interface: nothing holds the order at all.
     name: "no GetComics indexer",
     given: { indexers: [] },
     expects: "Kapowarr does not hold exactly one GetComics indexer"
   },
   {
-    # The application refuses to add a second, so two means a database edited
-    # outside it, and which one Kapowarr searches with is not knowable here.
     name: "two GetComics indexers",
     given: {
       indexers: [getcomics_indexer(RUNTIME_DEFAULTS, order: DECLARED_ORDER),
@@ -1744,10 +1548,7 @@ RUNTIME_ROWS = [
     expects: "Kapowarr does not hold exactly one GetComics indexer"
   },
   {
-    # The runtime half's own two-roots row, and the only signal that separates
-    # the two roots at the `exec` site: the INSPECTED tree declares a template
-    # the served settings do not hold. Reading the checkout's declaration instead
-    # would make this row pass, silently.
+    # Reading the checkout's declaration instead of the inspected tree's would pass here, silently.
     name: "a declaration the INSPECTED tree makes and the deployment does not hold",
     given: { declared_overrides: { "volume_folder_naming" => "{series_name} INSPECTED-TREE" } },
     expects: "Kapowarr does not hold the declared application settings: volume_folder_naming"
@@ -1792,10 +1593,7 @@ def with_contract_copy(static: File.read(STATIC_PROGRAM), runtime: File.read(RUN
   with_contract_sandbox("kapowarr", wrapper, { "static" => static, "runtime" => runtime }, &block)
 end
 
-# Reports what each program saw on stdin and what the caller still has, which is
-# the only way the redirect is observable: neither real program reads stdin, so
-# the redirect is what keeps that true rather than something that changes an
-# outcome today.
+# Neither real program reads stdin, so the redirect is observable only through this probe.
 def stdin_failures(wrapper_source: File.read(CONTRACT))
   with_contract_copy(static: STDIN_PROBE, wrapper: wrapper_source) do |contract|
     stdin_probe_failures(contract, %w[static], { "PLATFORM_CONTRACT_REPO_DIR" => ROOT },
@@ -1813,10 +1611,7 @@ def runtime_stdin_failures(wrapper_source: File.read(CONTRACT))
       "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(copy_root, "vault-password"),
       "PLATFORM_DOCKER_ROOT" => File.join(copy_root, "docker")
     }
-    # The probing shell's own status is `cat`'s, not the probe's, so it says
-    # nothing here. The probe's marker appearing IS the proof that the exec was
-    # reached; and run mode must not have printed the static success line, which
-    # is what exiting at the mode gate would look like.
+    # The probe's marker proves the exec was reached; the shell's status is `cat`'s.
     stdin_probe_failures(contract, %w[run], environment, prefix: "runtime stdin",
                          subject: "the runtime program", status: false) do |output|
       if output.include?(SUCCESS_LINE)
@@ -1826,10 +1621,7 @@ def runtime_stdin_failures(wrapper_source: File.read(CONTRACT))
   end
 end
 
-# The run-mode environment contract. Each name is refused with the WRAPPER'S OWN
-# message, and that is what is asserted -- never the shell's own wording, which
-# differs between bash ("parameter null or not set") and dash ("parameter not set
-# or null"), and never the line number, which any edit to this file moves.
+# Each name is refused with the wrapper's own message, never the shell's (bash and dash differ).
 REQUIRED_RUN_ENV = %w[
   PLATFORM_CONTRACT_VAULT_FILE
   PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
@@ -1846,11 +1638,8 @@ def run_env_failures(wrapper_source: File.read(CONTRACT))
       "PLATFORM_DOCKER_ROOT" => File.join(copy_root, "docker"),
       "PLATFORM_MAC_VAULT_FILE" => nil,
       "PLATFORM_MAC_VAULT_PASSWORD_FILE" => nil,
-      # Unparseable on purpose, and it changes no outcome in the unmutated rows
-      # because the ${VAR:?} guard fires before the port is ever read. It bounds
-      # the SELF-TEST rows: a plant that turns one of those guards into `:=`
-      # lets the run reach the real runtime program, whose readiness loop then
-      # polls a closed port for 120 seconds.
+      # Unparseable on purpose: bounds self-test plants that turn a `:?` into `:=`,
+      # which would otherwise poll a closed port for 120 seconds.
       "PLATFORM_KAPOWARR_PORT" => "not-a-number"
     }
     REQUIRED_RUN_ENV.each do |name|
@@ -1863,9 +1652,7 @@ def run_env_failures(wrapper_source: File.read(CONTRACT))
                   "#{output.strip.inspect}" unless output.include?("#{name} is required")
     end
 
-    # The Mac fallback branch, which nothing else in the suite reaches:
-    # tests/mac/run.sh exports PLATFORM_MAC_VAULT_FILE, and the `:=` pair above
-    # the `:?` pair is what lets it stand in for the contract names.
+    # The Mac fallback: tests/mac/run.sh exports PLATFORM_MAC_VAULT_FILE for the `:=` pair.
     stdout, stderr, status = Open3.capture3(
       full.merge("PLATFORM_CONTRACT_VAULT_FILE" => nil,
                  "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => nil,
@@ -1885,10 +1672,7 @@ end
 def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
-    # `verify` was in this list until #773 made it a mode. It is replaced rather
-    # than dropped -- a refused-mode sweep that shrinks every time a mode is
-    # added stops covering the guard -- and `upgrade` is a deliberate near-miss
-    # of the lane that introduced the new arms.
+    # `verify` became a mode in #773; a near-miss keeps the refused-mode sweep from shrinking.
     %w[upgrade drift notify --platform].each do |mode|
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, mode
@@ -1900,10 +1684,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
         (stdout + stderr).include?(MODE_REFUSAL)
     end
 
-    # The other direction, which a refusal sweep alone cannot give: the two modes
-    # the upgrade lane dispatches must reach PAST the mode guard. They still fail
-    # here -- no vault file, no running service -- but with the environment
-    # requirement's own diagnostic rather than with the guard's exit 2.
+    # The upgrade lane's modes must reach past the mode guard to the environment check.
     %w[seed verify].each do |mode|
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, mode
@@ -1941,9 +1722,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
       (stdout + stderr).include?("missing services/kapowarr/compose.mac.yml")
   end
 
-  # The branch every deployment actually takes: PLATFORM_CONTRACT_REPO_DIR unset,
-  # so the programs and the inspected tree both come from the script's own
-  # checkout. That is the only path in production.
+  # The production path: PLATFORM_CONTRACT_REPO_DIR unset.
   with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => nil }, contract, "static"
@@ -1965,10 +1744,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures
 end
 
-# The two-roots property, stated as an OUTCOME rather than as the wrapper's text.
-# These are the invariant rows: a before/after capture diff can only show
-# differences, so the property that must stay identical is invisible in it. They
-# are asserted here instead, and they are what would have caught #251's defect.
+# The two-roots property, asserted as an outcome (#251).
 def two_roots_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   with_contract_copy(wrapper: wrapper_source) do |contract|
@@ -1985,10 +1761,7 @@ def two_roots_failures(wrapper_source: File.read(CONTRACT))
         stdout.include?(SUCCESS_LINE)
     end
 
-    # The other direction. The inspected tree's own flatten_tasks is what the
-    # static program must use, so a tree whose policy_support.rb refuses to load
-    # has to take the contract down with it. Reading the checkout's copy instead
-    # would pass here, silently.
+    # The inspected tree's own policy_support.rb must be the one the static program loads.
     Dir.mktmpdir("nas-platform-kapowarr-support.") do |raw|
       inspected = File.realpath(raw)
       build_fixture_repository(inspected)
@@ -2007,12 +1780,7 @@ def two_roots_failures(wrapper_source: File.read(CONTRACT))
   failures
 end
 
-# The runtime PROGRAM's own root, which needs a layer of its own.
-# runtime_stdin_failures points PLATFORM_CONTRACT_REPO_DIR at the contract copy,
-# so the checkout and the inspected tree ARE the same directory there and a
-# rerooted $runtime_program resolves to the same file. Here the inspected tree is
-# a separate fixture with no tests/contracts at all, so a reroot cannot find the
-# program at all.
+# Here the inspected tree has no tests/contracts, so a rerooted $runtime_program cannot be found.
 def runtime_program_root_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   with_contract_copy(runtime: STDIN_PROBE, wrapper: wrapper_source) do |contract|
@@ -2036,12 +1804,7 @@ def runtime_program_root_failures(wrapper_source: File.read(CONTRACT))
   failures
 end
 
-# The runtime half's own two-roots direction, which no other contract in this
-# series has: kapowarr-runtime.rb reads roles/kapowarr/defaults/main.yml through
-# the SAME export, past the `exec`. The inspected tree declares a naming template
-# the served settings do not hold, and the deployment must be refused for naming
-# exactly that template. Rerooting the export to the checkout would make this row
-# pass, and no local signal but this one would notice.
+# kapowarr-runtime.rb reads roles/kapowarr/defaults/main.yml through the same export, past `exec`.
 def runtime_two_roots_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   options = RUNTIME_DEFAULTS.merge(
@@ -2173,8 +1936,6 @@ PROGRAM_MUTATIONS = [
   {
     label: "the exactly-once CPU set read",
     program: :static,
-    # Restores the substring search the line-oriented read replaced, which is the
-    # form a second live assignment satisfies while only one may exist.
     from: 'env_assignments.select { |name, _value| name == "PLATFORM_CONTAINER_CPUSET" } ==
       [["PLATFORM_CONTAINER_CPUSET", "{{ platform_effective_container_cpuset }}"]]',
     to: 'File.read(File.join(root, "roles/kapowarr/templates/env.j2"))
@@ -2314,15 +2075,7 @@ PROGRAM_MUTATIONS = [
     to: "true",
     rows: ["an anonymous login probe not gated on the mode already read"]
   },
-  # No plant for the drift-assertion PRESENCE check, deliberately. It cannot be
-  # broken alone: the floor check two lines below it is written
-  # `folder_assertion && folder_conditions.include?(...)`, so an absent assertion
-  # fails that one too. Removing `folder_assertion.nil?` therefore leaves the
-  # break caught by "the Kapowarr volume folder assertion must require both reads
-  # to have answered" rather than by its own sentence -- which is also why the
-  # row above reports two diagnostics rather than one. The redundancy is the
-  # program's, not this test's, and a row expecting the floor sentence would
-  # freeze it. Reported in the PR, not fixed: this change moves code.
+  # No plant for the drift-assertion presence check: the floor check below also requires it.
   {
     label: "the answered-reads floor check",
     program: :static,
@@ -2345,13 +2098,8 @@ PROGRAM_MUTATIONS = [
     to: "true",
     rows: ["a verification read that claims a change"]
   },
-  # The ordering half only. An absent guard also fails the subject check below
-  # it, so planting the presence half away leaves that row refused by the other
-  # sentence -- the same redundancy the drift-assertion note further down records.
-  # Since the pre-upgrade copy (#671) the same row also breaks that copy's own
-  # ordering, which requires the guard ahead of it, so with this check planted
-  # away the row is still refused -- by the copy's sentence. That is the
-  # detection: the row names this check's sentence and gets another.
+  # The ordering half only: an absent guard is already refused by the subject check and by
+  # the pre-upgrade copy's ordering (#671).
   {
     label: "the downgrade guard ordering check",
     program: :static,
@@ -2367,9 +2115,7 @@ PROGRAM_MUTATIONS = [
     to: "true",
     rows: ["a downgrade guard pointed at another Compose project"]
   },
-  # The ordering half of the pre-upgrade copy check only, for the reason the
-  # downgrade guard's plant above gives: an absent import fails the same sentence
-  # through its first term, which no plant of the ordering can remove.
+  # The ordering half only, for the same reason as the downgrade guard's plant.
   {
     label: "the pre-upgrade copy ordering check",
     program: :static,
@@ -2696,10 +2442,7 @@ WRAPPER_MUTATIONS = [
     layer: :runtime_program_root
   },
   {
-    # BOTH assignments, because both are live: the first is what the static half
-    # reads and the second is a verbatim repeat the pre-cut wrapper carried. A
-    # plant on only one leaves the other in force, which is exactly the
-    # unscoped-substitution failure hazard 9 names.
+    # Both assignments are live, so the plant hits both.
     label: "the inspected-tree export rerooted to the checkout",
     from: "PLATFORM_CONTRACT_REPO_DIR=$repo_dir",
     to: "PLATFORM_CONTRACT_REPO_DIR=$contract_repo_dir",
@@ -2735,11 +2478,7 @@ WRAPPER_MUTATIONS = [
 if ARGV.include?("--self-test")
   mismatches = []
 
-  # Every plant is prepared on the main thread, before the pool. `plant` and
-  # `rows_named` abort with a sentence naming what they could not find, and an
-  # abort inside a worker raises SystemExit there: the thread dies without
-  # recording its result and the pool's own `collected.fetch` then reports a
-  # KeyError instead of that sentence.
+  # Plants are prepared before the pool: an `abort` in a worker surfaces as a KeyError.
   program_cases = PROGRAM_MUTATIONS.map do |mutation|
     canonical = mutation.fetch(:program) == :static ? STATIC_PROGRAM : RUNTIME_PROGRAM
     rows = mutation.fetch(:program) == :static ? STATIC_ROWS : RUNTIME_ROWS

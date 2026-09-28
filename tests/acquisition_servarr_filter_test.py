@@ -1,19 +1,8 @@
 #!/usr/bin/env python3
 """Behaviour of the Prowlarr and Servarr relationship filters.
 
-Eight of these eleven filters were reachable only by spawning
-`ansible-playbook`: `tests/acquisition_owned_field_coverage_test.py` calls the
-three projections, and the bodies, the masking passes, the URL match and the
-field merge were exercised only as a side effect of a reconciliation fixture
-run. They are pure functions over plain containers, so their contracts are
-stated here directly and the fixture keeps only the properties that need a real
-play.
-
-Each case names what it protects. The bodies are what this platform writes, so
-their shape is the contract with Radarr, Sonarr and Prowlarr; the masking passes
-decide which fields are compared at all, so a mask that stopped being detected
-would make a stored secret look like permanent drift; and the field merge is
-what preserves everything this platform does not own.
+Pure functions stated directly; the reconciliation fixture keeps only what
+needs a real play.
 """
 
 from __future__ import annotations
@@ -94,12 +83,7 @@ def refuses(failures, call, message):
 
 
 def refuses_with(failures, call, expected, message):
-    """Assert both that a call is refused and how it words the refusal.
-
-    The three projections are one function driven by a per-relationship
-    descriptor, so the wording is what proves a descriptor is wired to the
-    relationship it names. An operator reads these strings out of a failed play.
-    """
+    """Assert that a call is refused, and its wording: that proves the descriptor wiring."""
     try:
         call()
     except AnsibleFilterError as error:
@@ -232,9 +216,7 @@ def collect_failures():
     )
     check(failures, explicit["enable"] is False and explicit["priority"] == 17,
           "a declared enable flag and priority must override the defaults")
-    # Prowlarr answers a body without appProfileId with 400, so its presence is
-    # the difference between an indexer this platform can create and one every
-    # converge fails on.
+    # Prowlarr answers a body without appProfileId with 400.
     check(failures, indexer["appProfileId"] == 1,
           "an indexer body must default to Prowlarr's Standard sync profile")
     check(failures,
@@ -247,8 +229,7 @@ def collect_failures():
               dict(INDEXER_DECLARATION, app_profile_id="2")
           )["appProfileId"] == 2,
           "a declared app_profile_id must be coerced to an integer")
-    # Prowlarr refuses a Usenet indexer whose redirect is off, and this platform
-    # declares no other kind.
+    # Prowlarr refuses a Usenet indexer whose redirect is off.
     check(failures, indexer["redirect"] is True,
           "an indexer body must enable redirect, which Usenet indexers require")
     check(failures,
@@ -325,8 +306,7 @@ def collect_failures():
             "implementation", "implementationName", "configContract",
             "tags", "fields"],
         "the indexer projection must carry exactly its owned attributes, tags last")
-    # A Servarr API omits `tags` from a resource that has none, and an explicit
-    # null is a type that changed rather than an absence.
+    # A Servarr API omits empty `tags`; an explicit null is a type change.
     without_tags = {key: item for key, item in readable.items() if key != "tags"}
     try:
         omitted_tags = plugin.acquisition_application_projection(without_tags)["tags"]

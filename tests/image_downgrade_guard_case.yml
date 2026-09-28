@@ -1,12 +1,6 @@
 ---
-# One case of tests/image_downgrade_guard_test.yml. Separate because a block
-# cannot be looped and the refusal has to be caught: the case runs the real role
-# and records whether it failed, so what is under test is the shipped file
-# rather than a restatement of its expressions.
-#
-# The three facts are reset first. set_fact persists across loop iterations, so
-# a case whose role run failed before reaching them would otherwise be judged on
-# the previous case's values -- which is a green run reporting the wrong thing.
+# One case of tests/image_downgrade_guard_test.yml, running the real role. Facts
+# are reset first: set_fact persists across iterations.
 - name: Reset the facts this case is judged on
   ansible.builtin.set_fact:
     image_downgrade_guard_pinned_version: ""
@@ -24,9 +18,7 @@
           image: {{ item.pinned }}
     mode: "0644"
 
-# Two tasks rather than one because `copy` refuses empty content, and the case
-# with no containers at all -- a fresh host -- is one the guard has to survive.
-# The stub tolerates the file's absence, so absence is how emptiness is said.
+# `copy` refuses empty content, and absence is how the stub reads "no containers".
 - name: Clear the container identifiers left by the previous case
   ansible.builtin.file:
     path: "{{ guard_root }}/docker-ids"
@@ -80,24 +72,8 @@
            'deployed_versions': image_downgrade_guard_deployed_versions
          }] }}
 
-# The case's own verdict against the one it declares, which is what the case
-# list exists to say. Here rather than in a loop over `guard_results` in the
-# play for two reasons: `item` holds the declaration and the facts hold the
-# outcome, so both sides are local and nothing has to be re-derived by zipping
-# two lists by index -- the accumulated rows carry the outcome only; and a
-# mismatch fails at the case that caused it rather than after all of them have
-# run. The aggregate floors in the play stay, because a case list that shrank
-# reaches no per-case assertion at all.
-#
-# `newer` is compared as well as the verdict, and it is not decoration: it is
-# the difference between refusing for the reason the case describes and
-# refusing because the role died before it compared anything. A role run that
-# failed at its slurp records `refused: true` with the `newer: []` the reset
-# above left, and that mismatches any case declaring a version it should have
-# named. The reset is also why both facts can be referenced plainly -- all
-# three are assigned before every iteration, so there is no path on which this
-# expression meets an undefined variable and dies on the allowed side while
-# working on the refused one (#536).
+# Judged per case against its declaration. `newer` is compared too, so a role
+# that died before comparing cannot pass as a refusal (#536).
 - name: Require this case to reach the verdict it declares
   ansible.builtin.assert:
     that:

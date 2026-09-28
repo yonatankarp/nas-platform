@@ -1,9 +1,6 @@
 ---
-# Platform fragments. Compose resolves a YAML anchor only inside the file that
-# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
-# copies equal and records there why cross-file sharing was not taken. A
-# container needing different health-check timing overrides only the fields it
-# changes, so a deviation reads as a deviation.
+# Platform fragments. Anchors are file-local, so each stack carries its own
+# copy; tests/policy_test.rb pins the copies equal.
 x-logging: &default-logging
   driver: json-file
   options:
@@ -24,9 +21,7 @@ x-healthcheck-defaults: &healthcheck-defaults
   start_period: 60s
 
 services:
-  # Pinchflat is a self-contained YouTube writer: it calls no other platform
-  # service, so it stays off the media-control network for the same reason Komga
-  # does. Jellyfin reads what it writes from disk through its own library.
+  # Self-contained writer: calls no platform service, so it is off media-control.
   pinchflat:
     <<: *service-defaults
     container_name: pinchflat
@@ -34,35 +29,21 @@ services:
     cpus: 1.0
     labels:
       dev.dozzle.name: pinchflat
-    # The image ships no PUID/PGID handling and upstream refuses to run as root,
-    # so the container takes the shared platform identity directly.
+    # No PUID/PGID handling and upstream refuses root, so run as the platform identity.
     user: "${NAS_UID:?}:${NAS_GID:?}"
     ports:
       - "8945:8945"
     volumes:
       - ${PINCHFLAT_CONFIG_PATH:?}:/config
       - ${PINCHFLAT_DOWNLOADS_PATH:?}:/downloads
-      # yt-dlp is mounted over the copy the image ships, because the image ships
-      # a frozen one. v2025.6.6 carries yt-dlp 2025.05.22, which reads a current
-      # YouTube playlist page as zero entries since YouTube moved playlist items
-      # to "lockup view models", and Pinchflat refuses a source it cannot
-      # resolve. Upstream has published no release image since 2025-06, so the
-      # extractor cannot be kept current by bumping the image. It is a Python
-      # zipapp against the image's own python3, so one artifact serves amd64 and
-      # arm64 alike and the pin stays multi-arch. roles/pinchflat owns it by
-      # version and sha256, which is what makes the deployed extractor a
-      # declared value rather than whatever the image was built with.
-      #
-      # Read-only, because nothing inside the container may rewrite the
-      # extractor. Ansible must create the file before Compose starts: Docker
-      # bind-mounts a *directory* onto a missing source path, and the container
-      # then cannot exec it.
+      # yt-dlp is mounted over the image's frozen copy, which can no longer read
+      # YouTube playlists; roles/pinchflat pins it by version and sha256. Ansible must
+      # create the file first, or Docker bind-mounts a directory in its place.
       - ${PINCHFLAT_YTDLP_PATH:?}:/usr/local/bin/yt-dlp:ro
     environment:
       TZ: ${TZ:?}
       UMASK: "022"
-      # Pinchflat's only access control. Unset, the web UI is an unauthenticated
-      # writer on the LAN that can queue and delete media.
+      # Pinchflat's only access control; unset, the UI is an unauthenticated LAN writer.
       BASIC_AUTH_USERNAME: ${PINCHFLAT_BASIC_AUTH_USERNAME:?}
       BASIC_AUTH_PASSWORD: ${PINCHFLAT_BASIC_AUTH_PASSWORD:?}
     healthcheck:
@@ -72,8 +53,5 @@ services:
         - >-
           curl --fail --silent --show-error
           http://127.0.0.1:8945/healthcheck >/dev/null
-    # The source list and download history are a SQLite database under a
-    # recovery: critical config directory. 30s commits it. A yt-dlp download cut
-    # short is re-queued from that same database, so the window does not wait
-    # for one.
+    # 30s commits the SQLite database; a cut-short download is re-queued from it.
     stop_grace_period: 30s

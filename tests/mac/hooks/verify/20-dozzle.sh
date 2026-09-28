@@ -6,14 +6,7 @@ mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 . "$mac_script_dir/lib.sh"
 
-# The per-container label assertions are 20-dozzle-labels.rb beside this file.
-# They arrived here as a `<<'RUBY'` heredoc until #315, where sh -n, ruby -c and
-# a reader could reach none of them, and the `-rjson` preload is now a require
-# inside the program. tests/contracts/dozzle-alerts.rb reads that file for the
-# two label names, so the contract now asserts on the assertions rather than on
-# the wrapper they left. Resolve it from this hook's own checkout rather than
-# from any tree an argument or the environment supplies, and hold standard input
-# at end-of-file: a heredoc exhausted it by construction.
+# Labels are asserted by 20-dozzle-labels.rb from this checkout; stdin held at EOF.
 verify_dozzle_labels() {
   expected_group=$1
   shift
@@ -29,9 +22,7 @@ verify_dozzle_labels() {
   done
 }
 
-# Both disposable lanes deploy the same namespaced Compose identities, so the
-# roster is taken from the shared identity helper instead of forking by proof
-# platform.
+# Both disposable lanes share namespaced identities, so one roster serves both.
 case ${PLATFORM_PROOF_PLATFORM:-mac} in
   integration | mac) ;;
   *) mac_die 'proof platform is invalid' ;;

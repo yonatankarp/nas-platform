@@ -38,10 +38,8 @@ ANSIBLE = if ANSIBLE_ON_PATH.empty?
             ANSIBLE_ON_PATH
           end
 BACKUP_NAME = "immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz"
-# Both sides of the compatibility comparison are read out of the fixture
-# filename rather than out of the role defaults, which now derive from the
-# pinned image. A fixture that pins the backup and takes the expected version
-# from the deployment would refuse itself on the next image bump (#560).
+# Both versions come from the fixture filename, not the image-derived role
+# defaults, or the fixture would refuse itself on the next bump (#560).
 BACKUP_IMMICH_VERSION = BACKUP_NAME[/-v([0-9.]+)-pg/, 1]
 BACKUP_POSTGRES_MAJOR = BACKUP_NAME[/-pg([0-9]+)\./, 1].to_i
 CLASSIFIER = File.join(ROOT, "services", "immich", "classify_restore.py")
@@ -367,12 +365,8 @@ Dir.mktmpdir("nas-platform-immich-lifecycle-uninitialized-") do |temporary|
     retry_output.include?("previous-failed-restore")
 end
 
-
 # --- #907: the hourly originals check -----------------------------------------
-# 9,576 rows named originals no longer on disk and nothing said so, because the
-# thumbnails live elsewhere. verify_originals.yml samples rows at random under an
-# hourly-only tag and fails past a declared share. It runs here against the real
-# helper with only the psql read stubbed, so what is proved is the task file.
+# Runs verify_originals.yml against the real helper with only the psql read stubbed.
 ORIGINALS_TAG = "platform_verify_immich_originals"
 ORIGINALS_MARKER = "IMMICH-ORIGINALS-MISSING"
 ORIGINALS_PATH = File.join(ROOT, "roles", "immich", "tasks", "verify_originals.yml")

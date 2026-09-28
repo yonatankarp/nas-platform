@@ -1,15 +1,6 @@
 #!/usr/bin/env ruby
-# A fake `docker` for tests/mac/media-acquisition-foundation-hook-test.sh.
-#
-# The test copies this file to $fixture/bin/docker and puts that directory
-# first on PATH, so the media-acquisition drift and verify hooks talk to a
-# JSON state model (FAKE_DOCKER_STATE) instead of a daemon, and every mutation
-# it makes is appended to FAKE_DOCKER_LOG. INJECT names the failure the model
-# should stage at a given call, which is how the hooks probe recovery paths.
-#
-# It lived in a `cat > "$fixture/bin/docker" <<'RUBY'` heredoc inside that test
-# until #315 -- nothing syntax-checked it and no linter could reach it. The
-# body below is byte-identical to what that heredoc rendered.
+# A fake `docker` for media-acquisition-foundation-hook-test.sh: a JSON state model
+# (FAKE_DOCKER_STATE), mutations logged to FAKE_DOCKER_LOG, INJECT stages failures.
 require "json"
 
 path = ENV.fetch("FAKE_DOCKER_STATE")
