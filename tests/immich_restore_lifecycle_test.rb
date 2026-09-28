@@ -502,6 +502,8 @@ Dir.mktmpdir("nas-platform-immich-originals-refused-") do |temporary|
   fail_test("originals check, refused path: must fail") if status.success?
   fail_test("originals check, refused path: must not page as missing originals") if
     output.include?("#{ORIGINALS_MARKER}:")
+  fail_test("originals check, refused path: a path left the check") if
+    output.include?(File.join(root, "media")) || output.include?("/etc/passwd")
 end
 
 verify_playbook = YAML.safe_load_file(File.join(ROOT, "verify.yml"), aliases: true)
