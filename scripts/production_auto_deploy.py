@@ -37,10 +37,13 @@ TIMESTAMP_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 ATTEMPTED_RETENTION_COUNT = 50
 ATTEMPTED_RETENTION_DAYS = 90
 MAX_RESPONSE_BYTES = 1024 * 1024
-# One page of recent completed runs. It bounds how far back a poll can see, so
-# it has to hold more than one revision's worth: a revision owns several runs
-# over its life, and every re-run adds another.
-CI_RUN_PAGE_SIZE = 20
+# One page of recent runs. It bounds how far back a poll can see, so it has to
+# hold more than one revision's worth: a revision owns several runs over its
+# life, and every re-run adds another. Since #916 the page is fetched without a
+# status filter, so queued and running pushes take slots the completed ones used
+# to have; 30 keeps the former 20 with ten in flight. Measured 2026-09-28, 20
+# runs were 263 KB and 50 were 655 KB, so 30 is about 40% of MAX_RESPONSE_BYTES.
+CI_RUN_PAGE_SIZE = 30
 READ_SIZE = 64 * 1024
 NETWORK_TIMEOUT_SECONDS = 10
 GIT_TIMEOUT_SECONDS = 10
@@ -572,20 +575,23 @@ def resolve_main_sha(config: Config) -> str:
 
 
 def fetch_ci_runs(config: Config) -> tuple[dict, ...]:
-    """Fetch one bounded page of completed push runs for the production branch.
+    """Fetch one bounded page of push runs for the production branch.
 
     The whole branch rather than one revision, because the question a poll has
     to answer is which revision CI has released, and asking about a single SHA
     cannot see that the head is still running while its parent already passed.
     It stays one request either way, which matters: the API is called
     anonymously, and the poll runs every five minutes.
+
+    No `status` filter: on 2026-09-28 GitHub answered status=completed with runs
+    from 2026-09-05, weeks behind the head (#916). candidate_revisions and
+    gating_ci_runs read only completed runs anyway.
     """
 
     query = urlencode(
         {
             "branch": config.branch,
             "event": "push",
-            "status": "completed",
             "per_page": str(CI_RUN_PAGE_SIZE),
         }
     )
@@ -2341,15 +2347,26 @@ def select_revision(
 
     A judgement ends the walk. A revision CI refused blocks every deployment
     behind it, exactly as a red head always has. A revision already attempted
-    means this poller has had its turn at it — and at everything older, which
-    is what keeps the walk from ever going backwards.
+    means this poller has had its turn at it — and at everything older.
+
+    That record is pruned, though, and GitHub's page of runs can be weeks stale,
+    which together selected revisions from the 16th and 17th on 2026-09-28
+    (#916). So what keeps the walk from going backwards is git: a revision that
+    is not strictly newer than the last successful one, or not on the head, ends
+    the walk too, and so does one the checkout does not have. A retry reaches
+    this check like any other revision.
     """
 
     attempted = attempted_shas(config)
+    successful = read_state(config)["last_successful"]
     unjudged: Selection | None = None
     for sha in candidate_revisions(config, head, runs):
         if sha in attempted and sha != retry_sha:
             return Selection(attempted=sha)
+        if successful is not None and not _newer_than_deployed(
+            config, sha, head, successful["sha"]
+        ):
+            break
         verdict = ci_verdict(config, sha, runs)
         if verdict[0] == CI_GREEN:
             return Selection(candidate=sha, judged=sha, verdict=verdict)
@@ -2360,6 +2377,67 @@ def select_revision(
             # but it is what clears a refusal once the revision is re-run.
             unjudged = Selection(judged=sha, verdict=verdict)
     return unjudged if unjudged is not None else Selection()
+
+
+def _is_ancestor(config: Config, ancestor: str, descendant: str) -> bool:
+    """Whether the checkout knows `ancestor` to be an ancestor of `descendant`.
+
+    Any non-zero exit is no: 1 is git's answer, 128 a commit the checkout does
+    not have, and neither may make a revision eligible. A timeout or a git that
+    cannot run is a host that cannot decide, so the poll decides nothing.
+    """
+
+    try:
+        result = _run(
+            [config.git_path, "merge-base", "--is-ancestor", ancestor, descendant],
+            timeout=GIT_LOCAL_TIMEOUT_SECONDS,
+            cwd=config.checkout,
+            env={"PATH": config.tool_path, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise EligibilityError("git ancestry check failed") from error
+    return result.returncode == 0
+
+
+def _newer_than_deployed(config: Config, sha: str, head: str, deployed: str) -> bool:
+    """Strictly newer than the deployed revision, and on the head (#916)."""
+
+    return (
+        sha != deployed
+        and _is_ancestor(config, deployed, sha)
+        and (sha == head or _is_ancestor(config, sha, head))
+    )
+
+
+def _fetch_unseen_head(config: Config, head: str) -> None:
+    """Fetch the branch when the checkout does not have the head yet.
+
+    Selection asks git whether a revision is newer than the deployed one, and it
+    runs before update_checkout's fetch, so a merge the checkout has not seen
+    would never be newer than anything. Only asked once something has deployed,
+    because a fresh host's selection asks git nothing. A failed fetch is a poll
+    that could not see, exactly like a failed ls-remote.
+    """
+
+    environment = {"PATH": config.tool_path, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        known = _run(
+            [config.git_path, "cat-file", "-e", f"{head}^{{commit}}"],
+            timeout=GIT_LOCAL_TIMEOUT_SECONDS,
+            cwd=config.checkout,
+            env=environment,
+        )
+        if known.returncode == 0:
+            return
+        _run_network_command(
+            [config.git_path, "fetch", "--prune", "origin", config.branch],
+            failure="git fetch failed",
+            budget=GIT_FETCH_TIMEOUT_SECONDS,
+            cwd=config.checkout,
+            env=environment,
+        )
+    except (OSError, subprocess.SubprocessError, TransientDeploymentError) as error:
+        raise EligibilityError("git fetch failed") from error
 
 
 def _eligible_revision(
@@ -2395,6 +2473,8 @@ def _poll_selection(config: Config, retry_sha: str | None) -> Selection:
     # is tracked rather than only printed to a cron mailbox nobody reads.
     try:
         head = resolve_main_sha(config)
+        if read_state(config)["last_successful"] is not None:
+            _fetch_unseen_head(config, head)
         selection = _eligible_revision(config, head, retry_sha)
     except EligibilityError as error:
         note_blind_poll(config, str(error))

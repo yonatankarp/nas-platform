@@ -545,7 +545,9 @@ class EligibilityTest(PollerTestCase):
         self.assertIn("workflows/ci.yml/runs", url)
         self.assertIn("event=push", url)
         self.assertIn("branch=main", url)
-        self.assertIn("status=completed", url)
+        # #916: GitHub served a weeks-old page for the status=completed filter.
+        # The walk filters on status itself, so the query must not ask for it.
+        self.assertNotIn("status=", url)
 
     def test_fetch_ci_runs_asks_about_the_branch_rather_than_one_revision(self):
         """A per-revision query cannot see that the head is still running while
@@ -731,6 +733,135 @@ class SelectionTest(PollerTestCase):
         )
 
         self.assertEqual(candidates, [MAIN_SHA])
+
+
+class MonotonicSelectionTest(PollerTestCase):
+    """#916: a poll never selects a revision that is not newer than the deployed one.
+
+    The attempted record used to be the only thing keeping the walk from going
+    backwards, and it is pruned to its newest entries; GitHub then served a
+    runs page weeks behind the head, and the poller checked out two revisions
+    from the 16th and 17th on the live NAS. Ancestry against a real repository,
+    because the answer is git's exit code and a stub would only restate it.
+    """
+
+    GREEN_RUN = EligibilityTest.GREEN_RUN
+
+    def setUp(self):
+        super().setUp()
+        git = shutil.which("git")
+        if git is None:
+            self.skipTest("git is required")
+        self.git = git
+        self.env = {
+            "PATH": os.environ.get("PATH", ""),
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+        }
+        self.origin = self.root / "origin"
+        self.origin.mkdir()
+        self.git_in(self.origin, "init", "--quiet", "--initial-branch=main")
+        # c[0] oldest .. c[3] newest on main; side branches off c[1].
+        self.c = [self.commit(self.origin, f"c{index}") for index in range(4)]
+        self.git_in(self.origin, "checkout", "--quiet", "-b", "side", self.c[1])
+        self.side = self.commit(self.origin, "side")
+        self.git_in(self.origin, "checkout", "--quiet", "main")
+        self.checkout = self.root / ".local/share/nas-platform/controller"
+        self.checkout.rmdir()
+        self.git_in(self.root, "clone", "--quiet", "--no-local", str(self.origin),
+                    str(self.checkout))
+        self.config = self.loaded_config(
+            git_path=git, tool_path=str(Path(git).parent) + ":/usr/bin:/bin"
+        )
+
+    def git_in(self, cwd, *arguments):
+        return subprocess.run(
+            [self.git, "-c", "user.name=t", "-c", "user.email=t@t", *arguments],
+            cwd=cwd, env=self.env, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    def commit(self, cwd, message):
+        self.git_in(cwd, "commit", "--allow-empty", "--quiet", "-m", message)
+        return self.git_in(cwd, "rev-parse", "HEAD")
+
+    def green(self, *shas):
+        return tuple({**self.GREEN_RUN, "head_sha": sha} for sha in shas)
+
+    def deployed(self, sha):
+        production_auto_deploy.record_success(self.config, sha, "2026-09-28T10:00:00Z")
+
+    def select(self, head, runs, retry_sha=None):
+        return production_auto_deploy.select_revision(self.config, head, runs, retry_sha)
+
+    def test_a_stale_runs_page_cannot_select_a_revision_older_than_the_deployed_one(self):
+        """The #916 incident: the attempted record pruned, the head still
+        running, and the page holding only green revisions behind the deployed one."""
+
+        self.deployed(self.c[2])
+
+        selection = self.select(self.c[3], self.green(self.c[1], self.c[0]))
+
+        self.assertIsNone(selection.candidate)
+
+    def test_the_deployed_revision_itself_is_not_selected_again(self):
+        self.deployed(self.c[3])
+
+        self.assertIsNone(self.select(self.c[3], self.green(self.c[3])).candidate)
+
+    def test_the_newest_green_revision_ahead_of_the_deployed_one_is_still_selected(self):
+        self.deployed(self.c[1])
+
+        self.assertEqual(
+            self.select(self.c[3], self.green(self.c[2], self.c[1])).candidate, self.c[2]
+        )
+        self.assertEqual(
+            self.select(self.c[3], self.green(self.c[3], self.c[2])).candidate, self.c[3]
+        )
+
+    def test_a_revision_off_the_head_is_not_selected(self):
+        """Newer than the deployed revision, but not on main any more."""
+
+        self.deployed(self.c[0])
+
+        self.assertIsNone(self.select(self.c[3], self.green(self.side)).candidate)
+
+    def test_a_commit_the_checkout_does_not_have_is_not_eligible(self):
+        self.deployed(self.c[0])
+
+        self.assertIsNone(self.select(self.c[3], self.green("d" * 40)).candidate)
+        self.assertIsNone(self.select("e" * 40, self.green("e" * 40)).candidate)
+
+    def test_retry_failed_cannot_put_an_older_revision_back(self):
+        production_auto_deploy.record_attempt(self.config, self.c[1])
+        # c[2]'s own attempt pruned away, as a heavy merge day does.
+        self.deployed(self.c[2])
+
+        selection = production_auto_deploy._eligible_revision
+        with mock.patch.object(
+            production_auto_deploy, "fetch_ci_runs", return_value=self.green(self.c[1])
+        ):
+            self.assertIsNone(selection(self.config, self.c[3], self.c[1]).candidate)
+
+    def test_a_poll_fetches_a_head_the_checkout_has_not_seen_yet(self):
+        """Selection runs before the deploy's own fetch, so without one here a
+        new merge would be unknown to the checkout and never become eligible."""
+
+        self.deployed(self.c[3])
+        newest = self.commit(self.origin, "c4")
+        with mock.patch.object(
+            production_auto_deploy, "resolve_main_sha", return_value=newest
+        ), mock.patch.object(
+            production_auto_deploy, "fetch_ci_runs", return_value=self.green(newest)
+        ), mock.patch.object(
+            production_auto_deploy, "notify", return_value=True
+        ), mock.patch.object(
+            production_auto_deploy, "announce_release"
+        ), mock.patch.object(
+            production_auto_deploy, "deploy", return_value=True
+        ) as deploy:
+            self.assertTrue(production_auto_deploy.poll(self.config))
+
+        self.assertEqual(deploy.call_args.args[1], newest)
 
 
 class StateTest(PollerTestCase):
@@ -2746,10 +2877,29 @@ class PollCiRefusalTest(PollerTestCase):
         self.assertEqual(len(self.poll_with(config, (self.RED_RUN,))[0]), 1)
 
 
+# The history the harness below pretends main has, oldest first, so a poll
+# after a success can ask git about ancestry without a repository (#916).
+# MonotonicSelectionTest asks a real one.
+LINEAR_HISTORY = (OLDER_SHA, OTHER_SHA, MAIN_SHA)
+
+
+def linear_ancestry(config, ancestor, descendant):
+    return LINEAR_HISTORY.index(ancestor) <= LINEAR_HISTORY.index(descendant)
+
+
 class PollHarness:
     """One poll against an explicit view of the branch and its CI history."""
 
     GREEN_RUN = EligibilityTest.GREEN_RUN
+
+    @contextlib.contextmanager
+    def linear_checkout(self):
+        with mock.patch.object(
+            production_auto_deploy, "_fetch_unseen_head"
+        ), mock.patch.object(
+            production_auto_deploy, "_is_ancestor", side_effect=linear_ancestry
+        ):
+            yield
 
     @contextlib.contextmanager
     def eligible(self, sha, green=True):
@@ -2758,7 +2908,9 @@ class PollHarness:
             production_auto_deploy, "resolve_main_sha", return_value=sha
         ), mock.patch.object(
             production_auto_deploy, "fetch_ci_runs", return_value=runs
-        ), mock.patch.object(production_auto_deploy, "notify", return_value=True):
+        ), mock.patch.object(
+            production_auto_deploy, "notify", return_value=True
+        ), self.linear_checkout():
             yield
 
     @contextlib.contextmanager
@@ -2770,7 +2922,9 @@ class PollHarness:
             production_auto_deploy, "resolve_main_sha", return_value=head
         ), mock.patch.object(
             production_auto_deploy, "fetch_ci_runs", return_value=runs
-        ), mock.patch.object(production_auto_deploy, "notify", return_value=True):
+        ), mock.patch.object(
+            production_auto_deploy, "notify", return_value=True
+        ), self.linear_checkout():
             yield
 
     def green_run(self, sha):
