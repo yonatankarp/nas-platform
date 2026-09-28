@@ -864,6 +864,27 @@ class MonotonicSelectionTest(PollerTestCase):
         self.assertEqual(deploy.call_args.args[1], newest)
 
 
+    def test_a_failed_fetch_is_a_poll_that_could_not_see(self):
+        """Raised past poll() as a deployment error, it would skip the blind-poll
+        count, and a poller that cannot fetch would never alarm."""
+
+        self.deployed(self.c[3])
+        newest = self.commit(self.origin, "c4")
+        self.git_in(self.checkout, "remote", "set-url", "origin", str(self.root / "gone"))
+        with mock.patch.object(
+            production_auto_deploy, "resolve_main_sha", return_value=newest
+        ), mock.patch.object(
+            production_auto_deploy, "fetch_ci_runs", return_value=self.green(newest)
+        ), mock.patch.object(production_auto_deploy.time, "sleep"), mock.patch.object(
+            production_auto_deploy, "deploy"
+        ) as deploy:
+            with self.assertRaises(production_auto_deploy.EligibilityError):
+                production_auto_deploy.poll(self.config)
+
+        deploy.assert_not_called()
+        self.assertEqual(production_auto_deploy.read_blind_polls(self.config), 1)
+
+
 class StateTest(PollerTestCase):
     def test_a_sha_is_recorded_once_and_is_idempotent(self):
         config = self.loaded_config()
