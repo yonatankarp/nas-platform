@@ -240,7 +240,9 @@ generate_vault() (
   umask 077
   plain="$directory/vault-plain.yml"
   private_key="$directory/.beszel-key"
-  trap 'rm -f -- "$plain" "$private_key" "$private_key.pub" "$password_file" "$output"' EXIT
+  agent_cert="$directory/.dozzle-agent-cert"
+  agent_key="$directory/.dozzle-agent-key"
+  trap 'rm -f -- "$plain" "$private_key" "$private_key.pub" "$agent_cert" "$agent_key" "$password_file" "$output"' EXIT
   trap 'exit 1' HUP INT TERM
 
   vault_password=$(random_password)
@@ -280,6 +282,9 @@ generate_vault() (
   fi
   ssh-keygen -q -t ed25519 -N '' -C 'ephemeral beszel hub' -f "$private_key" \
     >/dev/null 2>&1 || die 'failed to generate ephemeral key material'
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    -days 2 -subj '/O=ephemeral dozzle agent' -keyout "$agent_key" -out "$agent_cert" \
+    >/dev/null 2>&1 || die 'failed to generate the ephemeral Dozzle agent pair'
 
   cat > "$plain" <<EOF
 ---
@@ -297,6 +302,10 @@ vault_dozzle_admin_username: ephemeral-admin
 vault_dozzle_admin_password: '$dozzle_admin_password'
 vault_dozzle_admin_password_hash: '$(bcrypt_password "$dozzle_admin_password")'
 vault_dozzle_alert_relay_token: '$(openssl rand -hex 32 2>/dev/null)'
+vault_dozzle_agent_certificate: |
+$(sed 's/^/  /' "$agent_cert")
+vault_dozzle_agent_private_key: |
+$(sed 's/^/  /' "$agent_key")
 vault_immich_admin_email: ephemeral-admin@example.invalid
 vault_immich_admin_password: '$(random_password)'
 vault_immich_db_name: immich
@@ -426,7 +435,7 @@ EOF
   ansible-vault encrypt --vault-password-file "$password_file" \
     --output "$output" "$plain" >/dev/null 2>&1 || die 'failed to encrypt ephemeral vault'
   chmod 0600 "$output"
-  rm -f -- "$plain" "$private_key" "$private_key.pub"
+  rm -f -- "$plain" "$private_key" "$private_key.pub" "$agent_cert" "$agent_key"
   trap - EXIT HUP INT TERM
 )
 

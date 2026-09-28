@@ -91,6 +91,13 @@ UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}"
 
 OPENSSH_PRIVATE_KEY_MARKER = "BEGIN OPENSSH PRIVATE KEY"
 
+# Dozzle's agent pair is loaded with Go's tls.LoadX509KeyPair, which takes PEM.
+# Both `dozzle generate-certs` and `openssl req -x509 -newkey` write the key as
+# PKCS#8, so that is the one key marker admitted; an OpenSSH key would pass a
+# looser "PRIVATE KEY" test and then fail inside the container.
+PEM_CERTIFICATE_MARKER = "-----BEGIN CERTIFICATE-----"
+PEM_PKCS8_PRIVATE_KEY_MARKER = "-----BEGIN PRIVATE KEY-----"
+
 # The Jellyfin server owns its administrator account name and the platform cannot
 # rename it, so the vault has to agree with the deployed server rather than the
 # other way round.
@@ -187,6 +194,8 @@ CREDENTIAL_RULES = {
         (PATTERN, HEX_64),
         (NOT_PLACEHOLDER, DOZZLE_ALERT_RELAY_TOKEN_PLACEHOLDERS),
     ),
+    "vault_dozzle_agent_certificate": ((CONTAINS, PEM_CERTIFICATE_MARKER),),
+    "vault_dozzle_agent_private_key": ((CONTAINS, PEM_PKCS8_PRIVATE_KEY_MARKER),),
     "vault_immich_admin_email": ((PATTERN, EMAIL),),
     "vault_immich_admin_password": ((NONEMPTY, None),),
     "vault_immich_db_name": ((PATTERN, DATABASE_IDENTIFIER),),

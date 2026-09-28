@@ -24,6 +24,9 @@ expected_environment = {
   "DOZZLE_ENABLE_SHELL" => "false",
   "DOZZLE_NO_ANALYTICS" => "true",
   "DOZZLE_REMOTE_HOST" => "tcp://socket-proxy:2375",
+  "DOZZLE_REMOTE_AGENT" => "${DOZZLE_REMOTE_AGENT:?}",
+  "DOZZLE_CERT" => "/data/agent-cert.pem",
+  "DOZZLE_KEY" => "/data/agent-key.pem",
   "TZ" => "${TZ:?}"
 }
 abort "Dozzle contract failed: security environment differs" unless

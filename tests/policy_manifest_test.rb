@@ -3217,7 +3217,7 @@ end
   "cleanup unexpected-entry guard" => '! -name vault.yml ! -name password -print -quit',
   "cleanup leaf-symlink guard" => '[ ! -L "$directory/vault.yml" ] && [ ! -L "$directory/password" ]',
   "failure trap isolation" => "generate_vault() (",
-  "failure cleanup trap" => 'trap \'rm -f -- "$plain" "$private_key" "$private_key.pub" "$password_file" "$output"\' EXIT',
+  "failure cleanup trap" => 'trap \'rm -f -- "$plain" "$private_key" "$private_key.pub" "$agent_cert" "$agent_key" "$password_file" "$output"\' EXIT',
   "self-test cleanup trap" => "trap self_test_cleanup_on_exit EXIT"
 }.each do |property, source|
   expect_failure(failures, "ephemeral #{property} removed",

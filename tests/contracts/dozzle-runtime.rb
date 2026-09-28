@@ -936,4 +936,13 @@ if MODE == "beszel-notify"
   end
 end
 
+# Dozzle falls back to the image's public agent pair, silently, when DOZZLE_CERT
+# names no file. This line is the only evidence that it loaded the platform's.
+dozzle_container = compose_service_container(DOZZLE_COMPOSE_SERVICE)
+fail_contract("no Dozzle container to read the agent TLS log line from") unless dozzle_container
+dozzle_log, dozzle_log_errors, dozzle_log_status = Open3.capture3("docker", "logs", dozzle_container)
+fail_contract("Dozzle did not load the platform's agent TLS pair") unless
+  dozzle_log_status.success? &&
+  (dozzle_log + dozzle_log_errors).include?("Loaded custom dozzle certificate and key")
+
 puts "Dozzle contract passed"

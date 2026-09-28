@@ -849,7 +849,7 @@ helper_guard_sources = {
   "cleanup unexpected-entry guard" => '! -name vault.yml ! -name password -print -quit',
   "cleanup leaf-symlink guard" => '[ ! -L "$directory/vault.yml" ] && [ ! -L "$directory/password" ]',
   "failure trap isolation" => "generate_vault() (",
-  "failure cleanup trap" => 'trap \'rm -f -- "$plain" "$private_key" "$private_key.pub" "$password_file" "$output"\' EXIT',
+  "failure cleanup trap" => 'trap \'rm -f -- "$plain" "$private_key" "$private_key.pub" "$agent_cert" "$agent_key" "$password_file" "$output"\' EXIT',
   # An ephemeral Radarr or Sonarr key of only decimal digits is cast to an int by
   # Bazarr's settings form and refused with 406 for the life of that vault. The
   # redraw is what stops it; dropping it back to a bare `openssl rand -hex 16`

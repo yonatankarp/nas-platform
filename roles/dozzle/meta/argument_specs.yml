@@ -56,6 +56,17 @@ argument_specs:
       vault_dozzle_alert_relay_token:
         type: str
         required: true
+      # golem's Dozzle agent, `host:port|name` (service_dozzle.yml).
+      dozzle_remote_agent:
+        type: str
+        required: true
+      # The agent mTLS pair; golem-platform's vault holds copies of both.
+      vault_dozzle_agent_certificate:
+        type: str
+        required: true
+      vault_dozzle_agent_private_key:
+        type: str
+        required: true
       # The Containers application: the relay publishes container lifecycle
       # alerts from /alerts with it.
       vault_pushover_containers_token:
