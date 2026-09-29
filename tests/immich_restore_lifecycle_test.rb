@@ -455,13 +455,12 @@ def originals_sample(root, present:, missing:)
   end
 end
 
-fail_test("the declared ceiling must be 10 percent") unless
-  IMMICH_GROUP_VARS["immich_originals_missing_ceiling_percent"] == 10
+fail_test("the declared ceiling must be 0 percent") unless
+  IMMICH_GROUP_VARS["immich_originals_missing_ceiling_percent"] == 0
 {
   "all present" => [20, 0, true],
-  "a missing share under the ceiling" => [19, 1, true],
-  "a missing share at the ceiling" => [18, 2, true],
-  "a missing share over the ceiling" => [17, 3, false]
+  "one missing original" => [19, 1, false],
+  "several missing originals" => [17, 3, false]
 }.each do |label, (present, missing, passes)|
   Dir.mktmpdir("nas-platform-immich-originals-") do |temporary|
     root = File.realpath(temporary)
