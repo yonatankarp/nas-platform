@@ -327,7 +327,7 @@ jobs:
       # refusal is still an error. A custom manager in renovate.json tracks the pin.
       - name: Validate the Renovate configuration
         run: |
-          renovate_pin=renovate@44.121.4
+          renovate_pin=renovate@44.127.0
           npx --yes --package "$renovate_pin" renovate-config-validator --strict
 
           # A check that has only ever passed proves nothing, and this one is
