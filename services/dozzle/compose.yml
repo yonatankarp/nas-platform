@@ -124,7 +124,7 @@ services:
   socket-proxy:
     <<: *service-defaults
     container_name: dozzle_socket_proxy
-    image: lscr.io/linuxserver/socket-proxy:3.4.5@sha256:ca6c0301a652232d02cb0ff9f1c5d20d9b339f391e1c1dffaae6ef3bfc59d009
+    image: lscr.io/linuxserver/socket-proxy:3.4.6@sha256:0357c479cc98e863917d1cd8b10e83d35a50ca46a0788f5a192bf792c3b7100d
     cpus: 0.5
     labels:
       dev.dozzle.group: dozzle
