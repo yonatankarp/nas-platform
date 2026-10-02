@@ -10,6 +10,10 @@
     "**/vendor/**"
   ],
   "timezone": "Europe/Berlin",
+  "schedule": [
+    "after 10pm on sunday",
+    "before 5am on monday"
+  ],
   "automerge": false,
   "automergeType": "pr",
   "platformAutomerge": true,
@@ -226,8 +230,8 @@
       ],
       "groupName": "container images",
       "schedule": [
-        "after 10pm",
-        "before 5am"
+        "after 10pm on sunday",
+        "before 5am on monday"
       ]
     }
   ],
