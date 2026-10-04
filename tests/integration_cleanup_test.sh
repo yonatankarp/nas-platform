@@ -22,7 +22,7 @@ swap_victim=
 python_sandbox=
 python_root_symlink=
 python_victim=
-runner_image=docker.io/library/python:3.14-alpine@sha256:2e740b2c28a426e74f11396c05e38afb3191acced75045b8d62df573c1dc8ce8
+runner_image=docker.io/library/python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
 
 # Cleanup must own every disposable resource through its namespace, and must
 # keep no fixed production name it could delete unconditionally.
