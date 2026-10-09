@@ -27,7 +27,7 @@ services:
     # THIS IMAGE MIGRATES ITS OWN STORE: 12.0's migrations cannot be rolled back
     # without a full restore, so a bump is one-way (renovate.json, image_downgrade_guard).
     # The tag is two-part on purpose: Renovate matches tag precision (see CLAUDE.md).
-    image: docker.io/jellyfin/jellyfin:12.1@sha256:78d3ea1207d1322471fcac39a614f004f2ccf7e878f95ab2977d752f07e4dd7e
+    image: docker.io/jellyfin/jellyfin:12.2@sha256:357724bf0ae27a672c7cbaa899db2d9abeb13dbd8657ccce750258a4c059d037
     cpus: 3.0
     labels:
       dev.dozzle.name: jellyfin
