@@ -43,6 +43,10 @@ downloaders_sabnzbd_owned_misc:
   direct_unpack: 0
   direct_unpack_threads: 1
   direct_write: 1
+  # Stamp unpacked files with the unpack time, not the date stored in the RAR.
+  # Jellyfin takes "date added" from the file, so a release's 2006 archive date
+  # buried new episodes out of Recently Added.
+  ignore_unrar_dates: 1
   max_art_tries: 3
   # SABnzbd offers a script to a category only from this directory.
   script_dir: /scripts

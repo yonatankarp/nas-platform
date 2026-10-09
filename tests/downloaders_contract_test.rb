@@ -103,6 +103,14 @@ STATIC_ROWS = [
     expects: "SABnzbd concurrent unpack work must be explicitly bounded"
   },
   {
+    name: "unpacked files dated by the archive",
+    break: lambda { |root|
+      mutate_text(root, "roles/downloaders/defaults/main.yml",
+                  "ignore_unrar_dates: 1", "ignore_unrar_dates: 0")
+    },
+    expects: "SABnzbd must date unpacked files by unpack time"
+  },
+  {
     name: "a TLS mode that authenticates nothing",
     break: lambda { |root|
       mutate_text(root, "roles/downloaders/defaults/main.yml", "ssl_verify: 3", "ssl_verify: 1")
@@ -487,6 +495,12 @@ PROGRAM_MUTATIONS = [
     from: 'defaults.dig("downloaders_sabnzbd_owned_misc", "direct_unpack_threads") == 1',
     to: "true",
     rows: ["unbounded concurrent unpack work"]
+  },
+  {
+    label: "the unpack-time file date check",
+    from: 'defaults.dig("downloaders_sabnzbd_owned_misc", "ignore_unrar_dates") == 1',
+    to: "true",
+    rows: ["unpacked files dated by the archive"]
   },
   {
     label: "the strict TLS verification check",
