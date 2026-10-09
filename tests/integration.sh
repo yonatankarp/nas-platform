@@ -5,7 +5,7 @@
 # Usage: tests/integration.sh [--suite NAME [--tags TAGS]] [playbook] [ansible arguments]
 set -eu
 
-ansible_core_version=2.21.4
+ansible_core_version=2.21.5
 # community.docker.docker_container_info imports requests on the managed host;
 # the disposable controller is that host for the local inventory.
 requests_version=2.34.2

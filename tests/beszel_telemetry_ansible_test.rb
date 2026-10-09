@@ -15,7 +15,7 @@ ROLE_TASKS = File.join(ROOT, "roles/beszel/tasks/main.yml")
 ROLE_VARS = File.join(ROOT, "roles/beszel/vars/main.yml")
 
 # Exact output is asserted, so pinned to CI's version (tests/ci/workflow_test.rb checks).
-REQUIRED_ANSIBLE_CORE = "2.21.4" # renovate: datasource=pypi depName=ansible-core
+REQUIRED_ANSIBLE_CORE = "2.21.5" # renovate: datasource=pypi depName=ansible-core
 
 version_output, version_status = Open3.capture2("ansible-playbook", "--version")
 abort "Beszel Ansible telemetry test requires ansible-core #{REQUIRED_ANSIBLE_CORE}" unless
