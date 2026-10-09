@@ -28,7 +28,7 @@ services:
     # SECURITY FLOOR: CVE-2026-27801 (2FA bypass) affects <= 1.34.3, so never
     # deploy a pin below 1.35.0. It migrates its own SQLite store, but additively,
     # so minors automerge; image_downgrade_guard and pre_upgrade_backup cover rollbacks.
-    image: docker.io/vaultwarden/server:1.37.3@sha256:1587c45feaa479f1f5e8af3b00eded36bff77bcf1880cf8dbf0541706dd470e0
+    image: docker.io/vaultwarden/server:1.37.4@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055
     cpus: 0.5
     labels:
       dev.dozzle.name: vaultwarden
