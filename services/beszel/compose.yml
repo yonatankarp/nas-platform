@@ -23,7 +23,7 @@ services:
   hub:
     <<: *service-defaults
     container_name: beszel
-    image: ghcr.io/henrygd/beszel/beszel:0.20.0@sha256:c44c2c25929505930c8bb850556c8e071dd00d42ea367d9b53243ef64bd57d17
+    image: ghcr.io/henrygd/beszel/beszel:0.21.0@sha256:020d80f5974e66356e6d6440736952edc9b9ea59978ac9f98418b5fb643dc0e2
     cpus: 1.0
     labels:
       dev.dozzle.group: beszel
@@ -52,7 +52,7 @@ services:
   agent-portable:
     <<: *service-defaults
     container_name: beszel_agent_portable
-    image: ghcr.io/henrygd/beszel/beszel-agent:0.20.0@sha256:2c3b2d781a8bcdb464704c0024baab5486d238d40871b67c84d906d34791c490
+    image: ghcr.io/henrygd/beszel/beszel-agent:0.21.0@sha256:a197364e01b97dc1d5931679a1d4d71e3c63045f5835b1d77b420d5c545cc46d
     cpus: 0.5
     labels:
       dev.dozzle.group: beszel
@@ -89,7 +89,7 @@ services:
   agent-intel:
     <<: *service-defaults
     container_name: beszel_agent
-    image: ghcr.io/henrygd/beszel/beszel-agent-intel:0.20.0@sha256:00882dcb1708f1ca09487b21781c454138f88949b14b2685e3d30d3747f7aecf
+    image: ghcr.io/henrygd/beszel/beszel-agent-intel:0.21.0@sha256:4f902ad237217af2907b278376d4e20b5387f37992f7327c23cbd02c09c031a1
     cpus: 0.5
     labels:
       dev.dozzle.group: beszel
