@@ -613,4 +613,34 @@ DOWNGRADE_GUARD_EXCEPTIONS.each_key do |package|
         "#{package} is both self-migrating and a downgrade guard exception; drop the exception")
 end
 
+# A held pull request must say so: without a label it reads exactly like one still waiting
+# to automerge (#956). addLabels accumulates across rules, unlike automerge.
+HOLD_LABELS = %w[needs-manual-merge needs-manual-coupling].freeze
+
+def labels_for(rules, package, update_type, datasource = "docker")
+  rules.select { |rule| rule_reaches?(rule, package, update_type, datasource) }
+       .flat_map { |rule| Array(rule["addLabels"]) }.uniq
+end
+
+label_probes = rules.flat_map do |rule|
+  datasource = Array(rule["matchDatasources"]).first || "docker"
+  Array(rule["matchPackageNames"]).reject { |name| name.start_with?("!") }
+                                  .map { |name| [name, datasource] }
+end
+label_probes << ["docker.io/gotenberg/gotenberg", "docker"]
+label_probes.uniq.each do |package, datasource|
+  EVERY_UPDATE_TYPE.each do |update_type|
+    automerge, = automerge_verdict(config, rules, package, update_type, datasource)
+    labels = labels_for(rules, package, update_type, datasource)
+    if automerge == false
+      check(failures, (labels & HOLD_LABELS).any?,
+            "a #{update_type} update of #{package} waits for a human but carries neither " \
+            "#{HOLD_LABELS.join(' nor ')}, so its pull request looks like one still waiting to automerge")
+    else
+      check(failures, !labels.include?("needs-manual-merge"),
+            "a #{update_type} update of #{package} automerges but is labelled needs-manual-merge")
+    end
+  end
+end
+
 report(failures, "renovate policy: all checks passed", "Renovate policy regression(s)")
