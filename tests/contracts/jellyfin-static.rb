@@ -92,6 +92,9 @@ refuse("Collections must remain application-managed") if
   defaults.fetch("jellyfin_libraries").any? { |library| library.fetch("name") == "Collections" }
 refuse("managed library must not write metadata into read-only media") unless
   defaults.fetch("jellyfin_library_options").fetch("SaveLocalMetadata") == false
+# A file's own timestamp is the archive's, which hides new items from Recently Added.
+refuse("date added must be the scan time, not the file timestamp") unless
+  defaults.dig("jellyfin_metadata_configuration", "UseFileCreationTimeForDateAdded") == false
 
 def load_tasks(path)
   File.file?(path) ? Array(YAML.safe_load_file(path, aliases: true)) : []

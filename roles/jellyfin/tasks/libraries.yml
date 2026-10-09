@@ -274,6 +274,52 @@
   changed_when: true
   no_log: true
 
+- name: Read the Jellyfin metadata configuration
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/System/Configuration/metadata"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_metadata_configuration_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require a complete Jellyfin metadata configuration
+  ansible.builtin.assert:
+    that:
+      - jellyfin_metadata_configuration_before.json is mapping
+      - >-
+        jellyfin_metadata_configuration.keys() |
+          difference(jellyfin_metadata_configuration_before.json.keys()) | length == 0
+    fail_msg: Jellyfin returned an unsupported metadata configuration schema.
+
+- name: Report planned Jellyfin metadata configuration update
+  ansible.builtin.debug:
+    msg: JELLYFIN_PLAN_METADATA_CONFIGURATION
+  when:
+    - ansible_check_mode
+    - jellyfin_metadata_configuration_before.json |
+        combine(jellyfin_metadata_configuration) != jellyfin_metadata_configuration_before.json
+  changed_when: true
+
+- name: Reconcile the Jellyfin metadata configuration
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/System/Configuration/metadata"
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    body_format: json
+    body: "{{ jellyfin_metadata_configuration_before.json | combine(jellyfin_metadata_configuration) }}"
+    status_code: [204]
+  when:
+    - not ansible_check_mode
+    - jellyfin_metadata_configuration_before.json |
+        combine(jellyfin_metadata_configuration) != jellyfin_metadata_configuration_before.json
+  changed_when: true
+  no_log: true
+
 - name: Refresh Jellyfin after managed library changes
   ansible.builtin.uri:
     url: "{{ jellyfin_api }}/Library/Refresh"

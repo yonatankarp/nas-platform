@@ -332,6 +332,15 @@ STATIC_ROWS = [
     expects: "managed library must not write metadata into read-only media"
   },
   {
+    name: "date added taken from the file timestamp",
+    break: lambda { |root|
+      edit_yaml(root, "roles/jellyfin/defaults/main.yml", aliases: false) do |document|
+        document.fetch("jellyfin_metadata_configuration")["UseFileCreationTimeForDateAdded"] = true
+      end
+    },
+    expects: "date added must be the scan time, not the file timestamp"
+  },
+  {
     # A task name surviving only inside a comment is not a task.
     name: "a required task surviving only as a comment",
     break: lambda { |root|
@@ -1219,6 +1228,13 @@ PROGRAM_MUTATIONS = [
     from: '  defaults.fetch("jellyfin_library_options").fetch("SaveLocalMetadata") == false',
     to: "  true",
     rows: ["local metadata written into the read-only media mount"]
+  },
+  {
+    label: "the scan-time date added check",
+    program: :static,
+    from: '  defaults.dig("jellyfin_metadata_configuration", "UseFileCreationTimeForDateAdded") == false',
+    to: "  true",
+    rows: ["date added taken from the file timestamp"]
   },
   {
     # Two `refuse("missing ...")` sweeps exist, so the anchor carries its `each`.
