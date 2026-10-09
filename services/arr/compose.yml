@@ -80,7 +80,7 @@ services:
   prowlarr:
     <<: *service-defaults
     container_name: prowlarr
-    image: lscr.io/linuxserver/prowlarr:2.6.5@sha256:f2b26429893d4c4cb71941b7ee50b1bdecd9d5f9f9e02d5410615e9f4f7c8d95
+    image: lscr.io/linuxserver/prowlarr:2.6.5@sha256:f9151e5bc1025c6d0a630d503210cdcb6bb55a7cc098562609d96a408d838902
     cpus: 0.5
     labels:
       dev.dozzle.group: arr
@@ -100,7 +100,7 @@ services:
     # A random container ID like 123e45678901 parses as `.inf` in Bazarr's TOML
     # settings and every later submit answers 406 (#708); a fixed name heals it.
     hostname: bazarr
-    image: lscr.io/linuxserver/bazarr:1.6.2@sha256:8b30e81c4aec2991f469e78fae8afaa89ecc9b21a80e3897f50427216b55470c
+    image: lscr.io/linuxserver/bazarr:1.6.2@sha256:c1673816321156b904af9b7e6415ea547ae9622e4acc375358f1e1eb9ed1e904
     cpus: 1.0
     labels:
       dev.dozzle.group: arr
@@ -118,7 +118,7 @@ services:
   configarr:
     <<: *job-defaults
     profiles: [jobs]
-    image: ghcr.io/raydak-labs/configarr:1.34.0@sha256:738f79088c08ccaf578e71ca44faca16181d5399934beedbb81851a4f9ba06c1
+    image: ghcr.io/raydak-labs/configarr:1.34.1@sha256:3443bef6be53f7f8580bad13f6e7946cabc80ba4e4f247e2a23b767febd7af3c
     user: "${NAS_UID:?}:${NAS_GID:?}"
     cpus: 0.5
     environment:
