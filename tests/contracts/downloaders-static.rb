@@ -88,6 +88,10 @@ if failures.empty?
       defaults["downloaders_sabnzbd_owned_misc"]["cache_limit"] == "256M"
   failures << "SABnzbd concurrent unpack work must be explicitly bounded" unless
     defaults.dig("downloaders_sabnzbd_owned_misc", "direct_unpack_threads") == 1
+  # Jellyfin's "date added" is the file's mtime; an archive's stored date hides
+  # a new episode from Recently Added.
+  failures << "SABnzbd must date unpacked files by unpack time" unless
+    defaults.dig("downloaders_sabnzbd_owned_misc", "ignore_unrar_dates") == 1
   # 3 is Repair/Unpack/Delete; Unpackerr does no par2, so anything lower strands
   # damaged releases. 0 is what shipped.
   failures << "SABnzbd must repair and unpack its own downloads" unless
