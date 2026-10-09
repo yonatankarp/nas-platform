@@ -282,6 +282,8 @@
     status_code: [200]
     return_content: true
   register: jellyfin_metadata_configuration_before
+  # No token exists before the wizard, so a fresh host's --check cannot read it.
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
   changed_when: false
   check_mode: false
   no_log: true
@@ -294,12 +296,14 @@
         jellyfin_metadata_configuration.keys() |
           difference(jellyfin_metadata_configuration_before.json.keys()) | length == 0
     fail_msg: Jellyfin returned an unsupported metadata configuration schema.
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
 
 - name: Report planned Jellyfin metadata configuration update
   ansible.builtin.debug:
     msg: JELLYFIN_PLAN_METADATA_CONFIGURATION
   when:
     - ansible_check_mode
+    - jellyfin_wizard_completed | bool
     - jellyfin_metadata_configuration_before.json |
         combine(jellyfin_metadata_configuration) != jellyfin_metadata_configuration_before.json
   changed_when: true
