@@ -44,6 +44,12 @@ GITHUB_BACKED_REGISTRIES = %w[ghcr.io lscr.io].freeze
 DOCKER_HUB_REGISTRY = "docker.io"
 DOCKER_HUB_USERNAME_SECRET = "DOCKERHUB_USERNAME"
 DOCKER_HUB_TOKEN_SECRET = "DOCKERHUB_TOKEN"
+# A run step, not the action: it must skip without an `if:` (static refuses one) and
+# retry a flaky auth.docker.io. Held byte-identical in every job that pulls.
+DOCKER_HUB_LOGIN_STEP = "Authenticate to Docker Hub"
+DOCKER_HUB_LOGIN_JOBS = %w[static suites].freeze
+STATIC_PREPULL_STEP = "Pre-pull the cleanup sandbox image"
+DOCKER_RETRY_SLEEPS = %w[15 30 45].freeze
 # A registry outside this list is one nobody decided about.
 CREDENTIALED_REGISTRIES = (GITHUB_BACKED_REGISTRIES + [DOCKER_HUB_REGISTRY]).freeze
 EXPECTED_JOBS =
@@ -96,6 +102,8 @@ STATIC_STEP_NAMES = [
   "Install ShellCheck",
   "Set up Python",
   "Install Ansible tooling",
+  "Authenticate to Docker Hub",
+  "Pre-pull the cleanup sandbox image",
   "Check policy properties"
 ].freeze
 # Shard-independent steps moved out of `static` (#653): the ones that cannot be a
@@ -811,24 +819,18 @@ check(failures, unclassified.empty?,
 expected_logins = (compose_registries & CREDENTIALED_REGISTRIES).sort
 suites_steps = Array(suites_job["steps"])
 login_steps = suites_steps.select { |step| step["uses"]&.start_with?("#{LOGIN_ACTION_NAME}@") }
-check(failures, login_steps.map { |step| step.dig("with", "registry") }.compact.sort == expected_logins,
-      "suites must authenticate to exactly #{expected_logins.inspect}, found " \
-      "#{login_steps.map { |step| step.dig('with', 'registry') }.inspect}")
+suites_docker_hub_login = suites_steps.find { |step| step["name"] == DOCKER_HUB_LOGIN_STEP }
+suites_logins = login_steps.map { |step| step.dig("with", "registry") }.compact
+suites_logins << DOCKER_HUB_REGISTRY if suites_docker_hub_login
+check(failures, suites_logins.sort == expected_logins,
+      "suites must authenticate to exactly #{expected_logins.inspect}, found #{suites_logins.inspect}")
 harness_index = suites_steps.index { |step| step["run"]&.include?("tests/integration.sh") }
 login_steps.each do |step|
   registry = step.dig("with", "registry")
   if registry == DOCKER_HUB_REGISTRY
-    check(failures, step.dig("with", "username") == "${{ secrets.#{DOCKER_HUB_USERNAME_SECRET} }}",
-          "the #{registry} login must authenticate as the stored #{DOCKER_HUB_USERNAME_SECRET} account")
-    check(failures, step.dig("with", "password") == "${{ secrets.#{DOCKER_HUB_TOKEN_SECRET} }}",
-          "the #{registry} login must use the stored #{DOCKER_HUB_TOKEN_SECRET}: GITHUB_TOKEN is not a Docker Hub account")
-    # Guarded so a checkout without the secret (fork, clone) pulls anonymously; a
-    # step's own env is not in scope for its `if`, hence job-level env.
-    check(failures, step["if"].to_s.include?("env.#{DOCKER_HUB_USERNAME_SECRET}"),
-          "the #{registry} login must be guarded on env.#{DOCKER_HUB_USERNAME_SECRET} being set, found #{step['if'].inspect}")
-    check(failures,
-          suites_job.dig("env", DOCKER_HUB_USERNAME_SECRET) == "${{ secrets.#{DOCKER_HUB_USERNAME_SECRET} }}",
-          "suites must expose #{DOCKER_HUB_USERNAME_SECRET} as job-level env for that guard to read")
+    check(failures, false,
+          "the #{registry} login must be the retried #{DOCKER_HUB_LOGIN_STEP.inspect} run step, " \
+          "not #{LOGIN_ACTION_NAME}: the action cannot retry a flaky auth.docker.io")
   else
     check(failures, step.dig("with", "username") == "${{ github.actor }}",
           "the #{registry} login must authenticate as the acting account")
@@ -862,17 +864,17 @@ integration_step = integration_steps.first || {}
 
 # Every step in this job must be read by a check above (#395): a route dispatching
 # three legs cannot see a step only a heavy suite trips over.
-examined_steps = ([suites_checkout] + login_steps + integration_steps).compact
+examined_steps = ([suites_checkout, suites_docker_hub_login] + login_steps + integration_steps).compact
 unexamined = suites_steps - examined_steps
 check(failures, unexamined.empty?,
       "the suites job has #{unexamined.length} step(s) no check reads: " \
       "#{unexamined.map { |step| step['name'] || step['run'] }.inspect}. A change to a suite leg " \
       "dispatches three legs of seventeen, so a step asserted nowhere is a leg's behaviour " \
       "changing under a green gate")
-# The same property for the job's environment, which reaches every step in it.
-check(failures, suites_job.fetch("env", {}).keys == [DOCKER_HUB_USERNAME_SECRET],
-      "suites must expose exactly #{[DOCKER_HUB_USERNAME_SECRET].inspect} as job-level env, " \
-      "found #{suites_job.fetch('env', {}).keys.inspect}")
+# The same property for the job's environment, which reaches every step in it:
+# the Docker Hub secrets stay in the one step that reads them.
+check(failures, suites_job.fetch("env", {}).empty?,
+      "suites must expose no job-level env, found #{suites_job.fetch('env', {}).keys.inspect}")
 check(failures, integration_step.dig("env", "SUITE") == "${{ matrix.suite }}",
       "the matrix suite must reach the harness through env, not through shell interpolation")
 check(failures, integration_step.dig("env", "SELECTED_TAGS") == "${{ needs.changes.outputs.selected_tags }}",
@@ -1374,6 +1376,113 @@ if expected_core
           "#{relative} must pin ansible-core #{expected_core} to match " \
           "controller-requirements.in, got #{mirrored.inspect}")
   end
+end
+
+
+# Docker Hub: the same retried login before every job's first pull, and a retried
+# pre-pull of the image the static shards' cleanup tests run. Both loops are run
+# against a stubbed docker under `bash -e`, `sleep` and `timeout` recording.
+docker_hub_logins = DOCKER_HUB_LOGIN_JOBS.to_h do |name|
+  [name, Array(jobs.dig(name, "steps")).find { |step| step.is_a?(Hash) && step["name"] == DOCKER_HUB_LOGIN_STEP }]
+end
+docker_hub_logins.each do |name, step|
+  check(failures, !step.nil?, "the #{name} job must run #{DOCKER_HUB_LOGIN_STEP.inspect}")
+  next unless step
+
+  check(failures, step.dig("env") == {
+    DOCKER_HUB_USERNAME_SECRET => "${{ secrets.#{DOCKER_HUB_USERNAME_SECRET} }}",
+    DOCKER_HUB_TOKEN_SECRET => "${{ secrets.#{DOCKER_HUB_TOKEN_SECRET} }}"
+  }, "the #{name} job's Docker Hub login must read exactly the stored account and token, " \
+     "found #{step['env'].inspect}")
+  check(failures, !step.key?("if") && !step.key?("uses"),
+        "the #{name} job's Docker Hub login must be an unconditional run step that skips itself")
+  steps = Array(jobs.dig(name, "steps"))
+  first_pull = steps.index do |item|
+    item.is_a?(Hash) && item["run"].to_s.match?(%r{tests/(?:validate-policy|integration)\.sh})
+  end
+  check(failures, first_pull && steps.index(step) < first_pull,
+        "the #{name} job's Docker Hub login must precede the step that pulls images")
+end
+check(failures, docker_hub_logins.values.compact.map { |step| step["run"] }.uniq.length == 1,
+      "#{DOCKER_HUB_LOGIN_STEP.inspect} must be byte-identical across #{DOCKER_HUB_LOGIN_JOBS.inspect}")
+
+def run_docker_retry(script, succeed_on, env = {})
+  Dir.mktmpdir("ci-docker-retry-") do |root|
+    stub = File.join(root, "bin", "docker")
+    FileUtils.mkdir_p(File.dirname(stub))
+    File.write(stub, <<~SH)
+      #!/bin/sh
+      count=$(( $(cat "$STUB_ROOT/calls" 2>/dev/null || echo 0) + 1 ))
+      echo "$count" >"$STUB_ROOT/calls"
+      printf '%s\\n' "$*" >>"$STUB_ROOT/argv"
+      cat >>"$STUB_ROOT/stdin"
+      [ "$count" -ge #{succeed_on} ] && exit 0
+      echo "stub docker: auth.docker.io 500 (call $count)" >&2
+      exit 1
+    SH
+    File.chmod(0o755, stub)
+    prelude = %(sleep() { printf '%s\\n' "$1" >>"$STUB_ROOT/sleeps"; }\n) +
+              %(timeout() { printf '%s\\n' "$1" >>"$STUB_ROOT/bounds"; shift; "$@"; }\n)
+    stdout, stderr, status = Open3.capture3(
+      { "STUB_ROOT" => root, "PATH" => "#{File.dirname(stub)}:#{ENV.fetch('PATH')}" }.merge(env),
+      "bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", "#{prelude}#{script}\necho reached-end\n",
+      chdir: ROOT, stdin_data: ""
+    )
+    read = ->(file) { File.file?(File.join(root, file)) ? File.read(File.join(root, file)) : "" }
+    { success: status.success?, stdout: stdout, stderr: stderr, calls: read.call("calls").to_i,
+      argv: read.call("argv").lines.map(&:chomp), stdin: read.call("stdin"),
+      sleeps: read.call("sleeps").split, bounds: read.call("bounds").split }
+  end
+end
+
+if (login_script = docker_hub_logins.values.compact.first&.fetch("run", nil))
+  account = { DOCKER_HUB_USERNAME_SECRET => "ci-account", DOCKER_HUB_TOKEN_SECRET => "stub-token" }
+  skipped = run_docker_retry(login_script, 1, DOCKER_HUB_USERNAME_SECRET => "", DOCKER_HUB_TOKEN_SECRET => "")
+  check(failures, skipped[:success] && skipped[:calls].zero? && skipped[:stdout].include?("::notice::"),
+        "a Docker Hub login without the secret (a fork) must skip with a notice and call docker " \
+        "not at all, got #{skipped.inspect}")
+  first = run_docker_retry(login_script, 1, account)
+  check(failures, first[:success] && first[:calls] == 1 && first[:sleeps].empty? &&
+                  first[:stdout].include?("reached-end") && first[:stdin] == "stub-token" &&
+                  first[:argv] == ["login docker.io --username ci-account --password-stdin"] &&
+                  first[:bounds] == %w[60],
+        "a Docker Hub login that succeeds at once must run once, bounded, with the token on " \
+        "stdin and never in argv, got #{first.inspect}")
+  last = run_docker_retry(login_script, 4, account)
+  check(failures, last[:success] && last[:calls] == 4 && last[:sleeps] == DOCKER_RETRY_SLEEPS &&
+                  last[:stdout].include?("reached-end"),
+        "a Docker Hub login that fails three times must pass on the fourth attempt after backing " \
+        "off #{DOCKER_RETRY_SLEEPS.inspect}, got #{last.inspect}")
+  never = run_docker_retry(login_script, 99, account)
+  check(failures, !never[:success] && never[:calls] == 4 && !never[:stdout].include?("reached-end") &&
+                  never[:stderr].include?("(call 4)") && never[:stderr].include?("::error::"),
+        "a Docker Hub login that always fails must red the step after exactly four attempts with " \
+        "the last error visible, got #{never.inspect}")
+end
+
+static_steps_by_name = static_steps.select { |step| step.is_a?(Hash) }.to_h { |step| [step["name"], step] }
+prepull = static_steps_by_name.fetch(STATIC_PREPULL_STEP, {})
+check(failures, !prepull.key?("if") && !prepull.key?("env"),
+      "#{STATIC_PREPULL_STEP.inspect} must be unconditional and read no secret")
+# The refs the cleanup tests run, read the way the step reads them.
+cleanup_refs = {
+  "tests/sandbox_cleanup.sh" => "cleanup_sandbox_image", "tests/integration_cleanup_test.sh" => "runner_image"
+}.flat_map do |file, variable|
+  File.readlines(File.join(ROOT, file)).filter_map { |line| line[/^#{variable}=(\S+)$/, 1] }
+end.uniq.sort
+check(failures, cleanup_refs.length >= 1 && cleanup_refs.all? { |ref| ref.match?(/@sha256:\h{64}\z/) },
+      "the cleanup sandbox image refs must be digest-pinned and readable, found #{cleanup_refs.inspect}")
+if (prepull_script = prepull["run"])
+  pulled = run_docker_retry(prepull_script, 2)
+  check(failures, pulled[:success] && pulled[:sleeps] == DOCKER_RETRY_SLEEPS.first(1) &&
+                  pulled[:argv].uniq == cleanup_refs.map { |ref| "pull #{ref}" } &&
+                  pulled[:bounds].uniq == %w[300],
+        "the pre-pull must pull exactly #{cleanup_refs.inspect}, bounded, retrying a failure, " \
+        "got #{pulled.inspect}")
+  never = run_docker_retry(prepull_script, 99)
+  check(failures, !never[:success] && never[:calls] == 4 && never[:stderr].include?("::error::") &&
+                  !never[:stdout].include?("reached-end"),
+        "a pre-pull that always fails must red the step after exactly four attempts, got #{never.inspect}")
 end
 
 report(failures, "CI workflow contract: all checks passed",

@@ -222,6 +222,62 @@ jobs:
             sleep $((attempt * 10))
           done
 
+      # A free Docker Hub account's allowance is ours alone, unlike the anonymous
+      # per-IP one. A run step, not docker/login-action: that action fails on empty
+      # credentials (every fork), skipping it takes an `if:` the static job refuses,
+      # and it cannot retry. Byte-identical in both jobs (tests/ci/workflow_test.rb).
+      - name: Authenticate to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ]; then
+            echo "::notice::DOCKERHUB_USERNAME is unset (a fork or a clone); Docker Hub pulls stay anonymous"
+            exit 0
+          fi
+          # auth.docker.io answered 500s and hung past client timeouts on
+          # 2026-10-09, each red leg green on an unchanged re-run. Four attempts
+          # under a 60-second bound, 15, 30 then 45 seconds apart, cover a blip;
+          # an outage that outlasts them reds the step with every error above it.
+          # The token goes on stdin, never argv.
+          for attempt in 1 2 3 4; do
+            if printf '%s' "$DOCKERHUB_TOKEN" |
+              timeout 60 docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin; then
+              break
+            fi
+            if [ "$attempt" -eq 4 ]; then
+              echo "::error::docker login to docker.io failed $attempt times; not transient" >&2
+              exit 1
+            fi
+            echo "docker login to docker.io failed (attempt $attempt of 4); retrying" >&2
+            sleep $((attempt * 15))
+          done
+
+      # The cleanup tests run this digest-pinned image; pulled here, under the login
+      # and a retry, their own `docker run` finds it local and pulls nothing. The
+      # refs are read from the scripts so Renovate keeps one copy of each.
+      - name: Pre-pull the cleanup sandbox image
+        run: |
+          images=$(sed -n -e 's/^cleanup_sandbox_image=//p' -e 's/^runner_image=//p' \
+            tests/sandbox_cleanup.sh tests/integration_cleanup_test.sh | sort -u)
+          if [ -z "$images" ]; then
+            echo "::error::no cleanup sandbox image ref found to pre-pull" >&2
+            exit 1
+          fi
+          for image in $images; do
+            for attempt in 1 2 3 4; do
+              if timeout 300 docker pull "$image"; then
+                break
+              fi
+              if [ "$attempt" -eq 4 ]; then
+                echo "::error::docker pull $image failed $attempt times; not transient" >&2
+                exit 1
+              fi
+              echo "docker pull $image failed (attempt $attempt of 4); retrying" >&2
+              sleep $((attempt * 15))
+            done
+          done
+
       # The shard comes through env; the gate refuses one its manifest does not declare.
       - name: Check policy properties
         env:
@@ -700,9 +756,6 @@ jobs:
     permissions:
       contents: read
       packages: read
-    # Job level because a step's `if` cannot see its own env; only presence is read.
-    env:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     strategy:
       fail-fast: false
       matrix:
@@ -726,14 +779,35 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       # A free Docker Hub account's allowance is ours alone, unlike the anonymous
-      # per-IP one. Skipped without the secret (forks, clones): they pull anonymously.
+      # per-IP one. A run step, not docker/login-action: that action fails on empty
+      # credentials (every fork), skipping it takes an `if:` the static job refuses,
+      # and it cannot retry. Byte-identical in both jobs (tests/ci/workflow_test.rb).
       - name: Authenticate to Docker Hub
-        if: ${{ env.DOCKERHUB_USERNAME != '' }}
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: docker.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ]; then
+            echo "::notice::DOCKERHUB_USERNAME is unset (a fork or a clone); Docker Hub pulls stay anonymous"
+            exit 0
+          fi
+          # auth.docker.io answered 500s and hung past client timeouts on
+          # 2026-10-09, each red leg green on an unchanged re-run. Four attempts
+          # under a 60-second bound, 15, 30 then 45 seconds apart, cover a blip;
+          # an outage that outlasts them reds the step with every error above it.
+          # The token goes on stdin, never argv.
+          for attempt in 1 2 3 4; do
+            if printf '%s' "$DOCKERHUB_TOKEN" |
+              timeout 60 docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin; then
+              break
+            fi
+            if [ "$attempt" -eq 4 ]; then
+              echo "::error::docker login to docker.io failed $attempt times; not transient" >&2
+              exit 1
+            fi
+            echo "docker login to docker.io failed (attempt $attempt of 4); retrying" >&2
+            sleep $((attempt * 15))
+          done
       - name: Run integration suite
         env:
           SUITE: ${{ matrix.suite }}
