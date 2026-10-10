@@ -1696,8 +1696,8 @@ end
 # Floored at four of today's six callers, so one legitimate conversion passes.
 check_floor(failures, shared_recovery_callers, 4,
             "roles whose deployment report must name the shared recovery's register")
-# Five callers today; the floor stops every caller quietly dropping it.
-check_floor(failures, pre_upgrade_backup_callers, 5,
+# Six callers today; the floor stops every caller quietly dropping it.
+check_floor(failures, pre_upgrade_backup_callers, 6,
             "roles whose deployment report must name the shared pre-upgrade copy's register")
 # Held against the roles the inspected tree has, so the mutation sandbox (which
 # omits roles/container_health) passes while both directions hold elsewhere.
@@ -1788,7 +1788,7 @@ pre_upgrade_paths.each do |path|
         "rescue covers, from the image the application ran, and fail when the archive does")
 end
 # Two since #826: the shared role's copy and its dump. The callers that reach it
-# are floored at five by the deployment-report clause above.
+# are floored at six by the deployment-report clause above.
 check_floor(failures, pre_upgrade_stops, 2, "pre-upgrade copies that stop a container")
 
 # Vaultwarden's call site, argument by argument: this decides the platform's one
@@ -1869,7 +1869,7 @@ end
 
 # No caller hands roles/pre_upgrade_backup a pin (#858): an include parameter
 # outranks the role's own set_fact, so a passed pin would silently win. Floored
-# at the five callers.
+# at the six callers.
 pre_upgrade_includes = Dir[File.join(ROOT, "roles", "*", "tasks", "*.yml")].sort.flat_map do |path|
   flatten_tasks(YAML.safe_load_file(path, aliases: true)).select do |task|
     task.is_a?(Hash) && task.dig("ansible.builtin.include_role", "name") == "pre_upgrade_backup"
@@ -1880,7 +1880,7 @@ pre_upgrade_includes.each do |relative, task|
         "#{relative}: \"#{task['name']}\" hands roles/pre_upgrade_backup a pre_upgrade_backup_pinned_image, " \
         "which outranks the pin the role reads from the service's own Compose file")
 end
-check_floor(failures, pre_upgrade_includes.length, 5, "includes of roles/pre_upgrade_backup")
+check_floor(failures, pre_upgrade_includes.length, 6, "includes of roles/pre_upgrade_backup")
 
 # Nextcloud's and Paperless-ngx's pg_dump call sites (#826): every writer (cron
 # included) is stopped, the guard comes first, and the dump sits after the data

@@ -1,6 +1,9 @@
 ---
 jellyfin_port: 8096
 jellyfin_api: "http://127.0.0.1:{{ jellyfin_port }}"
+# JELLYFIN_DATA_DIR is /config in the image, so the store is /config/data/jellyfin.db.
+jellyfin_store_host_path: "{{ nas_docker_root }}/jellyfin/config/data"
+jellyfin_pre_upgrade_backup_path: "{{ jellyfin_store_host_path }}/pre-upgrade-backup"
 jellyfin_compose_project_name: >-
   {{ (platform_project_name ~ '-jellyfin')
      if platform_project_name | default('') | length > 0 else 'jellyfin' }}

@@ -1333,7 +1333,7 @@ PROGRAM_MUTATIONS = [
   {
     label: "the opaque database sweep",
     program: :static,
-    from: "  deep_strings(role_tasks).any? { |value| value.match?(/sqlite|library\\.db|jellyfin\\.db/i) }",
+    from: "  deep_strings(opaque_scan_tasks).any? { |value| value.match?(/sqlite|library\\.db|jellyfin\\.db/i) }",
     to: "  false",
     rows: ["an opaque database reference introduced into the role"]
   },

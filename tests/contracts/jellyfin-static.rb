@@ -360,6 +360,8 @@ refuse("Open Subtitles secret operations are not suppressed") unless
   settings.scan(/no_log: true/).length >= 5
 refuse("seed does not verify that owned plugin and encoding policy survived") unless
   contract.include?("assert_acceleration_and_plugins(token, opensubtitles_username, opensubtitles_password)")
+# The shared pre-upgrade copy names jellyfin.db to copy it stopped, never to edit it.
+opaque_scan_tasks = role_tasks.reject { |task| task.dig("ansible.builtin.include_role", "name") == "pre_upgrade_backup" }
 refuse("role must not edit an opaque database") if
-  deep_strings(role_tasks).any? { |value| value.match?(/sqlite|library\.db|jellyfin\.db/i) }
+  deep_strings(opaque_scan_tasks).any? { |value| value.match?(/sqlite|library\.db|jellyfin\.db/i) }
 puts "Jellyfin static contract passed (#{platform})"

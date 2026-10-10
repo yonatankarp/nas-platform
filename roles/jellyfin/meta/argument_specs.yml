@@ -6,6 +6,12 @@ argument_specs:
       jellyfin_compose_wait_timeout:
         type: int
         required: false
+      jellyfin_store_host_path:
+        type: path
+        required: false
+      jellyfin_pre_upgrade_backup_path:
+        type: path
+        required: false
       jellyfin_startup_retries:
         type: int
         required: false
