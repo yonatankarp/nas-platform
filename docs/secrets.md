@@ -1179,6 +1179,19 @@ repository vault remains encrypted:
   directory (#826). That copy carries the same hashes and is secret-bearing
   wherever it is copied to next; it is a rollback path for a one-way migration
   on the same disk, not a backup.
+- Jellyfin's `data/jellyfin.db` in its configuration root, which belongs in
+  this class rather than merely in the `critical` recovery class that root
+  already carries: it holds every account's password hash, and the API keys and
+  device session tokens -- the platform's own, Seerr's and every client's --
+  stored in clear, so a copy authenticates as those sessions without a guess.
+  That is read from Jellyfin's schema, not measured against the pinned image.
+  Before each pinned upgrade `roles/pre_upgrade_backup`, as Jellyfin includes
+  it, stops the container and copies `jellyfin.db` and any journal beside it
+  into `data/pre-upgrade-backup/` at mode 0600 inside a 0700 directory, because
+  Jellyfin deletes its own pre-migration copy once a migration succeeds. That
+  copy is exactly as secret-bearing wherever it is copied to next; it is a
+  rollback path for a one-way migration on the same disk, not a backup, and it
+  does not carry the XML configuration under `config/`.
 - The PostgreSQL dumps Nextcloud and Paperless-ngx take before each pinned
   upgrade (#826). `roles/pre_upgrade_backup`'s pg_dump entry stops the
   application, and the database container, still running, writes

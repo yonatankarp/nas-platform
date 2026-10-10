@@ -143,8 +143,7 @@
     mode: "0600"
 
 # Before Compose: Jellyfin's 12.0 migration of jellyfin.db is one-way, and no
-# lane proves a Jellyfin bump, so this guard is what stops a reverted pin. No
-# backup task: Jellyfin's own MigrationBackupFast copies jellyfin.db first.
+# lane proves a Jellyfin bump, so this guard is what stops a reverted pin.
 - name: Refuse a Jellyfin image older than the store on disk
   ansible.builtin.include_role:
     name: image_downgrade_guard
@@ -153,6 +152,21 @@
     image_downgrade_guard_compose_service: jellyfin
     image_downgrade_guard_project_name: "{{ jellyfin_compose_project_name }}"
     image_downgrade_guard_store_description: "{{ nas_docker_root }}/jellyfin/config"
+
+# Copies the store aside between the guard and the deployment (roles/pre_upgrade_backup).
+# Jellyfin's own MigrationBackupFast copy is deleted once a migration succeeds, so
+# nothing else on disk can return the store to the older pin.
+- name: Guard the Jellyfin store before a pinned upgrade
+  ansible.builtin.include_role:
+    name: pre_upgrade_backup
+  vars:
+    pre_upgrade_backup_service_name: jellyfin
+    pre_upgrade_backup_compose_service: jellyfin
+    pre_upgrade_backup_project_name: "{{ jellyfin_compose_project_name }}"
+    pre_upgrade_backup_store_dir: "{{ jellyfin_store_host_path }}"
+    pre_upgrade_backup_store_file: jellyfin.db
+    pre_upgrade_backup_path: "{{ jellyfin_pre_upgrade_backup_path }}"
+    pre_upgrade_backup_manage_ownership: "{{ platform_kind == 'nas' or (platform_manage_linux_ownership | bool) }}"
 
 # The rescue hands the deployment's failure to roles/container_health, which
 # explains it from Docker's container state or re-raises it (#509, #537).
@@ -249,10 +263,11 @@
     tasks_from: report
   vars:
     deployment_report_service: Jellyfin
-    # Both Compose results: a repairing recreate also changed the deployment.
+    # Every Compose result: a repairing recreate or a rescue start also changed it.
     deployment_report_changed: >-
       {{ (jellyfin_deploy is changed)
-         or ((jellyfin_wedged_recreate | default({})) is changed) }}
+         or ((jellyfin_wedged_recreate | default({})) is changed)
+         or ((pre_upgrade_backup_restart | default({})) is changed) }}
 
 - name: Verify Jellyfin effective container CPU policy
   ansible.builtin.include_role:
