@@ -708,6 +708,7 @@ def exercise_jellyfin_fresh_check_mode(failures)
         "JELLYFIN_PLAN_PLUGIN_REPOSITORIES",
         "JELLYFIN_PLAN_PLUGIN_INSTALL Intro Skipper",
         "JELLYFIN_PLAN_PLUGIN_INSTALL Open Subtitles",
+        "JELLYFIN_PLAN_PLUGIN_INSTALL InfuseSync",
         "JELLYFIN_PLAN_OPENSUBTITLES_CONFIGURATION"
       ]
       expected_plans.each do |plan|

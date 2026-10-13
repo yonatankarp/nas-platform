@@ -70,11 +70,18 @@ jellyfin_plugin_repositories:
   - Name: Intro Skipper
     Url: https://intro-skipper.org/manifest.json
     Enabled: true
+  # Firecore's InfuseSync, so Infuse's library mode syncs fast and keeps watch state.
+  # Like Intro Skipper it is a third-party targetAbi gate: a Jellyfin bump that
+  # Firecore has not yet built for reds the fresh-install jellyfin lane.
+  - Name: Firecore
+    Url: https://files.firecore.com/jellyfin/manifest.json
+    Enabled: true
 jellyfin_retired_plugin_repository_urls:
   - https://repo.jellyfin.org/releases/plugin/manifest-stable.json
 jellyfin_plugins:
   - Intro Skipper
   - Open Subtitles
+  - InfuseSync
 jellyfin_plugin_packages:
   # The manifest URL is version-aware (it serves the branch matching the
   # requester's Jellyfin version), so it is not a dead link.
@@ -84,6 +91,9 @@ jellyfin_plugin_packages:
   - Name: Open Subtitles
     AssemblyGuid: 4b9ed42f-5185-48b5-9803-6ff2989014c4
     RepositoryUrl: https://repo.jellyfin.org/files/plugin/manifest.json
+  - Name: InfuseSync
+    AssemblyGuid: 022a3003-993f-45f1-8565-87d12af2e12a
+    RepositoryUrl: https://files.firecore.com/jellyfin/manifest.json
 jellyfin_opensubtitles_plugin_id: 4b9ed42f-5185-48b5-9803-6ff2989014c4
 jellyfin_encoding_policy: >-
   {{ jellyfin_encoding_profiles[

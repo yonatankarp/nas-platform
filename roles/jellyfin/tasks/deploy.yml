@@ -28,32 +28,26 @@
           else platform_kind
         ]
       - jellyfin_plugin_repositories | type_debug == 'list'
-      - jellyfin_plugin_repositories | length == 2
-      - jellyfin_plugin_repositories[0] is mapping
-      - jellyfin_plugin_repositories[1] is mapping
-      - jellyfin_plugin_repositories[0].Name is string
-      - jellyfin_plugin_repositories[1].Name is string
+      - jellyfin_plugin_repositories | length == 3
+      - jellyfin_plugin_repositories | select('mapping') | list | length == 3
+      - jellyfin_plugin_repositories | map(attribute='Name') | select('string') | list | length == 3
       - >-
         jellyfin_plugin_repositories | map(attribute='Name') | list ==
-        ['Jellyfin Stable', 'Intro Skipper']
-      - >-
-        jellyfin_plugin_repositories[0].Url is string and
-        jellyfin_plugin_repositories[1].Url is string
+        ['Jellyfin Stable', 'Intro Skipper', 'Firecore']
+      - jellyfin_plugin_repositories | map(attribute='Url') | select('string') | list | length == 3
       - >-
         jellyfin_plugin_repositories | map(attribute='Url') | list ==
         ['https://repo.jellyfin.org/files/plugin/manifest.json',
-         'https://intro-skipper.org/manifest.json']
-      - >-
-        jellyfin_plugin_repositories[0].Enabled is boolean and
-        jellyfin_plugin_repositories[1].Enabled is boolean
-      - jellyfin_plugin_repositories[0].Enabled
-      - jellyfin_plugin_repositories[1].Enabled
+         'https://intro-skipper.org/manifest.json',
+         'https://files.firecore.com/jellyfin/manifest.json']
+      - jellyfin_plugin_repositories | map(attribute='Enabled') | select('boolean') | list | length == 3
+      - jellyfin_plugin_repositories | map(attribute='Enabled') | select | list | length == 3
       - >-
         jellyfin_retired_plugin_repository_urls ==
         ['https://repo.jellyfin.org/releases/plugin/manifest-stable.json']
       - jellyfin_plugins | type_debug == 'list'
       - jellyfin_plugins | select('string') | list | length == jellyfin_plugins | length
-      - jellyfin_plugins == ['Intro Skipper', 'Open Subtitles']
+      - jellyfin_plugins == ['Intro Skipper', 'Open Subtitles', 'InfuseSync']
       - jellyfin_plugin_packages == jellyfin_required_plugin_packages
       - jellyfin_opensubtitles_plugin_id is string
       - jellyfin_opensubtitles_plugin_id == '4b9ed42f-5185-48b5-9803-6ff2989014c4'
@@ -103,6 +97,9 @@
       - Name: Open Subtitles
         AssemblyGuid: 4b9ed42f-5185-48b5-9803-6ff2989014c4
         RepositoryUrl: https://repo.jellyfin.org/files/plugin/manifest.json
+      - Name: InfuseSync
+        AssemblyGuid: 022a3003-993f-45f1-8565-87d12af2e12a
+        RepositoryUrl: https://files.firecore.com/jellyfin/manifest.json
 
 - name: Inspect the exact NAS Jellyfin render device
   ansible.builtin.stat:
