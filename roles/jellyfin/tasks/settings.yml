@@ -991,7 +991,8 @@
 - name: Verify exact Jellyfin acceleration and plugins
   ansible.builtin.assert:
     that:
-      - jellyfin_verified_intro_plugins | length == 1
+      # Each required plugin is active exactly once: a duplicate lengthens the left side.
+      - jellyfin_verified_required_active_names | sort == jellyfin_plugins | sort
       - jellyfin_verified_opensubtitles_plugins | length == 1
       - >-
         jellyfin_verified_opensubtitles_plugins[0].Id | lower |
@@ -1006,10 +1007,10 @@
         jellyfin_opensubtitles_validation_verified.json.Downloads is number
     fail_msg: The Jellyfin plugin or Open Subtitles state is drifted.
   vars:
-    jellyfin_verified_intro_plugins: >-
+    jellyfin_verified_required_active_names: >-
       {{ jellyfin_settings_verified_reads.results[2].json |
-         selectattr('Name', 'equalto', 'Intro Skipper') |
-         selectattr('Status', 'equalto', 'Active') | list }}
+         selectattr('Status', 'equalto', 'Active') | map(attribute='Name') |
+         select('in', jellyfin_plugins) | list }}
     jellyfin_verified_opensubtitles_plugins: >-
       {{ jellyfin_settings_verified_reads.results[2].json |
          selectattr('Name', 'equalto', 'Open Subtitles') |

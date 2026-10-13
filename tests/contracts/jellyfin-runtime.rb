@@ -67,13 +67,15 @@ PLUGIN_REPOSITORIES = [
   { "Name" => "Jellyfin Stable",
     "Url" => "https://repo.jellyfin.org/files/plugin/manifest.json", "Enabled" => true },
   { "Name" => "Intro Skipper", "Url" => "https://intro-skipper.org/manifest.json",
+    "Enabled" => true },
+  { "Name" => "Firecore", "Url" => "https://files.firecore.com/jellyfin/manifest.json",
     "Enabled" => true }
 ].freeze
 REPOSITORY_SENTINEL = {
   "Name" => "Jellyfin Contract Sentinel",
   "Url" => "https://example.invalid/jellyfin-contract-manifest.json", "Enabled" => false
 }.freeze
-REQUIRED_PLUGINS = ["Intro Skipper", "Open Subtitles"].freeze
+REQUIRED_PLUGINS = ["Intro Skipper", "Open Subtitles", "InfuseSync"].freeze
 OPENSUBTITLES_ID = "4b9ed42f-5185-48b5-9803-6ff2989014c4"
 MANAGED_OPTIONS = {
   "EnableRealtimeMonitor" => false,

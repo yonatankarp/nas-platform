@@ -265,17 +265,20 @@ refuse("Mac encoding policy is not explicit CPU fallback") unless
   )
 refuse("managed plugin repositories differ") unless defaults["jellyfin_plugin_repositories"] == [
   { "Name" => "Jellyfin Stable", "Url" => "https://repo.jellyfin.org/files/plugin/manifest.json", "Enabled" => true },
-  { "Name" => "Intro Skipper", "Url" => "https://intro-skipper.org/manifest.json", "Enabled" => true }
+  { "Name" => "Intro Skipper", "Url" => "https://intro-skipper.org/manifest.json", "Enabled" => true },
+  { "Name" => "Firecore", "Url" => "https://files.firecore.com/jellyfin/manifest.json", "Enabled" => true }
 ]
 refuse("retired managed plugin repositories differ") unless
   defaults["jellyfin_retired_plugin_repository_urls"] ==
     ["https://repo.jellyfin.org/releases/plugin/manifest-stable.json"]
-refuse("managed plugins differ") unless defaults["jellyfin_plugins"] == ["Intro Skipper", "Open Subtitles"]
+refuse("managed plugins differ") unless defaults["jellyfin_plugins"] == ["Intro Skipper", "Open Subtitles", "InfuseSync"]
 refuse("managed plugin package identities differ") unless defaults["jellyfin_plugin_packages"] == [
   { "Name" => "Intro Skipper", "AssemblyGuid" => "c83d86bb-a1e0-4c35-a113-e2101cf4ee6b",
     "RepositoryUrl" => "https://intro-skipper.org/manifest.json" },
   { "Name" => "Open Subtitles", "AssemblyGuid" => "4b9ed42f-5185-48b5-9803-6ff2989014c4",
-    "RepositoryUrl" => "https://repo.jellyfin.org/files/plugin/manifest.json" }
+    "RepositoryUrl" => "https://repo.jellyfin.org/files/plugin/manifest.json" },
+  { "Name" => "InfuseSync", "AssemblyGuid" => "022a3003-993f-45f1-8565-87d12af2e12a",
+    "RepositoryUrl" => "https://files.firecore.com/jellyfin/manifest.json" }
 ]
 [
   "Require the exact NAS Jellyfin render device",
