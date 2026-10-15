@@ -521,6 +521,70 @@ STATIC_ROWS = [
     expects: "the Bindery author repair must leave a set rootFolderId alone"
   },
   {
+    # The repair silently skipped every author past the first hundred.
+    name: "an author read that stops at the first page",
+    break: lambda { |root|
+      role_tasks(root, "roles/bindery/tasks/reconcile_authors.yml") do |document|
+        document.reject! { |task| task["name"] == "Read the remaining Bindery author pages" }
+      end
+    },
+    expects: "Bindery must read every page of its authors"
+  },
+  {
+    # A server maximum below the requested 500 would skip the rows in between.
+    name: "an author page loop strided by the requested limit",
+    break: lambda { |root|
+      role_tasks(root, "roles/bindery/tasks/reconcile_authors.yml") do |document|
+        task = find_task(document) do |candidate|
+          candidate["name"] == "Read the remaining Bindery author pages"
+        end
+        task["loop"] = "{{ range(500, bindery_authors.json.total | int, 500) | list }}"
+      end
+    },
+    expects: "Bindery must read every page of its authors"
+  },
+  {
+    # Under a tied order, offset pages drop and repeat rows.
+    name: "an author read paged under a tied order",
+    break: lambda { |root|
+      mutate_text(root, "roles/bindery/tasks/reconcile_authors.yml",
+                  '/author?sort=recent&limit=500"', '/author?limit=500"', occurrences: 1)
+    },
+    expects: "Bindery must read every page of its authors"
+  },
+  {
+    name: "an author repair resolved from the first page alone",
+    break: lambda { |root|
+      role_tasks(root, "roles/bindery/tasks/reconcile_authors.yml") do |document|
+        task = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.set_fact", "bindery_authors_to_repair")
+        end
+        fact = task["ansible.builtin.set_fact"]
+        fact["bindery_authors_to_repair"] =
+          fact["bindery_authors_to_repair"].gsub("bindery_author_items", "bindery_authors.json['items']")
+      end
+    },
+    expects: "Bindery must read every page of its authors"
+  },
+  {
+    # Verification passed on the first page while a later author held a null.
+    name: "an author verification that stops at the first page",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        document.reject! { |task| task["name"] == "Verify the remaining Bindery author pages" }
+      end
+    },
+    expects: "Bindery verification must read every page of its authors"
+  },
+  {
+    name: "an author verification read at the default page size",
+    break: lambda { |root|
+      mutate_text(root, "roles/bindery/tasks/main.yml",
+                  '/author?sort=recent&limit=500"', '/author"', occurrences: 1)
+    },
+    expects: "Bindery verification must read every page of its authors"
+  },
+  {
     # Following an author is the user's; this would re-follow on every tick.
     name: "an author repair that also owns the monitored state",
     break: lambda { |root|
@@ -2289,6 +2353,42 @@ PROGRAM_MUTATIONS = [
     from: 'author_write["loop"] == "{{ bindery_authors_to_repair }}"',
     to: "true",
     rows: ["an author repair that writes every author"]
+  },
+  {
+    label: "the author paging check",
+    program: :static,
+    from: '"Bindery must read every page of its authors" unless',
+    to: '"Bindery must read every page of its authors" if false &&',
+    rows: ["an author read that stops at the first page"]
+  },
+  {
+    label: "the applied-limit stride check",
+    program: :static,
+    from: "%w[.json.total .json.limit]",
+    to: "%w[.json.total]",
+    rows: ["an author page loop strided by the requested limit"]
+  },
+  {
+    label: "the unique page order check",
+    program: :static,
+    from: '.include?("sort=recent") }',
+    to: ' && true }',
+    rows: ["an author read paged under a tied order"]
+  },
+  {
+    label: "the combined-pages consumer check",
+    program: :static,
+    from: "!combine.nil? && !consumer.to_s.include?(\".json['items']\")",
+    to: "!combine.nil?",
+    rows: ["an author repair resolved from the first page alone"]
+  },
+  {
+    label: "the verified author paging check",
+    program: :static,
+    from: '"Bindery verification must read every page of its authors" unless',
+    to: '"Bindery verification must read every page of its authors" if false &&',
+    rows: ["an author verification that stops at the first page",
+           "an author verification read at the default page size"]
   },
   {
     label: "the pinned settings check",

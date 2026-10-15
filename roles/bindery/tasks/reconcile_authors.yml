@@ -31,9 +31,12 @@
   check_mode: false
   no_log: true
 
+# `/author` is paged, 100 by default and 500 at most, so one read skipped every
+# author past the first page. `recent` is the only order with a unique key, so
+# a tie never skips or repeats a row between pages.
 - name: Read the declared Bindery authors
   ansible.builtin.uri:
-    url: "{{ bindery_api }}/author"
+    url: "{{ bindery_api }}/author?sort=recent&limit=500"
     method: GET
     headers:
       X-Api-Key: "{{ bindery_api_key }}"
@@ -43,6 +46,34 @@
   changed_when: false
   check_mode: false
   no_log: true
+
+# Strided by the limit Bindery applied, not the one asked for, so a lower
+# server maximum still skips nothing.
+- name: Read the remaining Bindery author pages
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/author?sort=recent&limit={{ bindery_authors.json.limit }}&offset={{ item }}"
+    method: GET
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    status_code: [200]
+    return_content: true
+  loop: >-
+    {{ range(bindery_authors.json.limit | int, bindery_authors.json.total | int,
+             bindery_authors.json.limit | int) | list }}
+  loop_control:
+    label: bindery-author-page
+  register: bindery_author_pages
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# An author created between reads repeats one row across a page boundary.
+- name: Combine the Bindery author pages
+  ansible.builtin.set_fact:
+    bindery_author_items: >-
+      {{ ([bindery_authors] + bindery_author_pages.results | default([]))
+         | subelements('json.items', skip_missing=true)
+         | map(attribute='1') | unique(attribute='id') }}
 
 # Resolved by name or path: all three are database-assigned integers.
 - name: Resolve the Bindery author destination defaults
@@ -79,12 +110,12 @@
 - name: Resolve the Bindery authors missing a destination or profile
   ansible.builtin.set_fact:
     bindery_authors_to_repair: >-
-      {{ (bindery_authors.json['items'] | default([], true)
+      {{ (bindery_author_items
           | selectattr('rootFolderId', 'none') | list)
-         + (bindery_authors.json['items'] | default([], true)
+         + (bindery_author_items
             | rejectattr('rootFolderId', 'none')
             | selectattr('audiobookRootFolderId', 'none') | list)
-         + (bindery_authors.json['items'] | default([], true)
+         + (bindery_author_items
             | rejectattr('rootFolderId', 'none')
             | rejectattr('audiobookRootFolderId', 'none')
             | selectattr('qualityProfileId', 'none') | list) }}
