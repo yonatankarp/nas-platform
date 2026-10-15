@@ -1,7 +1,8 @@
 ---
 # Bindery assigns no root folder or quality profile to a new author, leaving its
 # books wanted but ungrabbable (#425). Repairs a null and only a null:
-# deliberate per-author choices, and `monitored`, stay the operator's.
+# deliberate per-author choices stay the operator's. `monitored` is written only
+# for an author holding a monitored wanted book, and never by the repair below.
 
 # Re-read after the roots are declared, so a root created this run carries its
 # id.
@@ -123,6 +124,65 @@
            }) }}
     status_code: [200]
   loop: "{{ bindery_authors_to_repair }}"
+  loop_control:
+    label: bindery-author
+  when: not ansible_check_mode
+  changed_when: true
+  no_log: true
+
+# Adding a single book creates its author unmonitored while marking the book
+# monitored, and Bindery never searches automatically for a book whose author is
+# unmonitored (upstream #2742), so every book added on its own sat wanted
+# forever. Monitor exactly those authors under mode `none`: existing books keep
+# their own flags (no cascade is requested), and a catalogue refresh monitors
+# nothing new. To stop a wanted book being searched, unmonitor the book.
+# Unpaginated, unlike `/author`, and carries `authorUnmonitored` per book.
+- name: Read the wanted Bindery books
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/wanted/missing"
+    method: GET
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: bindery_wanted_books
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# `authorUnmonitored` is omitted, not false, for a monitored author.
+- name: Resolve the unmonitored Bindery authors holding a monitored wanted book
+  ansible.builtin.set_fact:
+    bindery_authors_to_monitor: >-
+      {{ bindery_wanted_books.json | default([], true)
+         | selectattr('monitored')
+         | selectattr('authorUnmonitored', 'defined')
+         | selectattr('authorUnmonitored')
+         | map(attribute='authorId') | unique | list }}
+
+- name: Report the planned Bindery author monitoring
+  ansible.builtin.debug:
+    msg: >-
+      {{ bindery_authors_to_monitor | length }} unmonitored Bindery authors hold
+      a monitored wanted book that is never searched automatically, and a live
+      run would monitor them under mode none.
+  when:
+    - ansible_check_mode
+    - bindery_authors_to_monitor | length > 0
+
+# A partial body: the update handler changes only the fields it is sent.
+- name: Monitor the Bindery authors holding a monitored wanted book
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/author/{{ item }}"
+    method: PUT
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    body_format: json
+    body:
+      monitored: true
+      monitorMode: none
+    status_code: [200]
+  loop: "{{ bindery_authors_to_monitor }}"
   loop_control:
     label: bindery-author
   when: not ansible_check_mode

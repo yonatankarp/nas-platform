@@ -531,6 +531,28 @@ STATIC_ROWS = [
     expects: "the Bindery author repair must not own the monitored state"
   },
   {
+    # Mode `all` would monitor the author's whole catalogue on the next refresh.
+    name: "an author monitoring that follows the whole catalogue",
+    break: lambda { |root|
+      mutate_text(root, "roles/bindery/tasks/reconcile_authors.yml",
+                  "monitorMode: none", "monitorMode: all", occurrences: 1)
+    },
+    expects: "the Bindery author monitoring must monitor nothing beyond the wanted books"
+  },
+  {
+    # Unmonitors back the authors a user followed deliberately, on every tick.
+    name: "an author monitoring that writes every author",
+    break: lambda { |root|
+      role_tasks(root, "roles/bindery/tasks/reconcile_authors.yml") do |document|
+        task = find_task(document) do |candidate|
+          candidate["loop"] == "{{ bindery_authors_to_monitor }}"
+        end
+        task["loop"] = "{{ bindery_authors.json['items'] | map(attribute='id') | list }}"
+      end
+    },
+    expects: "Bindery must monitor the authors of its monitored wanted books"
+  },
+  {
     # A repeated create answers 201 and adds a second row rather than failing.
     name: "a Prowlarr row created unconditionally",
     break: lambda { |root|

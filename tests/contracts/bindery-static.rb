@@ -364,6 +364,22 @@ if failures.empty?
   failures << "the Bindery author repair must not own the monitored state" if
     body.include?("'monitored'")
 
+  # Bindery never auto-searches a book whose author is unmonitored (#2742), and
+  # adding one book creates its author unmonitored. Monitoring under any mode
+  # but `none` would monitor the author's catalogue on the next refresh.
+  monitor_write = author_tasks.find do |task|
+    task.dig("ansible.builtin.uri", "method") == "PUT" &&
+      task["loop"] == "{{ bindery_authors_to_monitor }}"
+  end
+  failures << "Bindery must monitor the authors of its monitored wanted books" if
+    monitor_write.nil?
+  monitor_body = monitor_write&.dig("ansible.builtin.uri", "body")
+  failures << "the Bindery author monitoring must monitor nothing beyond the wanted books" unless
+    monitor_body.is_a?(Hash) && monitor_body["monitored"] == true &&
+    monitor_body["monitorMode"] == "none" && !monitor_body.key?("applyMonitorModeToExisting")
+  failures << "the Bindery author monitoring must not write under check mode" unless
+    monitor_write && Array(monitor_write["when"]).join(" ").include?("not ansible_check_mode")
+
   usenet_include = tasks.find do |task|
     task["ansible.builtin.include_tasks"] == "reconcile_usenet.yml"
   end
