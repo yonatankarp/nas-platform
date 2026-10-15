@@ -263,6 +263,9 @@ green throughout. Two further readings are worth knowing before trusting either:
 those statistics are computed at metadata-refresh time — an author repaired at
 10:42 still reported `wantedBookCount: 0` from a 10:14 refresh, so that counter
 proves nothing about whether a book is actionable. Read the book's own `status`.
+And `GET /author` is paged, 100 rows by default and 500 at most, so the repair
+and its verification page through it under `sort=recent`, the one order whose
+key is unique.
 
 A default would have repaired none of this even if it existed: it applies to
 authors created afterwards. `reconcile_authors.yml` therefore repairs a null and

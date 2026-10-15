@@ -34,6 +34,30 @@ def flatten_tasks(tasks)
   end
 end
 
+# `/author` is paged, 100 by default and 500 at most, and a single read missed
+# every author past the first page. Every list read must ask for a page size, a loop
+# must fetch the remaining offsets strided by the limit Bindery applied, and
+# `consumer` must read the combined pages rather than the first one.
+def author_reads_every_page?(tasks, consumer)
+  reads = tasks.select do |task|
+    task.dig("ansible.builtin.uri", "method") == "GET" &&
+      task.dig("ansible.builtin.uri", "url").to_s.match?(%r{\{\{ bindery_api \}\}/author(\?|\z)})
+  end
+  first = reads.find { |task| !task.dig("ansible.builtin.uri", "url").include?("offset=") }
+  rest = reads.find { |task| task.dig("ansible.builtin.uri", "url").include?("offset={{ item }}") }
+  return false unless first && rest
+  return false unless reads.all? { |task| task.dig("ansible.builtin.uri", "url").include?("limit=") }
+  # Every other order ties, and Bindery's own comment warns ties drop and repeat rows.
+  return false unless reads.all? { |task| task.dig("ansible.builtin.uri", "url").include?("sort=recent") }
+  return false unless %w[.json.total .json.limit].all? { |needle| rest["loop"].to_s.include?(needle) }
+
+  combine = tasks.find do |task|
+    value = task["ansible.builtin.set_fact"].to_s
+    value.include?(first["register"].to_s) && value.include?(rest["register"].to_s)
+  end
+  !combine.nil? && !consumer.to_s.include?(".json['items']")
+end
+
 # Read as assignments: a commented-out sample would satisfy a substring search.
 def environment_assignments(path)
   File.readlines(path, chomp: true).filter_map do |line|
@@ -355,6 +379,11 @@ if failures.empty?
   failures << "Bindery must repair an author destination in place" if author_write.nil?
   failures << "the Bindery author repair must write only the authors missing a value" unless
     author_write && author_write["loop"] == "{{ bindery_authors_to_repair }}"
+  repair_fact = author_tasks.find do |task|
+    task.dig("ansible.builtin.set_fact", "bindery_authors_to_repair")
+  end
+  failures << "Bindery must read every page of its authors" unless
+    author_reads_every_page?(author_tasks, repair_fact&.dig("ansible.builtin.set_fact"))
   # Never overwrite a set value or write `monitored`.
   body = author_write&.dig("ansible.builtin.uri", "body").to_s
   %w[rootFolderId audiobookRootFolderId qualityProfileId].each do |field|
@@ -667,6 +696,10 @@ if failures.empty?
   failures << "the Bindery indexer assertion must be gated on the declared indexers" unless
     indexer_assertion &&
     Array(indexer_assertion["when"]).join(" ").include?("media_arr_indexers")
+
+  failures << "Bindery verification must read every page of its authors" unless
+    author_reads_every_page?(verification,
+                             conditions.select { |condition| condition.to_s.include?("rootFolderId") })
 
   failures << "the Bindery outcome assertion must stay readable" if
     outcome_assertions.any? { |task| task["no_log"] }
