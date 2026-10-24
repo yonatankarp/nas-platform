@@ -44,7 +44,7 @@ services:
   radarr:
     <<: *service-defaults
     container_name: radarr
-    image: lscr.io/linuxserver/radarr:6.4.4@sha256:cfbc4fa09dc9d78f7cedc898f4ec48c6277cacedc523c4e159db6ff1c741959c
+    image: lscr.io/linuxserver/radarr:6.4.4@sha256:fc0ae3c50f8128b97e84381903ec8d6845c3a569641cb7117c124376cccb57c1
     cpus: 1.0
     labels:
       dev.dozzle.group: arr
@@ -62,7 +62,7 @@ services:
   sonarr:
     <<: *service-defaults
     container_name: sonarr
-    image: lscr.io/linuxserver/sonarr:4.0.20@sha256:dffc730adcb8b4f4342792fbb27fcad9c62fb8660523f2aeb082416980d7fe0c
+    image: lscr.io/linuxserver/sonarr:4.0.20@sha256:48e36b608b461273b9dae857725cd0561a127f2c694b687318f6d0c5ce63e5c9
     cpus: 1.0
     labels:
       dev.dozzle.group: arr
@@ -80,7 +80,7 @@ services:
   prowlarr:
     <<: *service-defaults
     container_name: prowlarr
-    image: lscr.io/linuxserver/prowlarr:2.6.5@sha256:f9151e5bc1025c6d0a630d503210cdcb6bb55a7cc098562609d96a408d838902
+    image: lscr.io/linuxserver/prowlarr:2.6.5@sha256:b3b00047ed20f6ce2b16780145cb6a0acb51c9e28ea6aa6f5dcd33c7034f1797
     cpus: 0.5
     labels:
       dev.dozzle.group: arr
@@ -100,7 +100,7 @@ services:
     # A random container ID like 123e45678901 parses as `.inf` in Bazarr's TOML
     # settings and every later submit answers 406 (#708); a fixed name heals it.
     hostname: bazarr
-    image: lscr.io/linuxserver/bazarr:1.6.2@sha256:c1673816321156b904af9b7e6415ea547ae9622e4acc375358f1e1eb9ed1e904
+    image: lscr.io/linuxserver/bazarr:1.6.2@sha256:946dc8c5bb5331418eac60050cf40a63cb8f66ac039841dda493870e3559799c
     cpus: 1.0
     labels:
       dev.dozzle.group: arr
@@ -118,7 +118,7 @@ services:
   configarr:
     <<: *job-defaults
     profiles: [jobs]
-    image: ghcr.io/raydak-labs/configarr:1.34.1@sha256:3443bef6be53f7f8580bad13f6e7946cabc80ba4e4f247e2a23b767febd7af3c
+    image: ghcr.io/raydak-labs/configarr:1.36.0@sha256:0d15c74cf74cd980bb2f9e9dd0cfdde1655a8f928e481c3258d7ccd4cde9dcbc
     user: "${NAS_UID:?}:${NAS_GID:?}"
     cpus: 0.5
     environment:
