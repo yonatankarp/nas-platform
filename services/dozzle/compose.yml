@@ -23,7 +23,7 @@ services:
   alert-relay:
     <<: *service-defaults
     container_name: dozzle_alert_relay
-    image: docker.io/library/python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
+    image: docker.io/library/python:3.15-alpine@sha256:d44b1254cb92329418d164b22b20d86bbd3869d48e80e09e476531a409a728bb
     cpus: 0.5
     labels:
       dev.dozzle.group: dozzle
@@ -78,7 +78,7 @@ services:
   dozzle:
     <<: *service-defaults
     container_name: dozzle
-    image: docker.io/amir20/dozzle:v11.3.1@sha256:ba65da5af3d2147cfc2ee68ea5a6e35b75d2dff7eeff226151a65c9d77831c02
+    image: docker.io/amir20/dozzle:v11.3.4@sha256:8796ae7e1ecbe011482319cb7040e69aae91a0632b87bbe24b3f643e7455d94b
     cpus: 1.0
     labels:
       dev.dozzle.group: dozzle

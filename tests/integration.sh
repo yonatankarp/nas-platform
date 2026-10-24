@@ -9,7 +9,7 @@ ansible_core_version=2.21.5
 # community.docker.docker_container_info imports requests on the managed host;
 # the disposable controller is that host for the local inventory.
 requests_version=2.34.2
-runner_image=docker.io/library/python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
+runner_image=docker.io/library/python:3.15-alpine@sha256:d44b1254cb92329418d164b22b20d86bbd3869d48e80e09e476531a409a728bb
 # `~` rather than `=`: apk's `=` needs the distro revision, so an -r0 to -r1 bump
 # drops the pin out of the index. It also lets Renovate track it via repology.
 ruby_package='ruby~3.4.9'
