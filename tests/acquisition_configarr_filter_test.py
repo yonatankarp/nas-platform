@@ -270,6 +270,56 @@ def collect_failures():
                 projection["radarr"]["quality_definitions"], "{}", "radarr"),
             "a source document with the wrong identity must be refused")
 
+    # --- acquisition_configarr_quality_definition_sources -----------------
+    applied = plugin.acquisition_configarr_quality_definition_sources(SOURCES, CONFIG_SOURCE)
+    for service in ("radarr", "sonarr"):
+        declared = {
+            entry["quality"]: entry
+            for entry in plugin._configarr_service_policy(
+                plugin._configarr_declaration(CONFIG_SOURCE), service
+            )["quality_definition"].get("qualities", [])
+        }
+        pinned = {q["quality"]: q for q in json.loads(SOURCES[service])["qualities"]}
+        result = {q["quality"]: q for q in json.loads(applied[service])["qualities"]}
+        check(failures, set(result) == set(pinned),
+              f"{service}'s overrides must neither add nor drop a pinned quality")
+        for name, entry in result.items():
+            expected = declared.get(name, pinned[name])
+            check(failures,
+                  [entry[k] for k in ("min", "preferred", "max")]
+                  == [expected[k] for k in ("min", "preferred", "max")],
+                  f"{service} {name} must carry its declared size, else its pinned one")
+        check(failures, plugin._configarr_quality_definition_source(applied[service], service),
+              f"{service}'s overridden document must still be the pinned source identity")
+
+    def with_qualities(service, qualities):
+        prefix = {"radarr": "type: movie", "sonarr": "type: series"}[service]
+        lines = [f"        - {{quality: {q[0]}, min: {q[1]}, preferred: {q[2]}, max: {q[3]}}}"
+                 for q in qualities]
+        marker = f"      {prefix}\n"
+        head, tail = CONFIG_SOURCE.split(marker, 1)
+        tail = tail.split("    quality_profiles:", 1)[1]
+        return head + marker + "      qualities:\n" + "\n".join(lines) + "\n    quality_profiles:" + tail
+
+    for label, qualities in {
+        "a quality its source does not name": [("Not-A-Quality", 0, 20, 35)],
+        "the same quality twice": [("HDTV-1080p", 0, 20, 35), ("HDTV-1080p", 0, 21, 36)],
+        "sizes out of order": [("HDTV-1080p", 0, 40, 35)],
+        "a zero preferred size Configarr would skip": [("HDTV-1080p", 0, 0, 35)],
+    }.items():
+        refuses(failures,
+                lambda qualities=qualities: plugin.acquisition_configarr_quality_definition_sources(
+                    SOURCES, with_qualities("radarr", qualities)),
+                f"a size override naming {label} must be refused")
+    refuses(failures,
+            lambda: plugin.acquisition_configarr_quality_definition_sources(
+                SOURCES, CONFIG_SOURCE.replace("type: movie", "type: movie\n      preferred_ratio: 0.5", 1)),
+            "a preferred_ratio the invariants do not mirror must be refused")
+    refuses(failures,
+            lambda: plugin.acquisition_configarr_quality_definition_sources(
+                {"radarr": SOURCES["radarr"]}, CONFIG_SOURCE),
+            "sources missing a service must be refused")
+
     # --- acquisition_configarr_profile_repair_bodies ----------------------
     check(failures,
           plugin.acquisition_configarr_profile_repair_bodies(

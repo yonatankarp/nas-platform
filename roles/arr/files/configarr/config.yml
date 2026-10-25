@@ -22,8 +22,15 @@ radarr:
   phase1:
     base_url: http://radarr:7878
     api_key: !secret RADARR_API_KEY
+    # TRaSH sizes except 1080p, capped (MB/min) for the HEVC-preferring
+    # "1080p Efficient" and "1080p Keep" profiles the library runs on.
     quality_definition:
       type: movie
+      qualities:
+        - {quality: HDTV-1080p, min: 0, preferred: 20, max: 35}
+        - {quality: WEBDL-1080p, min: 0, preferred: 20, max: 35}
+        - {quality: WEBRip-1080p, min: 0, preferred: 20, max: 35}
+        - {quality: Bluray-1080p, min: 0, preferred: 25, max: 40}
     quality_profiles:
       - name: HD Bluray + WEB 1080p
         reset_unmatched_scores:
@@ -57,6 +64,11 @@ sonarr:
     api_key: !secret SONARR_API_KEY
     quality_definition:
       type: series
+      qualities:
+        - {quality: HDTV-1080p, min: 0, preferred: 20, max: 35}
+        - {quality: WEBDL-1080p, min: 0, preferred: 20, max: 35}
+        - {quality: WEBRip-1080p, min: 0, preferred: 20, max: 35}
+        - {quality: Bluray-1080p, min: 0, preferred: 25, max: 40}
     quality_profiles:
       - name: HD Bluray + WEB 1080p
         reset_unmatched_scores:

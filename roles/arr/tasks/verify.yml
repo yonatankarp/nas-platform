@@ -62,6 +62,18 @@
   tags: [platform_verify_arr]
   no_log: true
 
+# The same overrides tasks/configarr.yml applies: verify the sizes Configarr writes.
+- name: Apply the declared Configarr quality-definition overrides for verification
+  ansible.builtin.set_fact:
+    arr_verify_configarr_quality_definition_sources: >-
+      {{ arr_verify_configarr_quality_definition_sources |
+         acquisition_configarr_quality_definition_sources(
+           lookup('file', role_path ~ '/files/configarr/config.yml')
+         ) }}
+  changed_when: false
+  tags: [platform_verify_arr]
+  no_log: true
+
 - name: Build Configarr quality-definition verification invariants
   ansible.builtin.set_fact:
     arr_verify_configarr_quality_definition_invariants: >-

@@ -131,6 +131,15 @@ invariants and the complete API type, shape, and identity checks pass. Once
 installed, opaque-context continuity is enforced independently of desired-input
 changes; a mismatch fails closed instead of establishing a new baseline.
 
+**Quality sizes.**
+- The pinned TRaSH documents under `roles/arr/files/configarr/` stay verbatim.
+- `quality_definition.qualities` in `config.yml` replaces a named quality's sizes, as Configarr 1.34.1 does. The 1080p qualities are capped this way for the HEVC-preferring profiles the library uses.
+- Every size check reads the documents through the `acquisition_configarr_quality_definition_sources` filter, so they compare against what Configarr writes.
+
+**Change Configarr-owned state in `config.yml`, never in the Radarr or Sonarr UI.**
+- A size changed in the UI is put back by the next converge.
+- A custom format added in the UI also joins the owned profile's format scores at zero. Configarr cannot remove it, so the owned-state check fails closed until the declared configuration changes.
+
 ## 2. Adopt existing Movies and Series once
 
 Back up the media and application state and test the restore first. On the first
