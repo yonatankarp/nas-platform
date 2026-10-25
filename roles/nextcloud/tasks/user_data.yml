@@ -1,0 +1,174 @@
+---
+# The user's files live at nextcloud_user_data_host_path, mounted over /var/www/html/data.
+# An install that predates that mount keeps them in <data root>/data, which the mount
+# would hide: Nextcloud would start on an empty data directory. So every converge looks,
+# refuses while the files are still in the old place, and moves them only on the one
+# operator-run convergence that passes nextcloud_user_data_migration_allowed=true.
+# Root work runs in a throwaway, networkless container of the Nextcloud image, as the
+# pre-upgrade code archive does: nothing in this repository escalates on the host.
+
+# The digest pin, read from the controller checkout: the probe needs a shell, not the
+# deployed release, and `current` may still be the previous release under --check.
+# Not the running container's image: Docker reports it as the bare tag, which a
+# by-digest pull never creates, so running it would pull whatever the tag means now.
+# The pin is on the host after any deploy; only a pending bump pulls it, which the
+# deploy that follows would pull anyway.
+- name: Resolve the image the Nextcloud user data probe runs
+  ansible.builtin.set_fact:
+    nextcloud_user_data_probe_image: >-
+      {{ (lookup('ansible.builtin.file', playbook_dir ~ '/services/nextcloud/compose.yml')
+          | from_yaml).services.nextcloud.image }}
+  when: nextcloud_deployment_enabled | bool
+
+# Both roots are 0755 and readable without escalation; only what is inside data/ is not.
+# Under --check host_prep has not created a new root yet, and a bind mount of a missing
+# source fails, so the probe mounts only the roots that exist.
+- name: Read which Nextcloud storage roots exist
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ nextcloud_data_host_path }}"
+    - "{{ nextcloud_user_data_host_path }}"
+  register: nextcloud_user_data_roots
+  changed_when: false
+  when: nextcloud_deployment_enabled | bool
+
+# Read-only: the roots mounted readonly, and the container has no network.
+- name: Find which root holds the Nextcloud user data
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'run', '--rm', '--network', 'none']
+         + (['--mount', 'type=bind,source=' ~ nextcloud_data_host_path ~ ',target=/legacy,readonly']
+            if nextcloud_user_data_roots.results[0].stat.isdir | default(false) else [])
+         + (['--mount', 'type=bind,source=' ~ nextcloud_user_data_host_path ~ ',target=/moved,readonly']
+            if nextcloud_user_data_roots.results[1].stat.isdir | default(false) else [])
+         + ['--entrypoint', 'sh', nextcloud_user_data_probe_image, '-c',
+            "if [ -e /legacy/data/.ocdata ]; then printf 'legacy '; fi; "
+            ~ "if [ -e /moved/data/.ocdata ]; then printf 'moved'; fi; echo"] }}
+  register: nextcloud_user_data_probe
+  changed_when: false
+  check_mode: false
+  when: nextcloud_deployment_enabled | bool
+
+- name: Resolve where the Nextcloud user data lives
+  ansible.builtin.set_fact:
+    nextcloud_user_data_in_legacy_root: "{{ 'legacy' in nextcloud_user_data_probe.stdout.split() }}"
+    nextcloud_user_data_in_moved_root: "{{ 'moved' in nextcloud_user_data_probe.stdout.split() }}"
+  when: nextcloud_deployment_enabled | bool
+
+- name: Refuse Nextcloud user data present in both roots
+  ansible.builtin.assert:
+    that:
+      - not (nextcloud_user_data_in_legacy_root | bool and nextcloud_user_data_in_moved_root | bool)
+    fail_msg: >-
+      Both {{ nextcloud_data_host_path }}/data and {{ nextcloud_user_data_host_path }}/data
+      hold a Nextcloud data directory (.ocdata). Only the second is mounted, so the first
+      is either a leftover or the live copy of an interrupted move. Compare them and
+      rename the one that is not current; nothing was stopped or moved.
+  when: nextcloud_deployment_enabled | bool
+
+- name: Refuse to hide Nextcloud user data that has not been moved
+  ansible.builtin.assert:
+    that:
+      - not nextcloud_user_data_in_legacy_root | bool or nextcloud_user_data_migration_allowed | bool
+    fail_msg: >-
+      The Nextcloud user data is still in {{ nextcloud_data_host_path }}/data, and this
+      release mounts {{ nextcloud_user_data_host_path }}/data over it instead. Starting
+      Nextcloud now would hide every file. Move it with one convergence through the
+      deployment launcher, passing -e nextcloud_user_data_migration_allowed=true
+      (docs/dossier-nextcloud.md, "Moving the user data off the state volume"). Nothing
+      was stopped or moved; every converge takes this refusal until then.
+  when: nextcloud_deployment_enabled | bool
+
+- name: Report the Nextcloud user data move a live run would perform
+  ansible.builtin.debug:
+    msg: >-
+      A live run would stop Nextcloud and its cron, copy {{ nextcloud_data_host_path }}/data
+      to {{ nextcloud_user_data_host_path }}/data preserving ownership, compare the two
+      trees, move the old directory out of the installation tree to
+      {{ nextcloud_data_host_path | dirname }}/user-data.before-move for rollback, and
+      start the stack on the new mount.
+  when:
+    - nextcloud_deployment_enabled | bool
+    - ansible_check_mode
+    - nextcloud_user_data_in_legacy_root | bool
+
+# The stop and the copy are one unit: on failure the old containers start again
+# unchanged (`recreate: never`), still mounting the old data/, and the run fails.
+- name: Move the Nextcloud user data, starting the old application again if the move fails
+  when:
+    - nextcloud_deployment_enabled | bool
+    - not ansible_check_mode
+    - nextcloud_user_data_in_legacy_root | bool
+  block:
+    # `recreate: never`: without it `stopped` first recreates onto the new mounts.
+    - name: Stop Nextcloud and its cron before moving the user data
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_current_dir }}/services/nextcloud"
+        project_name: "{{ nextcloud_compose_project_name }}"
+        files: "{{ platform_service_compose_files['nextcloud'] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/nextcloud/.env"]
+        services: [nextcloud, cron]
+        state: stopped
+        recreate: never
+      register: nextcloud_user_data_stop
+      when: nextcloud_deployment_enabled | bool
+
+    # cp -a keeps www-data's ownership and the 0770 mode; the counts compare the trees
+    # before the old one moves. It moves beside the installation tree, never into it:
+    # the next upgrade's rsync --delete would erase it there, and the pre-upgrade code
+    # archive would carry it. Nothing is deleted; the operator removes it once satisfied.
+    - name: Copy the Nextcloud user data to its own root
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --rm
+          - --network
+          - none
+          - --mount
+          - "type=bind,source={{ nextcloud_data_host_path | dirname }},target=/state"
+          - --mount
+          - "type=bind,source={{ nextcloud_user_data_host_path }},target=/moved"
+          - --entrypoint
+          - sh
+          - "{{ nextcloud_user_data_probe_image }}"
+          - -c
+          - >-
+            set -eu; legacy="/state/$1/data";
+            test ! -e /state/user-data.before-move;
+            if [ -e /moved/data ]; then rmdir /moved/data; fi;
+            rm -rf /moved/.data.partial;
+            cp -a "$legacy" /moved/.data.partial;
+            test -e /moved/.data.partial/.ocdata;
+            old=$(find "$legacy" | wc -l); new=$(find /moved/.data.partial | wc -l);
+            test "$old" -eq "$new";
+            mv /moved/.data.partial /moved/data;
+            mv "$legacy" /state/user-data.before-move
+          - sh
+          - "{{ nextcloud_data_host_path | basename }}"
+      register: nextcloud_user_data_move
+      changed_when: true
+  rescue:
+    - name: Start the old Nextcloud application again after the failed move
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_current_dir }}/services/nextcloud"
+        project_name: "{{ nextcloud_compose_project_name }}"
+        files: "{{ platform_service_compose_files['nextcloud'] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/nextcloud/.env"]
+        services: [nextcloud, cron]
+        state: present
+        recreate: never
+      register: nextcloud_user_data_restart
+      when: nextcloud_deployment_enabled | bool
+
+    - name: Fail the run after the failed Nextcloud user data move
+      ansible.builtin.fail:
+        msg: >-
+          Moving {{ nextcloud_data_host_path }}/data to {{ nextcloud_user_data_host_path }}/data
+          failed in "{{ ansible_failed_task.name | default('an unnamed task') }}". The old
+          containers were started again on the old data directory. If it was not moved,
+          remove any {{ nextcloud_user_data_host_path }}/.data.partial or data/ the copy
+          left; if a {{ nextcloud_data_host_path | dirname }}/user-data.before-move from an
+          earlier move is in the way, remove or rename it. Find the cause and converge
+          again with the migration flag.

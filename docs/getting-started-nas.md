@@ -872,7 +872,7 @@ On the ASUSTOR production layout, `/volume1` is the NVMe service-state volume
 and `/volume2` is the NAS-managed media volume. Stop if either mount is absent.
 Do not create service directories until the mount boundary is proven. Record
 which `/volume2` trees survived before making changes; important examples are
-`Media`, `Books`, `Immich`, `Immich-backups`, and `Documents`.
+`Media`, `Books`, `Immich`, `Immich-backups`, `Documents`, and `Nextcloud`.
 
 ### Rebuild the local controller prerequisites
 
@@ -986,6 +986,13 @@ databases have different recovery boundaries:
   Use a tested Paperless export or coordinated database recovery when available;
   otherwise treat re-import from surviving originals as a separate recovery
   operation and preserve the archive before attempting it.
+- Nextcloud publishes `http://<nas-address>:8084`. The user's files under
+  `/volume2/Nextcloud/data` can survive while the installation tree
+  (`config.php`, the instance secret) and PostgreSQL do not. The installer
+  expects an empty data directory, so move `/volume2/Nextcloud/data` aside
+  before the first converge, copy the user folders back after the install, and
+  index them with `occ files:scan --all` as `www-data`. Shares, versions, and
+  per-file metadata live in the lost database.
 
 After its database recovery decision is complete, converge one service at a
 time so failures remain attributable:

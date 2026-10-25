@@ -11,6 +11,7 @@
     deployment_target_extra_paths:
       - "{{ nextcloud_data_host_path }}"
       - "{{ nextcloud_postgres_host_path }}"
+      - "{{ nextcloud_user_data_host_path }}"
 
 # Only the file format: a newline in a .env value truncates it silently. Shapes are
 # owned by filter_plugins/vault_credential_schema.py and not restated.
@@ -71,8 +72,8 @@
     msg: >-
       nextcloud_deployment_enabled is false, so the Nextcloud Compose project
       {{ nextcloud_compose_project_name }} is torn down rather than converged and
-      nothing on {{ nextcloud_data_host_path }} or
-      {{ nextcloud_postgres_host_path }} is read or written. Set
+      nothing on {{ nextcloud_data_host_path }}, {{ nextcloud_postgres_host_path }} or
+      {{ nextcloud_user_data_host_path }} is read or written. Set
       nextcloud_deployment_enabled to true in
       inventory/group_vars/all/service_nextcloud.yml and merge; the auto-deploy
       poller brings the stack up on its next five-minute tick.
@@ -90,6 +91,11 @@
     image_downgrade_guard_store_description: >-
       {{ nextcloud_data_host_path }} and {{ nextcloud_postgres_host_path }}
   when: nextcloud_deployment_enabled | bool
+
+# Before any Compose operation that could recreate the application onto the user-data
+# mount: refuses, or with the operator's flag moves, files still in the old data/.
+- name: Keep the Nextcloud user data where its mount expects it
+  ansible.builtin.import_tasks: user_data.yml
 
 # Two phases: the installer needs a database already accepting connections.
 - name: Deploy the Nextcloud data services

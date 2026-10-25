@@ -41,10 +41,13 @@ services:
     # Plain HTTP like every published port here: no TLS termination on the LAN.
     ports:
       - "8084:80"
-    # The cron container mounts the identical source at the identical target: it
-    # runs the same installation's cron.php.
+    # The cron container mounts the identical sources at the identical targets: it
+    # runs the same installation's cron.php. The user's files are a second mount over
+    # data/, which the entrypoint's upgrade rsync excludes, so config.php's
+    # datadirectory is unchanged.
     volumes:
       - ${NEXTCLOUD_DATA_PATH:?}:/var/www/html
+      - ${NEXTCLOUD_USER_DATA_PATH:?}:/var/www/html/data
     environment:
       TZ: ${TZ:?}
       # ------------------------------------------------------------------
@@ -117,6 +120,7 @@ services:
     entrypoint: /cron.sh
     volumes:
       - ${NEXTCLOUD_DATA_PATH:?}:/var/www/html
+      - ${NEXTCLOUD_USER_DATA_PATH:?}:/var/www/html/data
     environment:
       TZ: ${TZ:?}
     healthcheck:

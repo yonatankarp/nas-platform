@@ -26,6 +26,13 @@ argument_specs:
       nextcloud_postgres_host_path:
         type: path
         required: false
+      nextcloud_user_data_host_path:
+        type: path
+        required: false
+      # Declared bool: the string `false` is true in Jinja.
+      nextcloud_user_data_migration_allowed:
+        type: bool
+        required: false
       # Bare hostnames; tasks/deploy.yml asserts the shape, which a spec cannot.
       nextcloud_trusted_domains:
         type: list

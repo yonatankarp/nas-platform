@@ -6,6 +6,7 @@ services:
       - "${NEXTCLOUD_HOST_PORT:?}:80"
     volumes: !override
       - ${NEXTCLOUD_DATA_PATH:?}:/var/www/html
+      - ${NEXTCLOUD_USER_DATA_PATH:?}:/var/www/html/data
 
   # Restated because !override replaces the list: without it cron would run
   # against an empty /var/www/html.
@@ -13,6 +14,7 @@ services:
     container_name: ${PLATFORM_PROJECT_NAME:?}-nextcloud-cron
     volumes: !override
       - ${NEXTCLOUD_DATA_PATH:?}:/var/www/html
+      - ${NEXTCLOUD_USER_DATA_PATH:?}:/var/www/html/data
 
   db:
     container_name: ${PLATFORM_PROJECT_NAME:?}-nextcloud-db

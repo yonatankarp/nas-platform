@@ -39,6 +39,7 @@ FIXTURE_FILES = %w[
   roles/nextcloud/tasks/main.yml
   roles/nextcloud/tasks/storage.yml
   roles/nextcloud/tasks/deploy.yml
+  roles/nextcloud/tasks/user_data.yml
   roles/nextcloud/tasks/reconcile_trusted_domains.yml
   roles/nextcloud/tasks/reconcile_admin.yml
   roles/nextcloud/tasks/reconcile_apps.yml

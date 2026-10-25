@@ -181,6 +181,63 @@ the precedent that had already solved it, and its mode is `0755` rather than
 mount at `0700`, so the parent must stay traversable after the entrypoint drops
 privileges.
 
+## Moving the user data off the state volume
+
+The installation tree and the user's files used to be one mount:
+`/volume1/Docker/nextcloud/data` was all of `/var/www/html`, `data/` included.
+That put the user's documents on the NVMe state volume, which
+[getting-started-nas.md](getting-started-nas.md) treats as rebuildable service
+state, and on the small disks rather than the array.
+
+They are now two mounts. `nextcloud_data_host_path` keeps the installation tree
+(code, `config.php`, `custom_apps`, `themes`) on `/volume1`.
+`nextcloud_user_data_host_path` is `/volume2/Nextcloud`, and its `data/` child
+is mounted over `/var/www/html/data` in both the application and the cron
+sidecar.
+
+**The container path did not move, and that is the whole design.**
+`config.php`'s `datadirectory` and the `local::/var/www/html/data/` storage IDs
+in the database stay valid. Nothing has to be rewritten with `occ`. The
+entrypoint's upgrade rsync excludes `/data/` (`/upgrade.exclude` in the image),
+so a version bump never touches the mount. The rsync seeds `data/` only when it
+is missing or empty.
+
+**Ownership follows the Postgres pattern.**
+- `host_prep` owns `/volume2/Nextcloud` at `0755`.
+- The `data/` beneath it is `www-data`'s at `0770`, Nextcloud's own requirement, and is written by the entrypoint or the move, never by `host_prep`.
+- Mounting a `host_prep`-managed directory directly would hand Nextcloud a root-owned `0755` data directory.
+
+**An install that predates the split refuses to converge until it is moved.**
+- Mounting the new root would hide `<data root>/data`, and Nextcloud would start on an empty data directory.
+- So `tasks/user_data.yml` probes both roots on every converge, from a throwaway, networkless container of the Nextcloud image, because nothing here escalates on the host.
+- It refuses while `.ocdata` is still only in the old place.
+- From the merge until the move, every converge fails at that refusal, and the stack keeps running on the old layout, untouched.
+
+Read the plan, then move once through the launcher:
+
+```sh
+$HOME/.local/bin/nas-platform-deploy --converge -- -i inventory/local.yml site.yml --check --diff --ask-vault-pass -e nextcloud_user_data_migration_allowed=true
+$HOME/.local/bin/nas-platform-deploy --converge -- -i inventory/local.yml site.yml --ask-vault-pass -e nextcloud_user_data_migration_allowed=true
+```
+
+**What the move does:**
+1. Stops `nextcloud` and `cron` with `recreate: never`.
+2. Copies `data/` with `cp -a` into `/volume2/Nextcloud/.data.partial`.
+3. Requires `.ocdata` in the copy and an equal entry count in both trees.
+4. Renames the copy to `data/`.
+5. Moves the old directory to `/volume1/Docker/nextcloud/user-data.before-move`. It goes beside the installation tree, never inside it: the next upgrade's `rsync --delete` would erase it there, and the pre-upgrade code archive would carry it.
+6. The same converge then recreates both containers on the new mount.
+
+On any failure the old containers start again unchanged, still mounting the old `data/`, and the run fails.
+
+**Never store the flag true.**
+
+Remove the rollback copy once the files show up in Nextcloud:
+
+```sh
+docker run --rm --network none -v /volume1/Docker/nextcloud:/state --entrypoint rm <nextcloud pin> -rf /state/user-data.before-move
+```
+
 ## A Jinja escape that made a reconciler run forever
 
 This one is worth the whole section, because it is a defect class this

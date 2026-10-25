@@ -18,10 +18,16 @@ nextcloud_additional_trusted_domains:
   - 100.102.136.50
 
 nas_storage_nextcloud:
-  # Critical: the tree is the user's documents, stored as plain files.
-  # The data root is all of /var/www/html: the image keeps config/, data/,
-  # custom_apps/ and themes/ there. Ownership is unclaimed: the entrypoint chowns it.
+  # Critical: the installation tree, all of /var/www/html except data/ -- the image
+  # keeps config/ (config.php: the instance secret), custom_apps/ and themes/ there.
+  # Ownership is unclaimed: the entrypoint chowns it.
   - path: "{{ nas_docker_root }}/nextcloud/data"
+    mode: "0755"
+    recovery: critical
+  # Critical: the user's documents, stored as plain files on the media array. Mounted
+  # as its data/ child at /var/www/html/data; that child is www-data's, 0770, as the
+  # PGDATA beneath postgres/ is the postgres user's, so this root stays 0755.
+  - path: "{{ nas_media_root }}/Nextcloud"
     mode: "0755"
     recovery: critical
   # 0755 because PostgreSQL 18 protects its own versioned PGDATA beneath this
