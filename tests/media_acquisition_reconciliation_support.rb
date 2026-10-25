@@ -90,6 +90,7 @@ NON_SECRET_TASK_NAMES = [
   "Record a bounded Configarr execution summary",
   "Require the deployed Configarr declaration to match the role",
   "Load pinned Configarr quality-definition source documents",
+  "Apply the declared Configarr quality-definition overrides",
   "Require Configarr opaque context continuity before mutation",
   "Verify the Configarr declared projection matches the desired projection",
   "Verify Configarr quality definitions match their declared source",
