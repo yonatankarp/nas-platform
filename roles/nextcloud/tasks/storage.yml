@@ -6,19 +6,26 @@
     that:
       - nextcloud_data_host_path == (nas_docker_root ~ '/nextcloud/data')
       - nextcloud_postgres_host_path == (nas_docker_root ~ '/nextcloud/postgres')
+      - nextcloud_user_data_host_path == (nas_media_root ~ '/Nextcloud')
       - >-
-        [nextcloud_data_host_path, nextcloud_postgres_host_path]
-        | unique | length == 2
+        [nextcloud_data_host_path, nextcloud_postgres_host_path, nextcloud_user_data_host_path]
+        | unique | length == 3
       - not nextcloud_postgres_host_path.startswith(nextcloud_data_host_path ~ '/')
       - not nextcloud_data_host_path.startswith(nextcloud_postgres_host_path ~ '/')
+      - not nextcloud_user_data_host_path.startswith(nextcloud_data_host_path ~ '/')
+      - not nextcloud_data_host_path.startswith(nextcloud_user_data_host_path ~ '/')
+      - not nextcloud_user_data_host_path.startswith(nextcloud_postgres_host_path ~ '/')
+      - not nextcloud_postgres_host_path.startswith(nextcloud_user_data_host_path ~ '/')
     fail_msg: >-
       Nextcloud storage paths overlap or differ from the owned policy. The
-      installation tree and the database cluster must be two separate roots:
-      /var/www/html is rsynced from the image on every version bump, and a
-      PostgreSQL cluster living inside a directory that gets rsynced over is a
-      cluster that does not survive an upgrade.
+      installation tree, the database cluster and the user's files must be three
+      separate roots: /var/www/html is rsynced from the image on every version
+      bump, a PostgreSQL cluster living inside a directory that gets rsynced over
+      is a cluster that does not survive an upgrade, and the user's files belong
+      on the media array, not the state volume.
 
-# Both roots are critical: the tree is the user's documents, the cluster their meaning.
+# All three are critical: the files are the user's documents, the tree holds config.php
+# and the cluster their meaning.
 - name: Resolve required central Nextcloud storage declarations
   ansible.builtin.set_fact:
     nextcloud_required_storage_declarations:
@@ -26,6 +33,8 @@
       # 0755, not 0700: PostgreSQL 18 creates a 0700 PGDATA beneath this mount, and the
       # parent must stay traversable for the postgres account.
       - {path: "{{ nas_docker_root }}/nextcloud/postgres", mode: "0755", recovery: critical}
+      # 0755 for the same reason: the www-data, 0770 data/ beneath it is the application's.
+      - {path: "{{ nas_media_root }}/Nextcloud", mode: "0755", recovery: critical}
 
 - name: Require unique central Nextcloud storage declarations
   ansible.builtin.assert:

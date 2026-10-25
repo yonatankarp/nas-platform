@@ -10,6 +10,13 @@ nextcloud_url: "http://127.0.0.1:{{ nextcloud_port }}"
 
 nextcloud_data_host_path: "{{ nas_docker_root }}/nextcloud/data"
 nextcloud_postgres_host_path: "{{ nas_docker_root }}/nextcloud/postgres"
+# The user's files, kept apart from the installation tree: on the SATA array rather
+# than the NVMe state volume. host_prep owns this root; its data/ child is mounted at
+# /var/www/html/data and belongs to the application, as PGDATA does beneath postgres/.
+nextcloud_user_data_host_path: "{{ nas_media_root }}/Nextcloud"
+# One convergence only, through the launcher: `-e nextcloud_user_data_migration_allowed=true`
+# moves an install's files out of <data root>/data (tasks/user_data.yml). Never store it true.
+nextcloud_user_data_migration_allowed: false
 
 # Nextcloud answers 400 to any Host not in trusted_domains, matched on host only (the
 # port is ignored). 127.0.0.1 is what verify.yml polls; localhost is what the container's

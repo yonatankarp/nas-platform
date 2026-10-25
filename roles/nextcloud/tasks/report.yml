@@ -12,6 +12,9 @@
       {{ (nextcloud_data_deploy is changed) or (nextcloud_deploy is changed) or
          (nextcloud_teardown is changed) or
          ((pre_upgrade_backup_restart | default({})) is changed) or
+         ((nextcloud_user_data_stop | default({})) is changed) or
+         ((nextcloud_user_data_move | default({})) is changed) or
+         ((nextcloud_user_data_restart | default({})) is changed) or
          ((nextcloud_trusted_domains_repair | default({})) is changed) or
          ((nextcloud_admin_repair | default({})) is changed) or
          ((nextcloud_app_repair | default({})) is changed) }}

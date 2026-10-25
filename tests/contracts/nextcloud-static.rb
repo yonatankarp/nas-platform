@@ -12,6 +12,7 @@ required = %w[
   roles/nextcloud/tasks/main.yml
   roles/nextcloud/tasks/storage.yml
   roles/nextcloud/tasks/deploy.yml
+  roles/nextcloud/tasks/user_data.yml
   roles/nextcloud/tasks/reconcile_trusted_domains.yml
   roles/nextcloud/tasks/reconcile_admin.yml
   roles/nextcloud/tasks/reconcile_apps.yml
@@ -34,7 +35,8 @@ require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_supp
 include PolicySupport
 
 ROLE_TASK_FILES = %w[
-  main storage deploy reconcile_trusted_domains reconcile_admin reconcile_apps report verify
+  main storage deploy user_data reconcile_trusted_domains reconcile_admin reconcile_apps report
+  verify
 ].freeze
 VAULT_CREDENTIALS = %w[
   vault_nextcloud_admin_password
@@ -129,11 +131,16 @@ if failures.empty?
       "cache" => { "dev.dozzle.group" => "nextcloud", "dev.dozzle.name" => "cache" }
     }
 
-  # cron runs cron.php out of the application's volume; its own copy would run jobs
-  # against a tree nothing upgrades.
+  # cron runs cron.php out of the application's volumes; its own copy would run jobs
+  # against a tree nothing upgrades, or against a data directory the server never sees.
   application_html = Array(application["volumes"]).find { |volume| volume.to_s.end_with?(":/var/www/html") }
+  application_data = Array(application["volumes"]).find { |volume| volume.to_s.end_with?(":/var/www/html/data") }
   failures << "the Nextcloud cron sidecar must mount the application's own installation" unless
-    application_html && Array(cron["volumes"]) == [application_html]
+    application_html && Array(cron["volumes"]) == Array(application["volumes"])
+  # The user's files are their own mount: inside the installation tree they would sit on
+  # the state volume, beside config.php.
+  failures << "Nextcloud must mount the user's files over data/, apart from the installation tree" unless
+    application_data == "${NEXTCLOUD_USER_DATA_PATH:?}:/var/www/html/data"
   # /cron.sh bypasses /entrypoint.sh, which would make the sidecar a second installer.
   failures << "the Nextcloud cron sidecar must bypass the installing entrypoint" unless
     cron["entrypoint"].to_s == "/cron.sh"
@@ -395,9 +402,15 @@ if failures.empty?
   failures << "Nextcloud must keep its installation and cluster roots under the Docker root" unless
     defaults["nextcloud_data_host_path"] == "{{ nas_docker_root }}/nextcloud/data" &&
     defaults["nextcloud_postgres_host_path"] == "{{ nas_docker_root }}/nextcloud/postgres"
+  failures << "Nextcloud must keep the user's files on the media array, apart from the installation tree" unless
+    defaults["nextcloud_user_data_host_path"] == "{{ nas_media_root }}/Nextcloud"
   # Declared bool: the string `false` is true in Jinja.
   options = YAML.safe_load_file(File.join(root, "roles/nextcloud/meta/argument_specs.yml"))
                 .dig("argument_specs", "main", "options")
+  # The move is one operator-run convergence, never a stored default.
+  failures << "the Nextcloud user-data move must default off and be a declared boolean" unless
+    defaults["nextcloud_user_data_migration_allowed"] == false &&
+    options.dig("nextcloud_user_data_migration_allowed", "type") == "bool"
   failures << "every Nextcloud vault credential must be a required role argument" unless
     VAULT_CREDENTIALS.all? do |name|
       options.dig(name, "required") == true && options.dig(name, "type") == "str"

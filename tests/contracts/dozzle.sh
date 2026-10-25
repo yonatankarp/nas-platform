@@ -109,6 +109,7 @@ render_group_contract() {
     PAPERLESS_SECRET_KEY=contract DB_NAME=contract DB_USER=contract DB_PASSWORD=contract \
     NEXTCLOUD_HOST_PORT=38084 NEXTCLOUD_PHP_MEMORY_LIMIT=512M \
     NEXTCLOUD_DATA_PATH=/tmp/dozzle-contract/nextcloud-data \
+    NEXTCLOUD_USER_DATA_PATH=/tmp/dozzle-contract/nextcloud-user-data \
     NEXTCLOUD_POSTGRES_PATH=/tmp/dozzle-contract/nextcloud-postgres \
     NEXTCLOUD_DB_NAME=contract NEXTCLOUD_DB_USERNAME=contract \
     NEXTCLOUD_DB_PASSWORD=contract NEXTCLOUD_CACHE_PASSWORD=contract \
