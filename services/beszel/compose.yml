@@ -23,7 +23,7 @@ services:
   hub:
     <<: *service-defaults
     container_name: beszel
-    image: ghcr.io/henrygd/beszel/beszel:0.20.0@sha256:c44c2c25929505930c8bb850556c8e071dd00d42ea367d9b53243ef64bd57d17
+    image: ghcr.io/henrygd/beszel/beszel:0.21.1@sha256:8514a69d9bbbcb74f371a3205561ee231fc0289739cea64e8131f341d695b770
     cpus: 1.0
     labels:
       dev.dozzle.group: beszel
@@ -52,7 +52,7 @@ services:
   agent-portable:
     <<: *service-defaults
     container_name: beszel_agent_portable
-    image: ghcr.io/henrygd/beszel/beszel-agent:0.20.0@sha256:2c3b2d781a8bcdb464704c0024baab5486d238d40871b67c84d906d34791c490
+    image: ghcr.io/henrygd/beszel/beszel-agent:0.21.1@sha256:cb6868012964d7a68debaa2c84bb72285e5f08531e81f506bd4c493bf052e41c
     cpus: 0.5
     labels:
       dev.dozzle.group: beszel
@@ -91,7 +91,7 @@ services:
     container_name: beszel_agent
     # Not 0.21.0: its intel_gpu_top -J parser rejects this NAS's output (henrygd/beszel#2503),
     # so the GPU telemetry gate fails every converge. Take the release that fixes #2503.
-    image: ghcr.io/henrygd/beszel/beszel-agent-intel:0.20.0@sha256:00882dcb1708f1ca09487b21781c454138f88949b14b2685e3d30d3747f7aecf
+    image: ghcr.io/henrygd/beszel/beszel-agent-intel:0.21.1@sha256:a8c8ee4eb71b66132128fb5421b6c27491d2b652a7aabcfdc638b60aaf529703
     cpus: 0.5
     labels:
       dev.dozzle.group: beszel
