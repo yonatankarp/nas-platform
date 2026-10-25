@@ -178,9 +178,20 @@ CONFIGARR_IMAGE = YAML.safe_load_file(
   File.join(ROOT, "services", "arr", ARR_COMPOSE_FILES.fetch("arr").first),
   aliases: true
 ).fetch("services").fetch("configarr").fetch("image").freeze
+# The pinned TRaSH documents with the declared quality_definition.qualities
+# applied, as Configarr writes them and as the role's override filter reads them.
 CONFIGARR_QUALITY_DEFINITION_DOCUMENTS =
-  CONFIGARR_QUALITY_DEFINITION_SOURCES.transform_values do |path|
-    JSON.parse(File.read(path))
+  CONFIGARR_QUALITY_DEFINITION_SOURCES.to_h do |service, path|
+    document = JSON.parse(File.read(path))
+    declared = YAML.safe_load(
+      File.read(CONFIGARR_SOURCE).gsub(/!secret\s+[A-Z_]+/, '"fixture-secret-reference"')
+    ).fetch(service).values.first.fetch("quality_definition").fetch("qualities", [])
+    overrides = declared.to_h { |entry| [entry.fetch("quality"), entry] }
+    document.fetch("qualities").each do |quality|
+      override = overrides[quality.fetch("quality")]
+      quality.merge!(override.slice("min", "preferred", "max")) if override
+    end
+    [service, document]
   end.freeze
 
 SECRETS = {

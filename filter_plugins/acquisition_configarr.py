@@ -618,6 +618,101 @@ def _configarr_quality_definition_source(
     return normalized
 
 
+_QUALITY_DEFINITION_OVERRIDE_KEYS = {"quality", "min", "preferred", "max"}
+
+
+def _configarr_quality_definition_overrides(
+    config: dict[str, Any], service: str, available: set[str]
+) -> dict[str, dict[str, Any]]:
+    """Return one service's declared size overrides, keyed by quality name.
+
+    Configarr v1.34.1 (src/arr/mediaPipeline.ts) loads the TRaSH `type` first and
+    appends `quality_definition.qualities` after it, and its diff keeps the last
+    entry per quality, so a declared entry replaces that quality's pinned sizes.
+    Its preferred size is applied only when truthy, so zero is refused here
+    rather than silently ignored there.
+    """
+    policy = _configarr_service_policy(config, service)
+    definition = _mapping(
+        policy.get("quality_definition"), f"Configarr {service} quality definition"
+    )
+    unknown = set(definition) - {"type", "qualities"}
+    if unknown:
+        raise AnsibleFilterError(
+            f"Configarr {service} quality definition declares unsupported keys"
+        )
+    if definition.get("type") != _QUALITY_DEFINITION_SOURCE_IDENTITIES[service]["type"]:
+        raise AnsibleFilterError(
+            f"Configarr {service} quality-definition type differs from its source"
+        )
+    overrides: dict[str, dict[str, Any]] = {}
+    for entry in _sequence(
+        definition.get("qualities", []), f"Configarr {service} quality overrides"
+    ):
+        entry = _mapping(entry, f"Configarr {service} quality override")
+        if set(entry) != _QUALITY_DEFINITION_OVERRIDE_KEYS:
+            raise AnsibleFilterError(
+                f"Configarr {service} quality override must state quality, min, preferred and max"
+            )
+        name = _required_string(
+            entry.get("quality"), f"Configarr {service} quality override name"
+        )
+        if name in overrides:
+            raise AnsibleFilterError(
+                f"Configarr {service} quality overrides are ambiguous"
+            )
+        if name not in available:
+            raise AnsibleFilterError(
+                f"Configarr {service} quality override {name!r} is not in its source"
+            )
+        sizes = {
+            key: _number(entry.get(key), f"Configarr {service} override {name!r} {key}")
+            for key in ("min", "preferred", "max")
+        }
+        if not 0 <= sizes["min"] <= sizes["preferred"] <= sizes["max"] or sizes["preferred"] == 0:
+            raise AnsibleFilterError(
+                f"Configarr {service} quality override {name!r} sizes are out of order"
+            )
+        overrides[name] = sizes
+    return overrides
+
+
+def acquisition_configarr_quality_definition_sources(
+    sources: Any, config_source: Any
+) -> dict[str, str]:
+    """Apply the declared size overrides to the pinned TRaSH documents.
+
+    Returns the documents in the same string form they were loaded in, so every
+    consumer of a pinned source reads the sizes Configarr actually writes.
+    """
+    sources = _mapping(sources, "Configarr quality-definition sources")
+    if set(sources) != {"radarr", "sonarr"}:
+        raise AnsibleFilterError(
+            "Configarr quality-definition sources must contain exactly Radarr and Sonarr"
+        )
+    config = _configarr_declaration(config_source)
+    applied = {}
+    for service in ["radarr", "sonarr"]:
+        document = _configarr_quality_definition_document(sources[service], service)
+        qualities = _sequence(
+            document.get("qualities"),
+            f"Configarr {service} quality-definition source qualities",
+        )
+        available = {
+            _required_string(
+                _mapping(item, f"Configarr {service} source entry").get("quality"),
+                f"Configarr {service} source quality identity",
+            )
+            for item in qualities
+        }
+        overrides = _configarr_quality_definition_overrides(config, service, available)
+        document = deepcopy(document)
+        for item in document["qualities"]:
+            item.update(overrides.get(item["quality"], {}))
+        applied[service] = json.dumps(document, indent=2)
+    return applied
+
+
 def acquisition_configarr_quality_definition_difference(invariants: Any) -> dict[str, Any]:
     """Name the quality definitions whose live values differ from their source.
 
@@ -1711,6 +1806,8 @@ class FilterModule:
                 acquisition_configarr_quality_definition_difference,
             "acquisition_configarr_quality_definitions_settled":
                 acquisition_configarr_quality_definitions_settled,
+            "acquisition_configarr_quality_definition_sources":
+                acquisition_configarr_quality_definition_sources,
             "acquisition_configarr_quality_definition_invariants":
                 acquisition_configarr_quality_definition_invariants,
             "acquisition_configarr_declared_projection":

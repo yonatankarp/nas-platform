@@ -72,6 +72,17 @@
            ) }}
   changed_when: false
 
+# The declared quality_definition.qualities replace their pinned sizes, as Configarr
+# applies them, so every check below compares against what Configarr writes.
+- name: Apply the declared Configarr quality-definition overrides
+  ansible.builtin.set_fact:
+    arr_configarr_quality_definition_sources: >-
+      {{ arr_configarr_quality_definition_sources |
+         acquisition_configarr_quality_definition_sources(
+           lookup('file', role_path ~ '/files/configarr/config.yml')
+         ) }}
+  changed_when: false
+
 - name: Build current Configarr quality-definition invariants
   ansible.builtin.set_fact:
     arr_configarr_quality_definition_invariants_current: >-
