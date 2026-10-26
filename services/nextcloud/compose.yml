@@ -28,7 +28,7 @@ services:
     container_name: nextcloud
     # Apache variant because fpm needs a web server in front and this platform runs
     # no reverse proxy. Exact version rather than a channel tag.
-    image: docker.io/library/nextcloud:35.0.1-apache@sha256:8f2f0e93aca5e9457019933936dea1f313052e72c696b4aecb31580a208b859f
+    image: docker.io/library/nextcloud:35.0.2-apache@sha256:89af7ee7a96ff5e9668280566209268ae6b2d02327f6ef6d56f6d68228cf9431
     cpus: 2.0
     labels:
       dev.dozzle.group: nextcloud
@@ -107,7 +107,7 @@ services:
     container_name: nextcloud-cron
     # Must equal the application's image: both run the code in the shared volume.
     # This image migrates its own store; renovate.json withholds its majors.
-    image: docker.io/library/nextcloud:35.0.1-apache@sha256:8f2f0e93aca5e9457019933936dea1f313052e72c696b4aecb31580a208b859f
+    image: docker.io/library/nextcloud:35.0.2-apache@sha256:89af7ee7a96ff5e9668280566209268ae6b2d02327f6ef6d56f6d68228cf9431
     cpus: 1.0
     labels:
       dev.dozzle.group: nextcloud
