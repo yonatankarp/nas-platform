@@ -103,6 +103,7 @@ STATIC_STEP_NAMES = [
   "Set up Python",
   "Install Ansible tooling",
   "Authenticate to Docker Hub",
+  "Report Docker Hub pull accounting",
   "Pre-pull the cleanup sandbox image",
   "Check policy properties"
 ].freeze
