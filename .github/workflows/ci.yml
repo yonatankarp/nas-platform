@@ -259,6 +259,21 @@ jobs:
       # Report only: it never fails the job, and prints key names, never values.
       - name: Report Docker Hub pull accounting
         run: |
+          docker version --format 'docker client {{.Client.Version}}, server {{.Server.Version}}' || true
+          docker info --format 'storage driver {{.Driver}}; registry mirrors {{json .RegistryConfig.Mirrors}}' || true
+          # Does `docker pull` send a stored Docker Hub credential at all? A deliberately
+          # wrong one in a throwaway config gets a pull refused if it is sent, and
+          # nothing changes if it is not.
+          probe=$(mktemp -d)
+          printf '{"auths":{"https://index.docker.io/v1/":{"auth":"%s"}}}' \
+            "$(printf 'nas-platform-probe:not-a-token' | base64)" >"$probe/config.json"
+          if DOCKER_CONFIG="$probe" timeout 120 docker pull -q docker.io/library/hello-world:latest \
+            >/dev/null 2>"$probe/error"; then
+            echo "::warning::docker pull succeeded with a wrong stored Docker Hub credential: pulls do not send the stored credential"
+          else
+            echo "docker pull sends the stored credential (a wrong one is refused): $(head -c 200 "$probe/error")"
+          fi
+          rm -rf "$probe"
           config="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
           if [ ! -f "$config" ]; then
             echo "::notice::no $config; Docker Hub pulls are anonymous"
