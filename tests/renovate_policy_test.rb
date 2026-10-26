@@ -340,12 +340,16 @@ end
 # withheld sets (derived, not restated) with a floor on its reach. COUPLED_DATABASE_IMAGES
 # is separate from IMMICH_PACKAGES, which is compared exactly against the coupling rule.
 COUPLED_DATABASE_IMAGES = %w[ghcr.io/immich-app/postgres].freeze
+# Not withheld: batched out because it is the integration runner, and a Python the pinned
+# ansible-core cannot run on reds every lane and holds the whole batch (#971).
+TOOLCHAIN_RUNNER_IMAGES = %w[docker.io/library/python].freeze
 
 GROUP_EXCLUDED_IMAGES = (SELF_MIGRATING_APPLICATION_IMAGES.keys +
                          IMMICH_PACKAGES.to_a +
                          COUPLED_DATABASE_IMAGES +
                          HOST_ROOT_EQUIVALENT_IMAGE_GROUP +
-                         DOCKER_SOCKET_IMAGES.to_a).to_set.freeze
+                         DOCKER_SOCKET_IMAGES.to_a +
+                         TOOLCHAIN_RUNNER_IMAGES).to_set.freeze
 BATCHED_UPDATE_TYPES = Set.new(%w[minor patch digest pinDigest]).freeze
 
 batching_rules = rules.select { |rule| rule["groupName"] == "container images" }
