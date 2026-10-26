@@ -9,6 +9,6 @@ pinchflat_compose_project_name: >-
 
 # Pinned because the image's bundled yt-dlp is stale (see services/pinchflat/compose.yml).
 # Version and checksum move together; the zipapp serves amd64 and arm64 alike.
-pinchflat_ytdlp_version: "2026.08.19"
-pinchflat_ytdlp_sha256: "1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6"
+pinchflat_ytdlp_version: "2026.10.21"
+pinchflat_ytdlp_sha256: "b7af77f686e95f7845ce8d09d21957718febb8b48b30555adb9dd2292ad7bf14"
 pinchflat_ytdlp_host_path: "{{ nas_docker_root }}/pinchflat/bin/yt-dlp"
