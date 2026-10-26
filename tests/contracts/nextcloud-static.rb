@@ -141,6 +141,11 @@ if failures.empty?
   # the state volume, beside config.php.
   failures << "Nextcloud must mount the user's files over data/, apart from the installation tree" unless
     application_data == "${NEXTCLOUD_USER_DATA_PATH:?}:/var/www/html/data"
+  # Nextcloud 31+ marks its data directory with .ncdata; a probe that knows only the
+  # older .ocdata reads a live install as empty and mounts over its files (#974).
+  user_data_text = File.read(File.join(root, "roles/nextcloud/tasks/user_data.yml"))
+  failures << "the Nextcloud user-data probe and move must recognise the .ncdata marker" unless
+    user_data_text.scan(".ncdata").length >= 2
   # /cron.sh bypasses /entrypoint.sh, which would make the sidecar a second installer.
   failures << "the Nextcloud cron sidecar must bypass the installing entrypoint" unless
     cron["entrypoint"].to_s == "/cron.sh"
