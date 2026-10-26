@@ -78,7 +78,7 @@ services:
   dozzle:
     <<: *service-defaults
     container_name: dozzle
-    image: docker.io/amir20/dozzle:v11.3.1@sha256:ba65da5af3d2147cfc2ee68ea5a6e35b75d2dff7eeff226151a65c9d77831c02
+    image: docker.io/amir20/dozzle:v11.3.5@sha256:dd09e6aaa9d5ad686b6017427a502c40dc862ba28445609813e5ea1f66f6dbdf
     cpus: 1.0
     labels:
       dev.dozzle.group: dozzle

@@ -16,7 +16,7 @@ services:
   # so it joins media-control and converges after arr and downloaders.
   bindery:
     container_name: bindery
-    image: ghcr.io/vavallee/bindery:v1.41.0@sha256:28871d79c624f92acae9dac91b1a20da2d9031cf7faa1967d88cee378f360c08
+    image: ghcr.io/vavallee/bindery:v1.45.0@sha256:3f8f26096c9c1259f2c88c1bc2c295dd05bc9559c27f329069ba7f4576878a28
     cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 1.0
     labels:
