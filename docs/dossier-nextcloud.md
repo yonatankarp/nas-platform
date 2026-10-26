@@ -210,7 +210,8 @@ is missing or empty.
 **An install that predates the split refuses to converge until it is moved.**
 - Mounting the new root would hide `<data root>/data`, and Nextcloud would start on an empty data directory.
 - So `tasks/user_data.yml` probes both roots on every converge, from a throwaway, networkless container of the Nextcloud image, because nothing here escalates on the host.
-- It refuses while `.ocdata` is still only in the old place.
+- It refuses while the data-directory marker is still only in the old place. The marker is `.ncdata` since Nextcloud 31 and `.ocdata` before it; an install keeps the one it was created with, so either counts.
+- The first version checked only `.ocdata`, missed the 35 install's `.ncdata`, and mounted an empty root over its files (#974). The files stayed in place, hidden, and the move below recovers them.
 - From the merge until the move, every converge fails at that refusal, and the stack keeps running on the old layout, untouched.
 
 Read the plan, then move once through the launcher:
@@ -223,7 +224,7 @@ $HOME/.local/bin/nas-platform-deploy --converge -- -i inventory/local.yml site.y
 **What the move does:**
 1. Stops `nextcloud` and `cron` with `recreate: never`.
 2. Copies `data/` with `cp -a` into `/volume2/Nextcloud/.data.partial`.
-3. Requires `.ocdata` in the copy and an equal entry count in both trees.
+3. Requires the marker in the copy and an equal entry count in both trees.
 4. Renames the copy to `data/`.
 5. Moves the old directory to `/volume1/Docker/nextcloud/user-data.before-move`. It goes beside the installation tree, never inside it: the next upgrade's `rsync --delete` would erase it there, and the pre-upgrade code archive would carry it.
 6. The same converge then recreates both containers on the new mount.

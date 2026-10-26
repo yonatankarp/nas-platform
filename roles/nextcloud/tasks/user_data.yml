@@ -33,7 +33,9 @@
   changed_when: false
   when: nextcloud_deployment_enabled | bool
 
-# Read-only: the roots mounted readonly, and the container has no network.
+# Read-only: the roots mounted readonly, and the container has no network. The marker is
+# .ncdata since Nextcloud 31 and .ocdata before it; an install keeps the one it was
+# created with, so either names a data directory.
 - name: Find which root holds the Nextcloud user data
   ansible.builtin.command:
     argv: >-
@@ -43,8 +45,9 @@
          + (['--mount', 'type=bind,source=' ~ nextcloud_user_data_host_path ~ ',target=/moved,readonly']
             if nextcloud_user_data_roots.results[1].stat.isdir | default(false) else [])
          + ['--entrypoint', 'sh', nextcloud_user_data_probe_image, '-c',
-            "if [ -e /legacy/data/.ocdata ]; then printf 'legacy '; fi; "
-            ~ "if [ -e /moved/data/.ocdata ]; then printf 'moved'; fi; echo"] }}
+            "marked() { [ -e \"$1/.ncdata\" ] || [ -e \"$1/.ocdata\" ]; }; "
+            ~ "if marked /legacy/data; then printf 'legacy '; fi; "
+            ~ "if marked /moved/data; then printf 'moved'; fi; echo"] }}
   register: nextcloud_user_data_probe
   changed_when: false
   check_mode: false
@@ -62,7 +65,7 @@
       - not (nextcloud_user_data_in_legacy_root | bool and nextcloud_user_data_in_moved_root | bool)
     fail_msg: >-
       Both {{ nextcloud_data_host_path }}/data and {{ nextcloud_user_data_host_path }}/data
-      hold a Nextcloud data directory (.ocdata). Only the second is mounted, so the first
+      hold a Nextcloud data directory (.ncdata or .ocdata). Only the second is mounted, so the first
       is either a leftover or the live copy of an interrupted move. Compare them and
       rename the one that is not current; nothing was stopped or moved.
   when: nextcloud_deployment_enabled | bool
@@ -140,7 +143,7 @@
             if [ -e /moved/data ]; then rmdir /moved/data; fi;
             rm -rf /moved/.data.partial;
             cp -a "$legacy" /moved/.data.partial;
-            test -e /moved/.data.partial/.ocdata;
+            test -e /moved/.data.partial/.ncdata || test -e /moved/.data.partial/.ocdata;
             old=$(find "$legacy" | wc -l); new=$(find /moved/.data.partial | wc -l);
             test "$old" -eq "$new";
             mv /moved/.data.partial /moved/data;
