@@ -13,7 +13,7 @@ runner_image=docker.io/library/python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a
 # `~` rather than `=`: apk's `=` needs the distro revision, so an -r0 to -r1 bump
 # drops the pin out of the index. It also lets Renovate track it via repology.
 ruby_package='ruby~3.4.9'
-curl_package='curl~8.22.0'
+curl_package='curl~8.23.0'
 
 # The pre-built controller toolchain (the pins above, the Dockerfile and
 # requirements.yml). Optional: every path falls back to installing them in the base image.
