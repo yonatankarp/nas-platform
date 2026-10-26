@@ -180,6 +180,25 @@ STATIC_ROWS = [
     },
     expects: "Pinchflat env must render the CPU set exactly once"
   },
+  # Without the label a new yt-dlp lands under a container still holding the old inode.
+  {
+    name: "no yt-dlp sha256 label",
+    break: lambda { |root|
+      edit_text(root, "services/pinchflat/compose.yml") do |source|
+        source.sub(/^ +dev\.nas-platform\.pinchflat\.ytdlp-sha256: .*\n/, "")
+      end
+    },
+    expects: "Pinchflat must label its container with the yt-dlp build's sha256"
+  },
+  {
+    name: "the yt-dlp sha256 not rendered",
+    break: lambda { |root|
+      edit_text(root, "roles/pinchflat/templates/env.j2") do |source|
+        source.sub("PINCHFLAT_YTDLP_SHA256={{ pinchflat_ytdlp_sha256 }}\n", "")
+      end
+    },
+    expects: "Pinchflat env must export the yt-dlp build's sha256 exactly once"
+  },
   # A commented-out sample of the right assignment must not satisfy the check.
   {
     name: "the vault identity surviving only in a comment",
