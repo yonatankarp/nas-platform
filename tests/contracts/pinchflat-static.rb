@@ -93,6 +93,12 @@ if failures.empty?
   failures << "Pinchflat env must render the CPU set exactly once" unless
     env_assignments.select { |name, _value| name == "PLATFORM_CONTAINER_CPUSET" } ==
       [["PLATFORM_CONTAINER_CPUSET", "{{ platform_effective_container_cpuset }}"]]
+  # A changed label recreates the container; a file swapped under its bind mount does not.
+  failures << "Pinchflat must label its container with the yt-dlp build's sha256" unless
+    service.dig("labels", "dev.nas-platform.pinchflat.ytdlp-sha256") == "${PINCHFLAT_YTDLP_SHA256:?}"
+  failures << "Pinchflat env must export the yt-dlp build's sha256 exactly once" unless
+    env_assignments.select { |name, _value| name == "PINCHFLAT_YTDLP_SHA256" } ==
+      [["PINCHFLAT_YTDLP_SHA256", "{{ pinchflat_ytdlp_sha256 }}"]]
   failures << "Pinchflat env must carry only the vault-authored identity" unless
     [
       ["PINCHFLAT_BASIC_AUTH_USERNAME",

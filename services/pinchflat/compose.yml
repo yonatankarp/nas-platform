@@ -29,6 +29,9 @@ services:
     cpus: 1.0
     labels:
       dev.dozzle.name: pinchflat
+      # yt-dlp's sha256: get_url swaps the file in by rename, and the running container
+      # keeps the old inode, so a changed label is what recreates it onto the new build.
+      dev.nas-platform.pinchflat.ytdlp-sha256: ${PINCHFLAT_YTDLP_SHA256:?}
     # No PUID/PGID handling and upstream refuses root, so run as the platform identity.
     user: "${NAS_UID:?}:${NAS_GID:?}"
     ports:

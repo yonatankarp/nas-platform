@@ -147,6 +147,7 @@ render_group_contract() {
     PINCHFLAT_HOST_PORT=38945 PINCHFLAT_CONFIG_PATH=/tmp/dozzle-contract/pinchflat-config \
     PINCHFLAT_DOWNLOADS_PATH=/tmp/dozzle-contract/pinchflat-downloads \
     PINCHFLAT_YTDLP_PATH=/tmp/dozzle-contract/pinchflat-ytdlp \
+    PINCHFLAT_YTDLP_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     PINCHFLAT_BASIC_AUTH_USERNAME=contract PINCHFLAT_BASIC_AUTH_PASSWORD=contract \
     SEERR_HOST_PORT=35055 SEERR_API_KEY=contract \
     SEERR_CONFIG_PATH=/tmp/dozzle-contract/seerr-config \
