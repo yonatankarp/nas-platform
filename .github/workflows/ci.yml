@@ -296,7 +296,8 @@ jobs:
           printf '%s\n' "$headers" | grep -i -E '^(docker-ratelimit-source|ratelimit-limit|ratelimit-remaining):' || true
           source=$(printf '%s\n' "$headers" | sed -n 's/^docker-ratelimit-source: *//Ip' | tr -d '\r')
           if [ -n "$auth" ] && printf '%s' "$source" | grep -q '[.:]'; then
-            echo "::warning::Docker Hub charges pulls to the runner IP ($source) although credentials are stored under https://index.docker.io/v1/: the stored token does not authenticate pulls"
+            echo "::warning::Docker Hub charges pulls to the runner IP ($source) although" \
+              "credentials are stored: the stored token does not authenticate pulls"
           fi
 
       # The cleanup tests run this digest-pinned image; pulled here, under the login
