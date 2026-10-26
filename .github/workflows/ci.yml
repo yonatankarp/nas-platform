@@ -253,6 +253,53 @@ jobs:
             sleep $((attempt * 15))
           done
 
+      # Pulls after a "Login Succeeded" still failed as *unauthenticated* (#991, #992).
+      # This reads what the login stored -- the file `docker pull` reads -- and asks
+      # Docker Hub whom a pull with it is charged to: the account, or this runner's IP.
+      # Report only: it never fails the job, and prints key names, never values.
+      - name: Report Docker Hub pull accounting
+        run: |
+          docker version --format 'docker client {{.Client.Version}}, server {{.Server.Version}}' || true
+          docker info --format 'storage driver {{.Driver}}; registry mirrors {{json .RegistryConfig.Mirrors}}' || true
+          # Does `docker pull` send a stored Docker Hub credential at all? A deliberately
+          # wrong one in a throwaway config gets a pull refused if it is sent, and
+          # nothing changes if it is not.
+          probe=$(mktemp -d)
+          printf '{"auths":{"https://index.docker.io/v1/":{"auth":"%s"}}}' \
+            "$(printf 'nas-platform-probe:not-a-token' | base64)" >"$probe/config.json"
+          if DOCKER_CONFIG="$probe" timeout 120 docker pull -q docker.io/library/hello-world:latest \
+            >/dev/null 2>"$probe/error"; then
+            echo "::warning::docker pull succeeded with a wrong stored Docker Hub credential: pulls do not send the stored credential"
+          else
+            echo "docker pull sends the stored credential (a wrong one is refused): $(head -c 200 "$probe/error")"
+          fi
+          rm -rf "$probe"
+          config="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+          if [ ! -f "$config" ]; then
+            echo "::notice::no $config; Docker Hub pulls are anonymous"
+            exit 0
+          fi
+          echo "stored auth keys: $(jq -r '(.auths // {}) | keys | join(", ")' "$config")"
+          echo "credsStore: $(jq -r '.credsStore // "none"' "$config"); credHelpers: $(jq -r '(.credHelpers // {}) | keys | join(", ")' "$config")"
+          auth=$(jq -r '.auths["https://index.docker.io/v1/"].auth // empty' "$config")
+          scope="service=registry.docker.io&scope=repository:ratelimitpreview/test:pull"
+          # Credentials go to curl on stdin (-K -), never argv.
+          token=$({ [ -z "$auth" ] || printf 'header = "Authorization: Basic %s"\n' "$auth"; } |
+            curl -fsS --max-time 30 -K - "https://auth.docker.io/token?$scope" | jq -r '.token // empty') || token=
+          if [ -z "$token" ]; then
+            echo "::warning::auth.docker.io issued no pull token; Docker Hub accounting is unknown"
+            exit 0
+          fi
+          headers=$(printf 'header = "Authorization: Bearer %s"\n' "$token" |
+            curl -fsS --max-time 30 -K - --head \
+              https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest) || headers=
+          printf '%s\n' "$headers" | grep -i -E '^(docker-ratelimit-source|ratelimit-limit|ratelimit-remaining):' || true
+          source=$(printf '%s\n' "$headers" | sed -n 's/^docker-ratelimit-source: *//Ip' | tr -d '\r')
+          if [ -n "$auth" ] && printf '%s' "$source" | grep -q '[.:]'; then
+            echo "::warning::Docker Hub charges pulls to the runner IP ($source) although" \
+              "credentials are stored: the stored token does not authenticate pulls"
+          fi
+
       # The cleanup tests run this digest-pinned image; pulled here, under the login
       # and a retry, their own `docker run` finds it local and pulls nothing. The
       # refs are read from the scripts so Renovate keeps one copy of each.
