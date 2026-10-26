@@ -146,6 +146,11 @@ if failures.empty?
   user_data_text = File.read(File.join(root, "roles/nextcloud/tasks/user_data.yml"))
   failures << "the Nextcloud user-data probe and move must recognise the .ncdata marker" unless
     user_data_text.scan(".ncdata").length >= 2
+  # An escaped quote inside the probe's folded Jinja string reaches sh verbatim, so the
+  # test names a file with literal quotes and never finds the marker.
+  probe_line = user_data_text.lines.find { |line| line.include?("marked()") }.to_s
+  failures << "the Nextcloud user-data probe script must not carry a backslash" if
+    probe_line.include?("\\")
   # /cron.sh bypasses /entrypoint.sh, which would make the sidecar a second installer.
   failures << "the Nextcloud cron sidecar must bypass the installing entrypoint" unless
     cron["entrypoint"].to_s == "/cron.sh"
