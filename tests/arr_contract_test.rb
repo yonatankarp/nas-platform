@@ -33,6 +33,7 @@ FIXTURE_FILES = %w[
   roles/arr/tasks/configarr.yml
   roles/arr/tasks/reconcile_servarr.yml
   roles/arr/tasks/reconcile_servarr_download_client.yml
+  roles/arr/tasks/reconcile_servarr_notification.yml
   roles/arr/tasks/reconcile_prowlarr.yml
   roles/arr/tasks/reconcile_prowlarr_application.yml
   roles/arr/tasks/reconcile_bazarr.yml

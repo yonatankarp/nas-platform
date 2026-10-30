@@ -9,6 +9,7 @@
       configarr_opaque_context: .configarr-opaque-context.sha256
       prowlarr_applications: .prowlarr-applications-input.sha256
       servarr_sabnzbd: .servarr-sabnzbd-input.sha256
+      servarr_pushover: .servarr-pushover-input.sha256
       # SABnzbd's own Usenet provider, driven by the downloaders role via this loader.
       downloaders_usenet_server: .downloaders-usenet-server-input.sha256
       prowlarr_indexers: .prowlarr-indexers-input.sha256
@@ -21,6 +22,7 @@
            'configarr_opaque_context',
            'prowlarr_applications',
            'servarr_sabnzbd',
+           'servarr_pushover',
            'downloaders_usenet_server',
            'prowlarr_indexers',
            'bazarr_providers'
@@ -40,6 +42,10 @@
             'password': vault_downloaders_sabnzbd_admin_password
           } | to_json | hash('sha256')
         }}
+      # Servarr masks the Pushover token on read, so only this digest notices a rotation.
+      # Triggers and the user key are compared directly by reconcile_servarr_notification.yml.
+      servarr_pushover: >-
+        {{ {'api_key': vault_pushover_media_token} | to_json | hash('sha256') }}
       # SABnzbd masks the provider password on read, so only this digest notices a rotation.
       # Other provider fields are compared directly by reconcile_sabnzbd.yml (#298).
       downloaders_usenet_server: >-
@@ -241,6 +247,7 @@
     arr_installed_reconciliation_fingerprints:
       prowlarr_applications: ""
       servarr_sabnzbd: ""
+      servarr_pushover: ""
       downloaders_usenet_server: ""
       prowlarr_indexers: ""
       bazarr_providers: ""

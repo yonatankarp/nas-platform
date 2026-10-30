@@ -11,6 +11,7 @@ required = %w[
   roles/arr/tasks/bootstrap.yml
   roles/arr/tasks/reconcile_servarr.yml
   roles/arr/tasks/reconcile_servarr_download_client.yml
+  roles/arr/tasks/reconcile_servarr_notification.yml
   roles/arr/tasks/reconcile_prowlarr.yml
   roles/arr/tasks/reconcile_bazarr.yml
   roles/arr/tasks/verify.yml
@@ -196,6 +197,7 @@ if failures.empty?
   failures << "all Arr API reconciliation must redact secret-bearing payloads" unless
     %w[
       roles/arr/tasks/reconcile_servarr.yml
+      roles/arr/tasks/reconcile_servarr_notification.yml
       roles/arr/tasks/reconcile_prowlarr.yml
       roles/arr/tasks/reconcile_bazarr.yml
     ].all? do |relative|

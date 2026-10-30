@@ -77,6 +77,7 @@ SECRET_TASK_FILES = [
   [ARR_TASKS, "reconcile_prowlarr.yml"],
   [ARR_TASKS, "reconcile_prowlarr_application.yml"],
   [ARR_TASKS, "reconcile_servarr_download_client.yml"],
+  [ARR_TASKS, "reconcile_servarr_notification.yml"],
   [ARR_TASKS, "validate_servarr_download_clients.yml"],
   [ARR_TASKS, "reconcile_bazarr.yml"],
   [ARR_TASKS, "configarr.yml"],
@@ -105,6 +106,9 @@ NON_SECRET_TASK_NAMES = [
   "Refuse an ambiguous Prowlarr application name",
   "Validate the Servarr download client response collection",
   "Refuse ambiguous Servarr SABnzbd ownership",
+  "Refuse ambiguous Servarr Pushover ownership",
+  # Names the instance and the triggers, never the token or user key.
+  "Report the planned Servarr Pushover notification repair",
   "Resolve Servarr SABnzbd name and URL ownership before mutation",
   "Mark downloader relationship verification successful",
   # Names only server names, unlike its redacted declared sibling;
@@ -148,11 +152,13 @@ FINGERPRINT_FILES = %w[
   .configarr-opaque-context.sha256
   .prowlarr-applications-input.sha256
   .servarr-sabnzbd-input.sha256
+  .servarr-pushover-input.sha256
   .downloaders-usenet-server-input.sha256
   .prowlarr-indexers-input.sha256
   .bazarr-providers-input.sha256
 ].freeze
 DOWNLOADER_USENET_FINGERPRINT_FILE = ".downloaders-usenet-server-input.sha256"
+SERVARR_PUSHOVER_FINGERPRINT_FILE = ".servarr-pushover-input.sha256"
 CONFIGARR_STATE_FINGERPRINT_FILE = ".configarr-owned-state.sha256"
 CONFIGARR_OPAQUE_FINGERPRINT_FILE = ".configarr-opaque-context.sha256"
 FINGERPRINT_FILE_BY_KIND = {
@@ -1038,7 +1044,7 @@ def production_order_contract_failures(site, arr_main, arr_verify, downloader_ma
 
   arr_subset = %w[
     configarr configarr_owned_state configarr_opaque_context
-    prowlarr_applications prowlarr_indexers bazarr_providers
+    prowlarr_applications prowlarr_indexers bazarr_providers servarr_pushover
   ]
   arr_loader = task_named(arr_main, "Load private Arr desired-input fingerprints")
   arr_recorder = task_named(arr_main, "Persist verified Arr desired-input fingerprints")
@@ -2445,6 +2451,7 @@ def base_variables(port)
     "vault_arr_bazarr_admin_password" => SECRETS.fetch("bazarr_admin"),
     "vault_arr_radarr_api_key" => SECRETS.fetch("radarr"),
     "vault_arr_sonarr_api_key" => SECRETS.fetch("sonarr"),
+    "vault_pushover_media_token" => "fixture-pushover-media-token",
     "media_bazarr_languages" => %w[en de], "media_bazarr_providers" => [],
     "media_arr_automatic_rename_enabled" => false,
     "media_usenet_enabled" => true,
@@ -2733,6 +2740,9 @@ def desired_fingerprint_values(variables)
       "username" => variables.fetch("vault_downloaders_sabnzbd_server_username"),
       "password" => variables.fetch("vault_downloaders_sabnzbd_server_password")
     },
+    "servarr_pushover" => {
+      "api_key" => variables.fetch("vault_pushover_media_token")
+    },
     "prowlarr_indexers" => variables.fetch("media_arr_indexers"),
     "bazarr_providers" => {
       "providers" => variables.fetch("media_bazarr_providers"),
@@ -2784,6 +2794,11 @@ def seed_fingerprint_baseline(runtime, variables, kind:, state:)
   File.write(
     File.join(directory, DOWNLOADER_USENET_FINGERPRINT_FILE),
     "#{desired.fetch('downloaders_usenet_server')}\n", mode: "w", perm: 0o600
+  )
+  # Recorded by the arr role, though no probe kind drives the Pushover connection.
+  File.write(
+    File.join(directory, SERVARR_PUSHOVER_FINGERPRINT_FILE),
+    "#{desired.fetch('servarr_pushover')}\n", mode: "w", perm: 0o600
   )
 
   return unless kind == :configarr

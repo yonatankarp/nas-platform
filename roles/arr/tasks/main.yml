@@ -175,6 +175,7 @@
       - prowlarr_applications
       - prowlarr_indexers
       - bazarr_providers
+      - servarr_pushover
   when: media_usenet_enabled | bool
   tags: [platform_verify_arr]
 
@@ -249,6 +250,7 @@
       - prowlarr_applications
       - prowlarr_indexers
       - bazarr_providers
+      - servarr_pushover
   when:
     - media_usenet_enabled | bool
     - not ansible_check_mode

@@ -127,6 +127,20 @@ argument_specs:
             type: list
             elements: int
             required: false
+      arr_pushover_notification_name:
+        type: str
+        required: false
+      arr_pushover_notification_triggers:
+        type: dict
+        required: false
+      arr_pushover_notification_fields:
+        type: list
+        elements: dict
+        required: false
+      # The Pushover Media application Seerr also sends on; an empty value
+      # silently disables both Servarr import notifications.
+      vault_pushover_media_token: {type: str, required: true}
+      vault_pushover_user_key: {type: str, required: true}
       vault_downloaders_sabnzbd_api_key: {type: str, required: true}
       vault_downloaders_sabnzbd_admin_username: {type: str, required: true}
       vault_downloaders_sabnzbd_admin_password: {type: str, required: true}
