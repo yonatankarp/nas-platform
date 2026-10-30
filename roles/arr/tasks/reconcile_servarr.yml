@@ -129,3 +129,6 @@
   when: arr_servarr_root_matches | length == 0
   changed_when: true
   no_log: true
+
+- name: Reconcile the Servarr Pushover import notification
+  ansible.builtin.include_tasks: reconcile_servarr_notification.yml

@@ -1,0 +1,142 @@
+---
+# One Pushover connection per Servarr, on the Media application, that fires when
+# a download is imported into the library and on nothing else. Hand-made
+# connections under other names are the operator's and are left alone.
+
+# Redacted: the request carries the API key, and the read-back the user key.
+- name: Read Servarr notifications
+  ansible.builtin.uri:
+    url: "{{ arr_servarr_instance.api }}/notification"
+    method: GET
+    headers:
+      X-Api-Key: "{{ arr_servarr_instance.api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_servarr_notifications_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Find the owned Servarr Pushover notification
+  ansible.builtin.set_fact:
+    arr_servarr_pushover_matches: >-
+      {{ arr_servarr_notifications_before.json |
+         selectattr('name', 'equalto', arr_pushover_notification_name) | list }}
+  changed_when: false
+  no_log: true
+
+- name: Refuse ambiguous Servarr Pushover ownership
+  ansible.builtin.assert:
+    that:
+      - arr_servarr_notifications_before.json is sequence
+      - arr_servarr_notifications_before.json is not mapping
+      - arr_servarr_pushover_matches | length <= 1
+      - >-
+        arr_servarr_pushover_matches | length == 0 or
+        arr_servarr_pushover_matches[0].implementation == 'Pushover'
+    fail_msg: >-
+      {{ arr_servarr_instance.name }} has more than one connection named
+      {{ arr_pushover_notification_name }}, or one that is not Pushover.
+
+# Servarr sends a real test push when it creates an enabled connection and
+# refuses the save if that fails, so it is created with every trigger off and
+# enabled by the forced update below, which tests nothing.
+# Redacted: carries the API key and the Pushover pair.
+- name: Create the owned Servarr Pushover notification with every trigger off
+  ansible.builtin.uri:
+    url: "{{ arr_servarr_instance.api }}/notification"
+    method: POST
+    headers:
+      X-Api-Key: "{{ arr_servarr_instance.api_key }}"
+    body_format: json
+    body:
+      name: "{{ arr_pushover_notification_name }}"
+      implementation: Pushover
+      implementationName: Pushover
+      configContract: PushoverSettings
+      tags: []
+      fields: "{{ arr_pushover_notification_fields }}"
+    status_code: [200, 201]
+    return_content: true
+  register: arr_servarr_pushover_created
+  when:
+    - not ansible_check_mode
+    - arr_servarr_pushover_matches | length == 0
+  changed_when: true
+  no_log: true
+
+# Every on* flag the app reports is owned: all off but the declared ones, so a
+# trigger ticked in the UI is reverted. Only apiKey is masked on read, so its
+# rotation is noticed by the desired-input fingerprint instead.
+- name: Build the Servarr Pushover notification projections and body
+  ansible.builtin.set_fact:
+    arr_servarr_pushover_current: "{{ arr_servarr_pushover_current_value }}"
+    arr_servarr_pushover_desired_triggers: >-
+      {{ dict(arr_servarr_pushover_current_value | dict2items |
+              selectattr('key', 'match', '^on[A-Z]') | map(attribute='key') |
+              product([false])) |
+         combine(arr_pushover_notification_triggers) }}
+    arr_servarr_pushover_current_triggers: >-
+      {{ arr_servarr_pushover_current_value | dict2items |
+         selectattr('key', 'match', '^on[A-Z]') | items2dict }}
+    arr_servarr_pushover_current_user_key: >-
+      {{ arr_servarr_pushover_current_value.fields | default([]) |
+         selectattr('name', 'equalto', 'userKey') | map(attribute='value') |
+         first | default('') }}
+  vars:
+    arr_servarr_pushover_current_value: >-
+      {{ arr_servarr_pushover_matches | first
+         | default(arr_servarr_pushover_created.json | default({})) }}
+  changed_when: false
+  no_log: true
+
+- name: Determine whether the Servarr Pushover notification differs
+  ansible.builtin.set_fact:
+    arr_servarr_pushover_needs_update: >-
+      {{ arr_servarr_pushover_current | length == 0 or
+         arr_servarr_pushover_current_triggers != arr_servarr_pushover_desired_triggers or
+         arr_servarr_pushover_current_user_key != vault_pushover_user_key or
+         (arr_servarr_pushover_current.tags | default([])) | length > 0 or
+         arr_installed_reconciliation_fingerprints.servarr_pushover !=
+           arr_desired_reconciliation_fingerprints.servarr_pushover }}
+  changed_when: false
+  no_log: true
+
+- name: Report the planned Servarr Pushover notification repair
+  ansible.builtin.debug:
+    msg: >-
+      A live run would declare {{ arr_servarr_instance.name }}'s
+      {{ arr_pushover_notification_name }} connection on the vault's Pushover
+      Media application and user key, firing on
+      {{ arr_pushover_notification_triggers | dict2items |
+         selectattr('value') | map(attribute='key') | join(' and ') }} only.
+  when:
+    - ansible_check_mode
+    - arr_servarr_pushover_needs_update | bool
+
+# forceSave skips Servarr's test push; unowned fields (devices, sound) are kept.
+# Redacted: carries the API key and the Pushover pair.
+- name: Declare the owned Servarr Pushover notification
+  ansible.builtin.uri:
+    url: >-
+      {{ arr_servarr_instance.api }}/notification/{{
+         arr_servarr_pushover_current.id }}?forceSave=true
+    method: PUT
+    headers:
+      X-Api-Key: "{{ arr_servarr_instance.api_key }}"
+    body_format: json
+    body: >-
+      {{ arr_servarr_pushover_current |
+         combine(arr_servarr_pushover_desired_triggers) |
+         combine({
+           'tags': [],
+           'fields': arr_servarr_pushover_current.fields | default([]) |
+                     acquisition_merge_owned_fields(arr_pushover_notification_fields)
+         }) }}
+    status_code: [200, 202]
+    return_content: true
+  when:
+    - not ansible_check_mode
+    - arr_servarr_pushover_needs_update | bool
+  changed_when: true
+  no_log: true

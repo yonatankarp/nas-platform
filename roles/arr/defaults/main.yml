@@ -73,3 +73,16 @@ arr_prowlarr_applications:
     base_url: "{{ arr_sonarr_internal_url }}"
     api_key: "{{ vault_arr_sonarr_api_key }}"
     sync_categories: [5000, 5010, 5020, 5030, 5040, 5045, 5050, 5090]
+
+# Radarr and Sonarr report each import into the library on Pushover's Media
+# application, the one Seerr's request events use. onUpgrade is honoured only
+# inside onDownload, so both are needed for an upgrade to notify.
+arr_pushover_notification_name: Pushover
+arr_pushover_notification_triggers:
+  onDownload: true
+  onUpgrade: true
+arr_pushover_notification_fields:
+  - name: apiKey
+    value: "{{ vault_pushover_media_token }}"
+  - name: userKey
+    value: "{{ vault_pushover_user_key }}"
