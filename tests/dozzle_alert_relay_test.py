@@ -2998,7 +2998,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         inventory = (ROOT / "inventory/group_vars/all/service_dozzle.yml").read_text()
         name = re.escape(self.relay_module.GOLEM_DOZZLE_HOST)
         self.assertRegex(
-            inventory, rf'(?m)^dozzle_remote_agent: "[^"|]+\|{name}"$',
+            inventory, rf'(?m)^dozzle_remote_agent: "[^"|,]+\|{name}(,[^"]*)?"$',
             "GOLEM_DOZZLE_HOST must be the name dozzle_remote_agent gives golem's agent",
         )
 
