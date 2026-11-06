@@ -71,7 +71,7 @@ argument_specs:
       vault_dozzle_alert_relay_token:
         type: str
         required: true
-      # golem's Dozzle agent, `host:port|name` (service_dozzle.yml).
+      # golem's Dozzle agents, comma-separated `host:port|name`s (service_dozzle.yml).
       dozzle_remote_agent:
         type: str
         required: true

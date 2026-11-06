@@ -9,11 +9,14 @@
 # the tailnet port golem's Dozzle agent reaches it on (roles/dozzle Serve forward).
 dozzle_alert_relay_port: 8081
 
-# golem's Dozzle agent, as `address|name`. Published on golem's tailnet address
-# only (Docker ports bypass ufw). The hub pushes alert rules to the agent, which
-# POSTs to alert-relay through this host's Serve forward; the relay sends golem's
-# events on the Golem Pushover application (GOLEM_DOZZLE_HOST in alert_relay.py).
-dozzle_remote_agent: "100.104.25.70:7007|Golem"
+# golem's Dozzle agents, comma-separated `address|name`s. Published on golem's
+# tailnet address only (Docker ports bypass ufw). The hub pushes alert rules to
+# each agent. Golem's (golem's system Docker) POSTs them to alert-relay through
+# this host's Serve forward; the relay sends golem's events on the Golem Pushover
+# application (GOLEM_DOZZLE_HOST in alert_relay.py). Golem runners' (the rootless
+# Docker of golem's GitHub Actions runners) has no route to the relay, so pages
+# nothing: golem-platform's page-github-runners pages for the runners instead.
+dozzle_remote_agent: "100.104.25.70:7007|Golem,100.104.25.70:7008|Golem runners"
 
 nas_storage_dozzle:
   - path: "{{ nas_docker_root }}/dozzle/data"
