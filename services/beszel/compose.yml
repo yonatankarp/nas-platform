@@ -150,7 +150,7 @@ services:
     container_name: beszel_socket_proxy
     # Serves every container's environment, i.e. every rendered .env (#829), so it is
     # kept off default where the wildcard-bound hub could reach it.
-    image: lscr.io/linuxserver/socket-proxy:3.4.7@sha256:e5d819de59b343c01b2fe7adc7fad3c7a60e5dba08e45f1ac317352bc08599b5
+    image: lscr.io/linuxserver/socket-proxy:3.4.7@sha256:823dda971e9a3951257eb251586a804199819fe1587c35faa43adc7b52a2ff16
     cpus: 0.5
     labels:
       dev.dozzle.group: beszel
