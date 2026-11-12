@@ -1,6 +1,6 @@
 #!/bin/sh
 
-cleanup_sandbox_image=docker.io/library/python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
+cleanup_sandbox_image=docker.io/library/python:3.14-alpine@sha256:5862d971d1f0ae26b258cefa4e893556b1d3aba81bd2ff30888704ad378bab67
 # Nothing is deleted by a fixed production name: resources are found by exact
 # Compose ownership labels and matched against their exact namespaced identity.
 cleanup_sandbox_projects='beszel dozzle audiobookshelf komga jellyfin immich paperless'
