@@ -92,7 +92,7 @@ services:
   database:
     <<: *service-defaults
     container_name: immich_postgres
-    image: ghcr.io/immich-app/postgres:17-vectorchord1.1.1-pgvector0.8.5@sha256:7f0b786ed5a7a9d26522dacbf46114a76e043a515ce5e020690fc6702e987b72
+    image: ghcr.io/immich-app/postgres:17-vectorchord1.1.1-pgvector0.8.5@sha256:2e8f3609f634eed782f81eb9ed0736ca946a3f26138792a124a44d42996c80c9
     cpus: 2.0
     labels:
       dev.dozzle.group: immich
